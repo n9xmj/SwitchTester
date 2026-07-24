@@ -1,0 +1,91 @@
+Wiring and hook-up notes for GPS demo
+-------------------------------------
+
+Make sure to read the notes after this table BEFORE you start wiring it up!
+
+                                Nucleo
+Signal                  MCU Pin Pin     Node
+----------------------- ------- ------- ---------------
+GPS I2C SDA (1-D)       PB8     CN10-5  I2C1_SDA
+GPS GND (2-G)           ---     CN10-20 GND
+GPS TxD (3-T)           PB7     CN7-21  USART1_RX
+GPS RxD (4-R)           PB6     CN7-24  USART1_TX
+GPS +5V (5-V)           ---     CN7-18  +5V (Nucleo)
+GPS I2C SCL (6-C)       PB9     CN10-3  I2C1_SCL
+
+Display VCC             ---     CN6-2   +3v3             Arduino header
+Display GND             ---     CN6-6   GND              "
+Display I2C SCL         PB9     CN5-10  I2C1_SCL         "
+Display I2C SDA         PB8     CN5-9   I2C1_SDA         "
+
+Important build notes
+---------------------
+- Use the square (128x64 pixel) display. The firmware at present is designed
+  to work with this larger display only.
+- The button interface is not used for this demo, although low level support
+  for it is present.
+- It is recommended that the GPS be connected using long (50cm) lead wires.
+- The GPS modules come pacakged with short connector cables that are terminated
+  on one end with a 6-pin connector that mates with the one on the GPS module.
+  The other end has "DuPont style" single-pin pin or socket connectors -
+  both pin and socket styles are provided.
+  These can be connected to jumper wires terminated with these type of
+  connections to extend their length.
+- The display connections plug into the Arduino-style socket connectors on the
+  Nucleo board. Use jumper wires with socket connectors on one end and pin
+  connectors on the other end to hook up the display.
+  The Arduino headers were used instead of the CN10 pin header because the GPS
+  is connected to CN10-5 (PB8) and CN10-3 (PB9) - the I2C bus. These same pins
+  also need to connect to the display. They are replicated on the Arduino
+  socket header CN5-10 (PB9/SCL) and CN5-9 (PPB8/SDA). 
+- If the display is not functioning properly, and you have verified correct
+  wiring, try disconnecting the GPS from Nucleo pins CN10-3 and CN10-5 -
+  the I2C1 bus pins. The firmware (at present) does not make use of the GPS I2C
+  interface. The long lead wires going to the GPS might place excessive L-C load
+  on the I2C bus, which is operating in "fast mode" 400 KHz clock.
+
+- Start by using the BN-880 GPS module. This module (should have) has its baud
+  rate preset to 9600, which is what the firmware expects. The other two modules
+  (BE-880, BE-880Q) are probably pre-set to 38400 BPS, and won't work with the
+  present firmware - although I will work on putting in an option to switch
+  the FW baud rate to work with these if needed.
+
+- Position the GPS module away from EMI sources, such as PC, monitor, RF trans-
+  cievers (e.g. wireless peripherals), and USB cables.
+
+- All of the GPS modules have a blue LED that will start blinking at a 1Hz rate
+  shortly after the GPS is powered up. They also have a red "PPS" LED that will
+  start blinking with short 1Hz pulses once the GPS has acquired a position fix.
+  If the GPS does not acquire a fix within 10 minutes after it is powered on for
+  the first time, then it is probably sitting too close to a EMI source.
+
+  After the GPS has acquired a position fix for the first time, it should not
+  normally take as long on subsequent reset/powerups to acquire a fix.
+  The acquistion time will vary depending on how long the GPS has been powered
+  down between fixes.
+
+Display should look like this:
+-------------------
+|UTC hh:mm:ss     |
+|Fix:f Sats:s     |
+|Lat DD:MM:SS.ssN |
+|Lon DD:MM:SS.ssW |
+|Alt MM.ccM       |
+|                 |
+-------------------
+
+The time displayed is relative to UTC (GMT).
+The GPS does not provide (directly) the time zone that it is in, and determining
+the time zone from the position information is a non-trivial exercise, as time
+zones do not always fall on straight longitudinal boundaries.
+
+The second line of the display
+Fix:x Sats:y
+shows the GPS satellite acquisition state."Fix:" [x] will be 1 (or higher) if
+it has acquired a position fix. "Sats:" [y] indicates the number of GPS
+satellites that the GPS has a lock on.
+
+Lat(itude) and Lon(gitude) - self explanitory.
+
+Alt is the estimated MSL (mean sea level) altitude. This will often be inaccurate
+unless the GPS manages to acquire a 3D fix.
