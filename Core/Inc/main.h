@@ -54,14 +54,9 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 
-extern I2C_HandleTypeDef hi2c1;
-
-extern TIM_HandleTypeDef htim1;
-extern TIM_HandleTypeDef htim3;
 extern TIM_HandleTypeDef htim6;
 extern TIM_HandleTypeDef htim7;
 
-extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
 
 /* USER CODE END EFP */
@@ -69,6 +64,7 @@ extern UART_HandleTypeDef huart2;
 /* Private defines -----------------------------------------------------------*/
 #define NUCLEO_BUTTON_Pin GPIO_PIN_13
 #define NUCLEO_BUTTON_GPIO_Port GPIOC
+#define NUCLEO_BUTTON_EXTI_IRQn EXTI4_15_IRQn
 #define RTC_OSC32_IN_Pin GPIO_PIN_14
 #define RTC_OSC32_IN_GPIO_Port GPIOC
 #define RTC_OSC32_OUT_Pin GPIO_PIN_15
@@ -81,30 +77,10 @@ extern UART_HandleTypeDef huart2;
 #define DEBUG_RX_GPIO_Port GPIOA
 #define NUCLEO_LED_Pin GPIO_PIN_5
 #define NUCLEO_LED_GPIO_Port GPIOA
-#define BLUE_LED_Pin GPIO_PIN_7
-#define BLUE_LED_GPIO_Port GPIOA
-#define RED_LED_Pin GPIO_PIN_1
-#define RED_LED_GPIO_Port GPIOB
-#define GPS_PPS_Pin GPIO_PIN_9
-#define GPS_PPS_GPIO_Port GPIOA
-#define DEBUG_LED_Pin GPIO_PIN_6
-#define DEBUG_LED_GPIO_Port GPIOC
-#define SWITCH4_INT_Pin GPIO_PIN_8
-#define SWITCH4_INT_GPIO_Port GPIOD
-#define SWITCH3_INT_Pin GPIO_PIN_9
-#define SWITCH3_INT_GPIO_Port GPIOD
-#define SWITCH2_INT_Pin GPIO_PIN_10
-#define SWITCH2_INT_GPIO_Port GPIOA
-#define SWITCH1_INT_Pin GPIO_PIN_11
-#define SWITCH1_INT_GPIO_Port GPIOA
 #define SWDIO_Pin GPIO_PIN_13
 #define SWDIO_GPIO_Port GPIOA
 #define SWCLK_Pin GPIO_PIN_14
 #define SWCLK_GPIO_Port GPIOA
-#define GPS_TX_Pin GPIO_PIN_6
-#define GPS_TX_GPIO_Port GPIOB
-#define GPS_RX_Pin GPIO_PIN_7
-#define GPS_RX_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

@@ -93,7 +93,7 @@ do {                                \
 // Periodic interrupt timer configuration
 
 #define PERIODIC_INT_TIMER_HANDLE       htim6
-#define PERIODIC_TIMER_INTERVAL_MS      10
+#define PERIODIC_TIMER_INTERVAL_MS      1
 // Time base (count clock rate) to use for the periodic interrupt timer.
 // The typical value set here (10 uS) should be good for most applications.
 // If it is desired to set the periodic interval to something greater
