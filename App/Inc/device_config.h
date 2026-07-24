@@ -18,15 +18,12 @@
 
 //------------------------------------------------------------------------------
 
-#define FIRMWARE_VERSION                "0.0.0.2.0"
-#define PRODUCT_NAME                    "GPS Demo"
+#define FIRMWARE_VERSION                "0.0.1.0.0"
+#define PRODUCT_NAME                    "SwitchTester"
 #define PRODUCT_ID                      "0000"
 #define RELEASE_REVISION                "00"
-#define PRODUCT_SKU                     "xxxxxx"
+#define PRODUCT_SKU                     "------"
 #define MAIN_PCB_REVISION               "NUCLEO-G0B1RE"
-
-// Uncomment this line to force continuous motor run on startup
-//#define CONTINUOUS_MOTOR_RUN_TEST
 
 #if defined(DEBUG)
 #define BUILD_CONFIG                    "DEBUG"

@@ -1,13 +1,12 @@
 /******************************************************************************
  * macros.h
  *
- * Hardware interface macros and definitions
+ * Generic hardware-interface macros and definitions (skeleton).
  ******************************************************************************/
 
 #ifndef MACROS_H
 #define MACROS_H
 
-//#include "exti.h"
 #include "stm32g0xx_ll_gpio.h"
 #include "stm32g0xx_ll_exti.h"
 
@@ -88,19 +87,8 @@ do {                                \
 // MCU peripheral / IP block assignments
 //------------------------------------------------------------------------------
 
-// Communication interface handles and addresses
-// I2C addresses should be expressed in 8-bit form
-
+// Console (debug) UART -- retargeted for stdio in main.c via v_stdio_retarget()
 #define DEBUG_UART_HANDLE               huart2
-#define UART2_INTERRUPT_MODE            1
-#define GPS_UART_HANDLE                 huart1
-#define UART1_INTERRUPT_MODE            1
-
-#define DISPLAY_I2C_HANDLE              hi2c1
-#define DISPLAY_I2C_ADDRESS             (0x3C << 1)
-
-#define GPS_I2C_HANDLE                  hi2c1
-#define GPS_I2C_ADDRESS                 (0x42 << 1)
 
 // Periodic interrupt timer configuration
 
@@ -118,66 +106,6 @@ do {                                \
 // v_delay_us() function will stop/start the timer and reset its counter.
 
 #define DELAY_US_TIMER_HANDLE           htim7
-
-// Timers and timer channels used for motor drive
-//
-// _TIMER defines should reference a STM HAL timer handle
-// These should reference STM HAL timer handles (type TIM_HandleTypeDef) as
-// declared in either main.c or tim.c; e.g. htim2
-//
-// _CHANNEL defines should reference a STM HAL timer channel identifier
-// e.g. TIM_CHANNEL_1
-
-// Timer used for indicator LED PWM
-// TIM3 CH2 is associated with the BLUE_LED pin
-// TIM3 CH4 is associated with the RED_LED pin
-// TIM3 CH1 is associated with the DEBUG_LED pin
-
-#define LED_TIMER_HANDLE        htim3
-#define LED_PWM_MAX_DUTY        256
-#define LED_PWM_NOM_FREQ        1000
-
-#define BLUE_LED_CHANNEL        TIM_CHANNEL_2
-#define BLUE_LED_IS_GPIO_OUTPUT LL_GPIO_SetPinMode(BLUE_LED_GPIO_Port, BLUE_LED_Pin, LL_GPIO_MODE_OUTPUT)
-#define BLUE_LED_IS_ALTFUNC     LL_GPIO_SetPinMode(BLUE_LED_GPIO_Port, BLUE_LED_Pin, LL_GPIO_MODE_ALTERNATE)
-#define BLUE_LED_ON             HAL_GPIO_WritePin(BLUE_LED_GPIO_Port, BLUE_LED_Pin, 1)
-#define BLUE_LED_OFF            HAL_GPIO_WritePin(BLUE_LED_GPIO_Port, BLUE_LED_Pin, 0)
-#define BLUE_LED_TOGGLE         HAL_GPIO_TogglePin(BLUE_LED_GPIO_Port, BLUE_LED_Pin)
-
-#define RED_LED_CHANNEL         TIM_CHANNEL_4
-#define RED_LED_IS_GPIO_OUTPUT  LL_GPIO_SetPinMode(RED_LED_GPIO_Port, RED_LED_Pin, LL_GPIO_MODE_OUTPUT)
-#define RED_LED_IS_ALTFUNC      LL_GPIO_SetPinMode(RED_LED_GPIO_Port, RED_LED_Pin, LL_GPIO_MODE_ALTERNATE)
-#define RED_LED_ON              HAL_GPIO_WritePin(RED_LED_GPIO_Port, RED_LED_Pin, 1)
-#define RED_LED_OFF             HAL_GPIO_WritePin(RED_LED_GPIO_Port, RED_LED_Pin, 0)
-#define RED_LED_TOGGLE          HAL_GPIO_TogglePin(RED_LED_GPIO_Port, RED_LED_Pin)
-
-#define DEBUG_LED_CHANNEL       TIM_CHANNEL_1
-#define DEBUG_LED_IS_GPIO_OUTPUT LL_GPIO_SetPinMode(DEBUG_LED_GPIO_Port, DEBUG_LED_Pin, LL_GPIO_MODE_OUTPUT)
-#define DEBUG_LED_IS_ALTFUNC    LL_GPIO_SetPinMode(DEBUG_LED_GPIO_Port, DEBUG_LED_Pin, LL_GPIO_MODE_ALTERNATE)
-#define DEBUG_LED_ON            HAL_GPIO_WritePin(DEBUG_LED_GPIO_Port, DEBUG_LED_Pin, 0)
-#define DEBUG_LED_OFF           HAL_GPIO_WritePin(DEBUG_LED_GPIO_Port, DEBUG_LED_Pin, 1)
-#define DEBUG_LED_TOGGLE        HAL_GPIO_TogglePin(DEBUG_LED_GPIO_Port, DEBUG_LED_Pin)
-
-#define NUCLEO_LED_CLEAR()      HAL_GPIO_WritePin(NUCLEO_LED_GPIO_Port, NUCLEO_LED_Pin, 0)
-#define NUCLEO_LED_SET()        HAL_GPIO_WritePin(NUCLEO_LED_GPIO_Port, NUCLEO_LED_Pin, 1)
-#define NUCLEO_LED_IN_LEVEL()   HAL_GPIO_ReadPin(NUCLEO_LED_GPIO_Port, NUCLEO_LED_Pin)
-#define NUCLEO_LED_OUT_LEVEL()  LL_GPIO_IsOutputPinSet(NUCLEO_LED_GPIO_Port, NUCLEO_LED_Pin)
-
-//------------------------------------------------------------------------------
-// GPIO controls
-//------------------------------------------------------------------------------
-
-#define SWITCH1_INT_LEVEL()     HAL_GPIO_ReadPin(SWITCH1_INT_GPIO_Port, SWITCH1_INT_Pin)
-#define SWITCH1_PRESSED()       (! SWITCH1_INT_LEVEL())
-#define SWITCH2_INT_LEVEL()     HAL_GPIO_ReadPin(SWITCH2_INT_GPIO_Port, SWITCH2_INT_Pin)
-#define SWITCH2_PRESSED()       (! SWITCH2_INT_LEVEL())
-#define SWITCH3_INT_LEVEL()     HAL_GPIO_ReadPin(SWITCH3_INT_GPIO_Port, SWITCH3_INT_Pin)
-#define SWITCH3_PRESSED()       (! SWITCH3_INT_LEVEL())
-#define SWITCH4_INT_LEVEL()     HAL_GPIO_ReadPin(SWITCH4_INT_GPIO_Port, SWITCH4_INT_Pin)
-#define SWITCH4_PRESSED()       (! SWITCH4_INT_LEVEL())
-
-#define NUCLEO_BUTTON_LEVEL()   HAL_GPIO_ReadPin(NUCLEO_BUTTON_GPIO_Port, NUCLEO_BUTTON_Pin)
-#define NUCLEO_BUTTON_PRESSED() (! NUCLEO_BUTTON_LEVEL())
 
 //------------------------------------------------------------------------------
 // System / core control

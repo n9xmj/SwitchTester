@@ -162,12 +162,10 @@ uint8_t u8_prompt_wait(uint8_t u8_delay_sec)
         DPRINTF("%u \r", u8_delay_sec);
         for (u8_delay_100ms = 0; u8_delay_100ms < 10; u8_delay_100ms++)
         {
-            DEBUG_LED_TOGGLE;
             HAL_Delay(100);
             i_key = getchar();
             if (i_key == 0x1B)
             {
-                DEBUG_LED_OFF;
                 DPRINTF("ABORT\r\n\n");
                 u8_return = 0;  // Return 0: abort
                 break;
