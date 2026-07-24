@@ -39,3 +39,8 @@ desktop.ini
 # --- Python caches (in case bench scripts get added later) ---
 __pycache__/
 *.py[cod]
+
+# --- Per-machine bench override (SN / COM / baud) ---
+# The committed scripts/bench.defaults.json holds this bench's values; other
+# machines drop a bench.defaults.local.json (keys win over the committed file).
+scripts/bench.defaults.local.json
