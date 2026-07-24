@@ -2,5 +2,5 @@
   "_comment": "Bench target for SwitchTester. Nucleo-G0B1RE on-board ST-Link + VCP. Override per-machine with bench.defaults.local.json (gitignored).",
   "stlink_sn": "0671FF485251667187121242",
   "com_port": "COM11",
-  "baud": 115200
+  "baud": 921600
 }
