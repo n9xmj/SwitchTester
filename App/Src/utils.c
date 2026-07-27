@@ -4,19 +4,10 @@
  * Utility functions that do not fall under any major operational category.
  ******************************************************************************/
 
-#include "device_config.h"              // Includes debug_config.h, main.h, macros.h
+#include "device_config.h"              // Includes debug_config.h, main.h, platform.h
 #include "stdio_retarget.h"
 #include "utils.h"
 //#include <time.h>                       // For v_get_rtc_time; uses mktime()
-
-//------------------------------------------------------------------------------
-
-// Tick rate set for the core SysTick timer and HAL_GetTick()
-// This is typically 1000 Hz / 1 millisecond
-#define SYSTICK_TIMEBASE_HZ     1000        // Typically 1000 (1 mS)
-
-// Clock source rate for RTC
-#define RTC_CLOCK_HZ            32768UL     // LSI clock
 
 //------------------------------------------------------------------------------
 
@@ -35,10 +26,15 @@ static const char *reset_source_str[RESET_TYPE_MAX] =
 reset_source_t x_reset_source;
 
 /******************************************************************************
+ * void v_app_polling_task(void)
  *
+ * This task is defined here as a weak stub. It is intended to be overridden
+ * in user code, using it to feed background processing tasks during blocking
+ * operations.
+ * It is used in this API with i_getchar_blocking
  ******************************************************************************/
 
-void __attribute__((weak)) app_polling_task(void)
+void __attribute__((weak)) v_app_polling_task(void)
 {
     // Does nothing, intended to be overridden
 }
@@ -51,16 +47,13 @@ void __attribute__((weak)) app_polling_task(void)
  * Returns:     Character received from STDIN
  ******************************************************************************/
 
-// app_polling_task() is located in app_main.c
-extern void app_polling_task(void);
-
 int i_getchar_blocking(void)
 {
     int i_char;
 
     do
     {
-        app_polling_task();
+        v_app_polling_task();
         i_char = getchar();
     }
     while (i_char < 0);
@@ -145,43 +138,6 @@ int i_getline(char *p_c_entry, uint16_t u16_length_limit)
     p_c_entry[i_len] = 0;
 
     return (u8_done == GETLINE_ESCAPE_EXIT) ? -1 : i_len;
-}
-
-/******************************************************************************
- *
- ******************************************************************************/
-
-uint8_t u8_prompt_wait(uint8_t u8_delay_sec)
-{
-    int i_key;
-    uint8_t u8_delay_100ms;
-    uint8_t u8_return = 0xFF;
-
-    for ( ; u8_delay_sec > 0; u8_delay_sec--)
-    {
-        DPRINTF("%u \r", u8_delay_sec);
-        for (u8_delay_100ms = 0; u8_delay_100ms < 10; u8_delay_100ms++)
-        {
-            HAL_Delay(100);
-            i_key = getchar();
-            if (i_key == 0x1B)
-            {
-                DPRINTF("ABORT\r\n\n");
-                u8_return = 0;  // Return 0: abort
-                break;
-            }
-            if (i_key == '\r')
-            {
-                u8_return = 2;  // Return 2: go go go!
-                break;
-            }
-        }
-        if (u8_return != 0xFF) break;
-    }
-
-    if (u8_return == 0xFF) u8_return = 1; // Return 1: Delay complete (go)
-
-    return u8_return;
 }
 
 /******************************************************************************
@@ -338,222 +294,37 @@ void v_delay_us(uint16_t u16_microseconds)
 #endif
 
 /******************************************************************************
+ * void v_delay_pump(uint32_t u32_ticks)
  *
+ * Blocking delay, like HAL_Delay(), but pumps v_app_polling_task() during
+ * the delay interval. The tick interval is determined by the interval used
+ * to feed the HAL uwTick counter, normally incremented on SysTick interrupts,
+ * typically 1mS
  ******************************************************************************/
 
-void v_debounce_init(debounce_t *p_x_object,
-                     level_read_function_t p_f_level_read_function,
-                     uint8_t u8_threshold)
+void v_delay_pump(uint32_t u32_ticks)
 {
-    if (p_x_object == NULL)
+    uint32_t u32_timestamp = HAL_GetTick();
+    do
     {
-        return;
+        v_app_polling_task();
     }
-
-    memset(p_x_object, 0, sizeof(debounce_t));
-
-    if (p_f_level_read_function == NULL)
-    {
-        return;
-    }
-
-    uint8_t u8_level;
-
-    p_x_object->p_f_level_read_function = p_f_level_read_function;
-    p_x_object->u8_debounce_count = u8_threshold;
-    p_x_object->u8_debounce_count_threshold = u8_threshold;
-    u8_level = p_f_level_read_function();
-    p_x_object->u8_debounced_level = u8_level;
-    p_x_object->u8_present_level = u8_level;
-    p_x_object->u8_previous_level = u8_level;
-    p_x_object->x_auto_repeat_mode = DEBOUNCE_NO_AUTO_REPEAT;
-}
-
-/******************************************************************************
- * debounced_level_t x_debounce(*p_x_object)
- *
- * Debounce an input pin or other signal returning a binary state
- *
- * p_x_object   : Pointer to a debounce_t struct; should be initialized using
- *                v_debounce_init() prior to use
- *
- * Returns:     Nonzero value if the debounced state of the signal being
- *              monitored has changed.
- *              0 = No change in debounced signal level
- *              1 = Debounced signal level changed from high/true to low/false
- *              2 = Debounced signal level changed from low/false to high/true
- *              3 = Signal at active level has been held for auto-repeat
- *                  interval
- *
- * Notes:
- * The debounced level of the pin or other object being monitored can be
- * checked by examining p_x_object->u8_debounced_level.
- * This function should be called at regular period intervals; e.g. from a
- * periodic timer interrupt.
- ******************************************************************************/
-
-debounced_level_t x_debounce(debounce_t *p_x_object)
-{
-    debounced_level_t x_return = DEBOUNCED_LEVEL_NO_CHANGE;
-
-    if (p_x_object == NULL)
-    {
-        return DEBOUNCED_LEVEL_NO_CHANGE;
-    }
-
-    if (p_x_object->p_f_level_read_function == NULL)
-    {
-        return DEBOUNCED_LEVEL_NO_CHANGE;
-    }
-
-    p_x_object->u8_previous_level = p_x_object->u8_present_level;
-    p_x_object->u8_present_level = (p_x_object->p_f_level_read_function)();
-
-    if (p_x_object->u8_previous_level == p_x_object->u8_present_level)
-    {
-        if (p_x_object->u8_debounce_count < p_x_object->u8_debounce_count_threshold)
-        {
-            // Previous and present signal level readings are the same, but not yet
-            // verified as stable.
-            // Increment debounce/stability count
-            p_x_object->u8_debounce_count++;
-            return DEBOUNCED_LEVEL_NO_CHANGE;
-        }
-        else if (p_x_object->u8_debounced_level != p_x_object->u8_present_level)
-        {
-            // Previous and present signal level readings are the same, and stability
-            // count has reached terminal value.
-            // Signal has been verified stable, report change in level
-            x_return = p_x_object->u8_present_level
-                       ? DEBOUNCED_LEVEL_CHANGED_HIGH
-                       : DEBOUNCED_LEVEL_CHANGED_LOW;
-            p_x_object->u8_debounced_level = p_x_object->u8_present_level;
-        }
-        else
-        {
-            // No change in signal level - signal is stable
-            // If auto-repeat is enabled, and signal is at the active
-            // auto-repeat level, then return a DEBOUNCED_ACTIVE_LEVEL_REPEAT
-            // state periodically.
-            if ( (
-                   (p_x_object->x_auto_repeat_mode == DEBOUNCE_AUTO_REPEAT_LOW)
-                   && (p_x_object->u8_debounced_level == 0)
-                 )
-                 ||
-                 (
-                   (p_x_object->x_auto_repeat_mode == DEBOUNCE_AUTO_REPEAT_HIGH)
-                   && (p_x_object->u8_debounced_level != 0)
-                 )
-               )
-            {
-                p_x_object->u8_auto_repeat_count++;
-                // Wait for initial delay (after signal stable) before issuing auto-repeats
-                if (p_x_object->u8_auto_repeat_count >= p_x_object->u8_auto_repeat_delay)
-                {
-                    p_x_object->u8_auto_repeat_delay_done = 1;
-                }
-                // Once the initial delay has elapsed, auto-repeats can be issued at the
-                // set repeat interval
-                if ( p_x_object->u8_auto_repeat_delay_done
-                     && (p_x_object->u8_auto_repeat_count >= p_x_object->u8_auto_repeat_interval) )
-                {
-                    p_x_object->u8_auto_repeat_count = 0;
-                    x_return = DEBOUNCED_ACTIVE_LEVEL_REPEAT;
-                }
-                else
-                {
-                    // Waiting for auto-repeat interval to pass
-                    // Do nothing
-                }
-            }
-            else
-            {
-                // Signal is stable, auto-repeat disabled
-                // Do nothing
-            }
-        }
-    }
-    else
-    {
-        // Previous and present signal level readings are different.
-        // Signal state may be changing.
-        // Reset debounce/stability count
-        p_x_object->u8_debounce_count = 0;
-        p_x_object->u8_auto_repeat_count = 0;
-        p_x_object->u8_auto_repeat_delay_done = 0;
-    }
-
-    return x_return;
+    while ((HAL_GetTick() - u32_timestamp) < u32_ticks);
 }
 
 /******************************************************************************
  *
  ******************************************************************************/
 
-void v_add_and_calculate_avg(circular_buf_t *x_buf, int16_t i16_val)
+reset_type_t x_get_reset_source(void)
 {
-    if (x_buf->b_full)
+    uint8_t u8_reset_flags = (uint8_t) ((RCC->CSR & 0xFF000000) >> 24);
+    if (u8_reset_flags == 0)
     {
-        x_buf->i32_sum -= x_buf->i16_data[x_buf->u8_index];
-        x_buf->i16_data[x_buf->u8_index] = i16_val;
-        x_buf->i32_sum += i16_val;
-        x_buf->i16_avg = x_buf->i32_sum / BUFF_SIZE;
-    }
-    else
-    {
-        x_buf->i16_data[x_buf->u8_index] = i16_val;
-        x_buf->i32_sum += i16_val;
-        x_buf->i16_avg = x_buf->i32_sum / (x_buf->u8_index + 1);
+        return x_reset_source.x_reset_type;
     }
 
-    x_buf->u8_prev_index = x_buf->u8_index;
-    x_buf->u8_index++;
-    if (x_buf->u8_index >= BUFF_SIZE)
-    {
-        x_buf->u8_index = 0;
-        x_buf->b_full = true;
-    }
-}
-
-/******************************************************************************
- *
- ******************************************************************************/
-
-void v_init_buffer(circular_buf_t *x_buf)
-{
-    memset(x_buf, 0, sizeof(circular_buf_t));
-}
-
-/******************************************************************************
- *
- ******************************************************************************/
-
-void v_debug_config(void)
-{
-#ifdef DEBUG
-    __HAL_RCC_DBGMCU_CLK_ENABLE();
-    // Enable debug while in Stop mode
-    HAL_DBGMCU_EnableDBGStopMode();
-
-    // Disable peripheral clocks when core halted while debugging
-    // - disable IWDG clock to prevent watchdog reset
-    // - disable RTC clock to halt RTC time increment
-    // - disable TIM14 clock to halt local time increment
-    __HAL_DBGMCU_FREEZE_IWDG();
-    __HAL_DBGMCU_FREEZE_RTC();
-    __HAL_DBGMCU_FREEZE_TIM6();
-    __HAL_DBGMCU_FREEZE_TIM7();
-    __HAL_DBGMCU_FREEZE_TIM14();
-#endif
-}
-
-/******************************************************************************
- *
- ******************************************************************************/
-
-void v_get_reset_source(void)
-{
-    x_reset_source.u8_reset_flags = (RCC->CSR & 0xFF000000) >> 24;
+    x_reset_source.u8_reset_flags = u8_reset_flags;
     x_reset_source.x_reset_type = RESET_TYPE_UNKNOWN;
 
     // The order of tests below is important! The PIN reset flag is set
@@ -599,6 +370,8 @@ void v_get_reset_source(void)
 
     // Clear all reset flags
     __HAL_RCC_CLEAR_RESET_FLAGS();
+
+    return x_reset_source.x_reset_type;
 }
 
 /******************************************************************************
@@ -686,128 +459,117 @@ void v_system_tick_add(uint32_t u32_tick_add)
 /******************************************************************************
  *
  ******************************************************************************/
-// Change this to match the RTC_WAKEUPCLOCK_RTCCLK_DIVxx selected when
-// HAL_RTCEx_SetWakeUpTimer_IT() is called
-#define WAKEUP_TIMER_PRESCALER_DIV      16
-#define WAKEUP_TIMER_PRESCALER_SELECT   RTC_WAKEUPCLOCK_RTCCLK_DIV16
 
-// WARNING: Maximum wakeup time with typical RTC configuration
-// prescaler = /16 and RTC clock = 32000Hz is ~32767 mS
+// Arms the RTC wakeup timer for approximately the requested interval, deriving
+// every timing parameter from the RTC's *current* hardware configuration rather
+// than from compile-time constants. Nothing about the RTC is forced: whatever
+// wakeup-clock prescaler MX_RTC_Init() (or a later runtime change) left in
+// RTC_CR is honored, and only the autoreload value (WUTR) is written.
+//
+// Returns the actual number of milliseconds that will elapse for the value
+// programmed, or 0 if the wakeup timer could not be armed (RTC has no running
+// clock source, or is configured for the ck_spre (1 Hz) wakeup clock, which
+// this millisecond-resolution helper does not serve).
+//
+// NOTE: If the RTC clock source is the internal RC (LSI), the elapsed time is
+// subject to the LSI tolerance (nominally 32 kHz +/- 5%).
 
-void v_set_rtc_wakeup_timer(uint16_t u16_duration_ms)
+uint32_t u32_set_rtc_wakeup_timer(uint16_t u16_duration_ms)
 {
-#if 0
-    uint32_t u32_wakeup_time_set;
-    HAL_StatusTypeDef x_status;
+    uint32_t u32_rtcclk_hz;
+    uint32_t u32_wucksel;
+    uint32_t u32_prescaler_div;
+    uint32_t u32_wakeup_tick_hz;
+    uint32_t u32_wakeup_ticks;
 
-    // Deactivate existing wake up timer
-    HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
-
-    // Convert wakeup time in mS to wakeup timer units
-    // Wakeup timer tick rate = RTC clock / RTC wakeup timer clock prescaler
-    u32_wakeup_time_set = (uint32_t) u16_duration_ms * RTC_CLOCK_HZ / (1000 * WAKEUP_TIMER_PRESCALER_DIV);
-    if (u32_wakeup_time_set >= 0x10000) u32_wakeup_time_set = 0xFFFF;
-
-    // Start wakeup timer
-    x_status = HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, u32_wakeup_time_set, WAKEUP_TIMER_PRESCALER_SELECT);
-    if (x_status != HAL_OK)
+    // RTCCLK source frequency as actually configured (LSE / LSI / HSE/32);
+    // returns 0 if no source is selected and running.
+    u32_rtcclk_hz = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_RTC);
+    if (u32_rtcclk_hz == 0U)
     {
-        Error_Handler();
+        return 0U;                          // RTC has no clock -> cannot arm
     }
 
-    __HAL_RTC_WAKEUPTIMER_EXTI_ENABLE_EVENT();
-    __HAL_RTC_WAKEUPTIMER_EXTI_ENABLE_IT();
-#endif
+    // Honor whatever wakeup-clock selection the RTC currently holds.
+    u32_wucksel = READ_BIT(RTC->CR, RTC_CR_WUCKSEL);
+
+    // This helper only serves the RTCCLK/N (sub-second) wakeup modes. The
+    // ck_spre modes tick at 1 Hz, which cannot represent a millisecond interval.
+    if ((u32_wucksel & RTC_CR_WUCKSEL_2) != 0U)
+    {
+        return 0U;                          // ck_spre (1 Hz) mode -> not a ms wakeup
+    }
+
+    // WUCKSEL[1:0] selects RTCCLK/16, /8, /4, /2 for codes 0, 1, 2, 3.
+    u32_prescaler_div  = 16U >> (u32_wucksel & 0x3U);
+    u32_wakeup_tick_hz = u32_rtcclk_hz / u32_prescaler_div;
+
+    // The wakeup event fires every (WUTR + 1) wakeup-timer ticks, so the number
+    // of ticks for the requested interval is programmed as WUTR = ticks - 1.
+    u32_wakeup_ticks = ((uint32_t) u16_duration_ms * u32_wakeup_tick_hz) / 1000U;
+    if (u32_wakeup_ticks == 0U)        u32_wakeup_ticks = 1U;
+    if (u32_wakeup_ticks > 0x10000U)   u32_wakeup_ticks = 0x10000U;  // WUTR is 16-bit
+
+// *** REMOVE AFTER DEBUG ***
+printf("WUT set to %lu ticks\r\n", u32_wakeup_ticks);
+
+    // Arm using the existing clock selection; SetWakeUpTimer_IT() handles the
+    // disable / WUTWF-wait / WUTR write / WUCKSEL set / EXTI-IT / enable sequence.
+    if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, u32_wakeup_ticks - 1U, u32_wucksel) != HAL_OK)
+    {
+        return 0U;
+    }
+
+    // SetWakeUpTimer_IT() clears the RTC WUTF flag, but any wakeup interrupt
+    // that was already latched in the NVIC (e.g. from a previously-running
+    // wakeup timer) stays pending on the shared RTC_TAMP vector. A pending IRQ
+    // makes a subsequent WFI fall straight through STOP without ever sleeping,
+    // so clear it here to guarantee an arm-then-sleep sequence actually sleeps.
+    // NB: this vector is shared with the RTC alarm/tamper; clearing it drops a
+    // coincidentally-pending alarm/tamper IRQ, which is acceptable for the
+    // wakeup-before-STOP use case this function is built for.
+    HAL_NVIC_ClearPendingIRQ(RTC_TAMP_IRQn);
+
+    // Truthful elapsed time for the value actually programmed.
+    return (u32_wakeup_ticks * 1000U) / u32_wakeup_tick_hz;
 }
 
 /******************************************************************************
  *
  ******************************************************************************/
 
-// FIXME: <u64_get_rtc_time> Probably don't need most of this.
-// Can save considerable code space if C <time> library calls such as mktime()
-// could be removed.
-// This routine is used primarily to figure out how long the MCU was in sleep
-// mode, and as this time is limited to 20s or so, the time in sleep could
-// be calculated using a much simpler approach than doing a complete
-// epoch time calculation. It could be done using the RTC minutes, seconds,
-// and subseconds values to calculate a "milliseconds into the hour", along
-// with some modulo arithmetic.
-// Sprayer code no longer uses -any- 64-bit tick counters/timers for delay and
-// event timing; everything is now based on the HAL tick timer, which -does- get
-// adjusted using the time-in-sleep calculations that make use of this routine.
+// Disarm (stop) the RTC wakeup timer previously armed by
+// u32_set_rtc_wakeup_timer(). This genuinely stops the timer: it clears WUTE
+// (halting the wakeup down-counter) and WUTIE (its interrupt enable), and
+// nothing else -- all other RTC functions (alarm, tamper, timestamp), the
+// shared RTC EXTI line, and the shared RTC NVIC interrupt are left untouched.
+//
+// Fire-and-forget companion to u32_set_rtc_wakeup_timer(): arm it before
+// entering a low-power/STOP state, disarm it on exit. Safe to call even when
+// the wakeup timer is not currently armed.
+//
+// Assumes the RTC and its global interrupt are configured by the CubeMX init
+// (HAL_RTC_MspInit enables the RTC clock and the RTC_TAMP NVIC line).
 
-uint64_t u64_get_rtc_time(void)
+void v_stop_rtc_wakeup_timer(void)
 {
-#if 0
-    uint64_t            u64_timestamp_ms;
-    uint32_t            u32_subsec_ms;
-    time_t              x_time;
-    struct tm           x_tm;
-    RTC_TimeTypeDef     x_rtc_time = {0};
-    RTC_DateTypeDef     x_rtc_date = {0};
-    HAL_StatusTypeDef   x_status = HAL_OK;
-
-    //Read Time from HW RTC
-    x_status = HAL_RTC_GetTime(&hrtc, &x_rtc_time, RTC_FORMAT_BIN);
-    if (x_status != HAL_OK)
+    // With no running RTC clock source the wakeup timer cannot be running, so
+    // there is nothing to stop. Bailing here also avoids HAL_RTCEx_Deactivate...
+    // blocking on the WUTWF poll (which needs RTCCLK to ever assert).
+    if (HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_RTC) == 0U)
     {
-        LOGCT(LOG_PM,"HAL_RTC_GetTime() error: %u", x_status);
+        return;
     }
 
-    //Read Date from HW RTC
-    x_status = HAL_RTC_GetDate(&hrtc, &x_rtc_date, RTC_FORMAT_BIN);
-    if(x_status != HAL_OK)
-    {
-        LOGCT(LOG_PM,"HAL_RTC_GetDate() error: %u",x_status);
-    }
-
-    // Update calendar time
-    x_tm.tm_year = (x_rtc_date.Year + 100);       // Year + 2000 - 1900
-    x_tm.tm_mon = x_rtc_date.Month - 1;           // Month, where 0 = jan
-    x_tm.tm_mday = x_rtc_date.Date;               // Day of the month
-    x_tm.tm_hour = x_rtc_time.Hours;
-    x_tm.tm_min = x_rtc_time.Minutes;
-    x_tm.tm_sec = x_rtc_time.Seconds;
-    x_tm.tm_isdst = 0;                            // Is DST on? 1 = yes, 0 = no, -1 = unknown
-
-    //Convert the time to Epoch time
-    x_time = mktime(&x_tm);
-    u64_timestamp_ms = (uint64_t) x_time;
-    u64_timestamp_ms *= 1000;
-
-    // Convert RTC subseconds to milliseconds and add to epoch time
-    // The STM32 RTC is typically configured to count subseconds in
-    // 1/256-second units (~3.9 mS units)
-    // However, this can vary depending on how the RTC is configured.
-    // x_rtc_time.SubSeconds will be a value between 0..hrtc->Init.SynchPrediv
-    // As this counter counts down from SynchPrediv to 0, the actual subsecond
-    // value is calculated as hrtc->Init.SynchPrediv - x_rtc_time.SubSeconds
-    // For these calculations, it is assumed that the RTC clock source is
-    // LSI (Low Speed Internal), running at 32.000 KHz +/- 5%
-
-    u32_subsec_ms = (hrtc.Init.SynchPrediv - x_rtc_time.SubSeconds)
-                    * SYSTICK_TIMEBASE_HZ
-                    * (hrtc.Init.AsynchPrediv + 1)
-                    / RTC_CLOCK_HZ;
-    u64_timestamp_ms += u32_subsec_ms;
-
-    LOGCT(LOG_PM, "RTC TIME: 20%02u/%02u/%02u %02u:%02u:%02u.%03lu (%lu)",
-          x_rtc_date.Year, x_rtc_date.Month, x_rtc_date.Date,
-          x_rtc_time.Hours, x_rtc_time.Minutes, x_rtc_time.Seconds, u32_subsec_ms,
-          (uint32_t) u64_timestamp_ms);
-
-    return u64_timestamp_ms;
-#else
-    return 0;
-#endif
+    (void) HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
 }
 
-//------------------------------------------------------------------------------
+/******************************************************************************
+ *
+ ******************************************************************************/
 
 uint32_t u32_get_rtc_hour_time(void)
 {
-#if 0
     uint32_t            u32_hour_time_ms;
     uint32_t            u32_subsec_ms;
     RTC_TimeTypeDef     x_rtc_time;
@@ -822,36 +584,22 @@ uint32_t u32_get_rtc_hour_time(void)
     // latching the time/date counts
     HAL_RTC_GetDate(&hrtc, &x_rtc_date, RTC_FORMAT_BIN);
 
-    // Convert RTC subseconds to milliseconds and add to epoch time
-    // The STM32 RTC is typically configured to count subseconds in
-    // 1/256-second units (~3.9 mS units)
-    // However, this can vary depending on how the RTC is configured.
-    // x_rtc_time.SubSeconds will be a value between 0..hrtc->Init.SynchPrediv
-    // As this counter counts down from SynchPrediv to 0, the actual subsecond
-    // value is calculated as hrtc->Init.SynchPrediv - x_rtc_time.SubSeconds
-    // For these calculations, it is assumed that the RTC clock source is
-    // LSI (Low Speed Internal), running at 32.000 KHz +/- 5%
+    // Subsecond fraction of the current second, straight from the RTC's own
+    // definition (RM / HAL): fraction = (PREDIV_S - SSR) / (PREDIV_S + 1).
+    // HAL_RTC_GetTime() reads both live from hardware -- SubSeconds from RTC_SSR
+    // and SecondFraction from RTC_PRER's PREDIV_S field -- so this is exact
+    // regardless of clock source or prescaler tuning, with no RTCCLK /
+    // AsynchPrediv / tick-rate assumptions. (SSR counts down 0..PREDIV_S, so the
+    // numerator is always >= 0 and the +1 denominator is never zero.)
 
-    u32_subsec_ms = (hrtc.Init.SynchPrediv - x_rtc_time.SubSeconds)
-                    * SYSTICK_TIMEBASE_HZ
-                    * (hrtc.Init.AsynchPrediv + 1)
-                    / RTC_CLOCK_HZ;
+    u32_subsec_ms = (1000UL * (x_rtc_time.SecondFraction - x_rtc_time.SubSeconds))
+                    / (x_rtc_time.SecondFraction + 1UL);
 
-    // Time in mS for the present hour + subseconds
+    // Milliseconds elapsed in the present hour (minutes + seconds + subseconds)
 
-    u32_hour_time_ms = (uint32_t) x_rtc_time.Minutes * 60 * SYSTICK_TIMEBASE_HZ
-                       + (uint32_t) x_rtc_time.Seconds * SYSTICK_TIMEBASE_HZ
+    u32_hour_time_ms = ((uint32_t) x_rtc_time.Minutes * 60UL * 1000UL)
+                       + ((uint32_t) x_rtc_time.Seconds * 1000UL)
                        + u32_subsec_ms;
 
-    LOGCT(LOG_PM, "RTC hour time: %02u:%02u.%03lu (%lu mS)"
-          ,x_rtc_time.Minutes
-          ,x_rtc_time.Seconds
-          ,u32_subsec_ms
-          ,u32_hour_time_ms
-         );
-
     return u32_hour_time_ms;
-#else
-    return 0;
-#endif
 }

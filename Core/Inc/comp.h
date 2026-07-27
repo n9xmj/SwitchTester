@@ -1,13 +1,13 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    tim.h
+  * @file    comp.h
   * @brief   This file contains all the function prototypes for
-  *          the tim.c file
+  *          the comp.c file
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2025 STMicroelectronics.
+  * Copyright (c) 2026 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -18,8 +18,8 @@
   */
 /* USER CODE END Header */
 /* Define to prevent recursive inclusion -------------------------------------*/
-#ifndef __TIM_H__
-#define __TIM_H__
+#ifndef __COMP_H__
+#define __COMP_H__
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,21 +32,19 @@ extern "C" {
 
 /* USER CODE END Includes */
 
-extern TIM_HandleTypeDef htim2;
+extern COMP_HandleTypeDef hcomp1;
 
-extern TIM_HandleTypeDef htim7;
+extern COMP_HandleTypeDef hcomp2;
 
-extern TIM_HandleTypeDef htim14;
+extern COMP_HandleTypeDef hcomp3;
 
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */
 
-void MX_TIM2_Init(void);
-void MX_TIM7_Init(void);
-void MX_TIM14_Init(void);
-
-void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+void MX_COMP1_Init(void);
+void MX_COMP2_Init(void);
+void MX_COMP3_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 
@@ -56,5 +54,5 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 }
 #endif
 
-#endif /* __TIM_H__ */
+#endif /* __COMP_H__ */
 

@@ -9,8 +9,8 @@
 
 // Don't really need most of the stuff included by device_config.h for this code,
 // but do need access to the SAVE_AND_DISABLE_INTERRUPTS() and
-// RESTORE_INTERRUPTS() macros declared in "macros.h"
-#include "device_config.h"              // Includes debug_config.h, main.h, macros.h
+// RESTORE_INTERRUPTS() macros declared in "platform.h"
+#include "device_config.h"              // Includes debug_config.h, main.h, platform.h
 #include "jobs.h"
 
 //-------------------------------------------------------------------------------

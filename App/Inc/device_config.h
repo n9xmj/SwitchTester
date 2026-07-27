@@ -13,17 +13,14 @@
 
 #include "debug_config.h"
 #include "main.h"
-#include "macros.h"
+#include "platform.h"
 #include "globals.h"
 
 //------------------------------------------------------------------------------
 
-#define FIRMWARE_VERSION                "0.0.1.0.0"
+#define FIRMWARE_VERSION                "0.1.0.0.0"
 #define PRODUCT_NAME                    "SwitchTester"
-#define PRODUCT_ID                      "0000"
-#define RELEASE_REVISION                "00"
-#define PRODUCT_SKU                     "------"
-#define MAIN_PCB_REVISION               "NUCLEO-G0B1RE"
+#define PLATFORM_NAME                   "NUCLEO-G0B1RE"
 
 #if defined(DEBUG)
 #define BUILD_CONFIG                    "DEBUG"

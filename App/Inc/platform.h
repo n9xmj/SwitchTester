@@ -1,5 +1,5 @@
 /******************************************************************************
- * macros.h
+ * platform.h
  *
  * Generic hardware-interface macros and definitions (skeleton).
  ******************************************************************************/
@@ -46,14 +46,13 @@
 #define RESTORE_INTERRUPTS() \
     __set_PRIMASK(u32_primask)
 
-#define ATOMIC_BLOCK_BEGIN          \
-do {                                \
-    uint32_t u32_primask;           \
-    u32_primask = __get_PRIMASK();  \
+#define ATOMIC_BLOCK_BEGIN \
+do { \
+    uint32_t u32_primask = __get_PRIMASK(); \
     __set_PRIMASK(1);
 
-#define ATOMIC_BLOCK_END            \
-    __set_PRIMASK(u32_primask);     \
+#define ATOMIC_BLOCK_END \
+    __set_PRIMASK(u32_primask); \
 } while(0);
 
 // BM2N(mask) : Bitmask-to-number
@@ -92,13 +91,8 @@ do {                                \
 
 // Periodic interrupt timer configuration
 
-#define PERIODIC_INT_TIMER_HANDLE       htim6
+#define PERIODIC_INT_TIMER_HANDLE       htim14
 #define PERIODIC_TIMER_INTERVAL_MS      1
-// Time base (count clock rate) to use for the periodic interrupt timer.
-// The typical value set here (10 uS) should be good for most applications.
-// If it is desired to set the periodic interval to something greater
-// than 655 mS, then this value needs to be increased.
-#define PERIODIC_TIMER_CLOCK_PERIOD_US  10      // MICROSECOND units
 
 // HAL timer handle to use for short delay generation
 // Used by v_delay_us() function in utils.c

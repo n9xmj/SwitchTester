@@ -54,8 +54,10 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 
-extern TIM_HandleTypeDef htim6;
+extern RTC_HandleTypeDef hrtc;
+extern TIM_HandleTypeDef htim4;
 extern TIM_HandleTypeDef htim7;
+extern TIM_HandleTypeDef htim14;
 
 extern UART_HandleTypeDef huart2;
 
@@ -69,18 +71,32 @@ extern UART_HandleTypeDef huart2;
 #define RTC_OSC32_IN_GPIO_Port GPIOC
 #define RTC_OSC32_OUT_Pin GPIO_PIN_15
 #define RTC_OSC32_OUT_GPIO_Port GPIOC
-#define MCO_Pin GPIO_PIN_0
-#define MCO_GPIO_Port GPIOF
+#define SENSE_D_Pin GPIO_PIN_0
+#define SENSE_D_GPIO_Port GPIOA
+#define SENSE_A_Pin GPIO_PIN_1
+#define SENSE_A_GPIO_Port GPIOA
 #define DEBUG_TX_Pin GPIO_PIN_2
 #define DEBUG_TX_GPIO_Port GPIOA
 #define DEBUG_RX_Pin GPIO_PIN_3
 #define DEBUG_RX_GPIO_Port GPIOA
 #define NUCLEO_LED_Pin GPIO_PIN_5
 #define NUCLEO_LED_GPIO_Port GPIOA
+#define SWITCH_A_Pin GPIO_PIN_4
+#define SWITCH_A_GPIO_Port GPIOC
+#define SWITCH_B_Pin GPIO_PIN_5
+#define SWITCH_B_GPIO_Port GPIOC
+#define SENSE_C_Pin GPIO_PIN_0
+#define SENSE_C_GPIO_Port GPIOB
+#define SWITCH_C_Pin GPIO_PIN_10
+#define SWITCH_C_GPIO_Port GPIOB
+#define SWITCH_D_Pin GPIO_PIN_11
+#define SWITCH_D_GPIO_Port GPIOB
 #define SWDIO_Pin GPIO_PIN_13
 #define SWDIO_GPIO_Port GPIOA
 #define SWCLK_Pin GPIO_PIN_14
 #define SWCLK_GPIO_Port GPIOA
+#define SENSE_B_Pin GPIO_PIN_4
+#define SENSE_B_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

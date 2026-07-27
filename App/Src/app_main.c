@@ -16,7 +16,7 @@
  * INCLUDES
  *==========================================================================*/
 
-#include "device_config.h"          /* stdint/stdio, main.h, macros.h, globals.h */
+#include "device_config.h"          /* stdint/stdio, main.h, platform.h, globals.h */
 #include "tim.h"                     /* PERIODIC_INT_TIMER_HANDLE (htim6) */
 #include "utils.h"
 #include "jobs.h"
@@ -31,17 +31,14 @@ void v_print_startup_banner(void)
 {
     if (x_reset_source.x_reset_type == RESET_TYPE_UNKNOWN)
     {
-        v_get_reset_source();
+        x_get_reset_source();
     }
 
     v_newline();
     v_repeat_char('*', -64);
     RPRINTF("Product             : " PRODUCT_NAME "\r\n"
-            "Product ID          : " PRODUCT_ID "\r\n"
-            "SKU                 : " PRODUCT_SKU "\r\n"
-            "Main PCB revision   : " MAIN_PCB_REVISION "\r\n"
             "Firmware version    : " FIRMWARE_VERSION "\r\n"
-            "Release #           : " RELEASE_REVISION "\r\n"
+            "Platform/board rev  : " PLATFORM_NAME "\r\n"
             "Build config        : " BUILD_CONFIG "\r\n"
             "Build date          : " __DATE__ "\r\n"
             "Build time          : " __TIME__ "\r\n"
@@ -154,6 +151,7 @@ void v_process_next_job(void)
             break;
 
         case JOB_PERIODIC:
+//            LOGCT(LOG_SYSTEM, "Periodic: %u mS", PERIODIC_TEST_INTERVAL_MS);
             break;
 
         case JOB_QUEUE_OVERFLOW:
@@ -175,7 +173,7 @@ void v_process_next_job(void)
  * from a never-terminating loop; blocking operations may also call it to keep
  * the system responsive while they wait (see i_getline() in utils.c).
  */
-void app_polling_task(void)
+void v_app_polling_task(void)
 {
     KICK_WATCHDOG();
     v_debug_menu_service();
@@ -192,6 +190,6 @@ NEVER_RETURNS void app_main(void)
 
     while (1)
     {
-        app_polling_task();
+        v_app_polling_task();
     }
 }
