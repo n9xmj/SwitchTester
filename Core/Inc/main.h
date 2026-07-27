@@ -55,7 +55,7 @@ void Error_Handler(void);
 /* USER CODE BEGIN EFP */
 
 extern RTC_HandleTypeDef hrtc;
-extern TIM_HandleTypeDef htim4;
+extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim7;
 extern TIM_HandleTypeDef htim14;
 
