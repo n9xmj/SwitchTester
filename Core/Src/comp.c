@@ -101,7 +101,7 @@ void MX_COMP3_Init(void)
   /* USER CODE END COMP3_Init 1 */
   hcomp3.Instance = COMP3;
   hcomp3.Init.InputPlus = COMP_INPUT_PLUS_IO1;
-  hcomp3.Init.InputMinus = COMP_INPUT_MINUS_1_2VREFINT;
+  hcomp3.Init.InputMinus = COMP_INPUT_MINUS_DAC1_CH2;
   hcomp3.Init.OutputPol = COMP_OUTPUTPOL_NONINVERTED;
   hcomp3.Init.WindowOutput = COMP_WINDOWOUTPUT_EACH_COMP;
   hcomp3.Init.Hysteresis = COMP_HYSTERESIS_NONE;

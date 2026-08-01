@@ -22,6 +22,7 @@
 #include "stm32g0xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "switch_out.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -56,6 +57,7 @@
 
 /* External variables --------------------------------------------------------*/
 extern RTC_HandleTypeDef hrtc;
+extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim14;
 /* USER CODE BEGIN EV */
 
@@ -167,6 +169,27 @@ void EXTI4_15_IRQHandler(void)
   /* USER CODE BEGIN EXTI4_15_IRQn 1 */
 
   /* USER CODE END EXTI4_15_IRQn 1 */
+}
+
+/**
+  * @brief This function handles TIM2 global interrupt.
+  */
+void TIM2_IRQHandler(void)
+{
+  /* USER CODE BEGIN TIM2_IRQn 0 */
+  /* Serviced directly, bypassing HAL: this runs at priority 0 and HAL's generic
+   * handler would walk every channel and event type on the way to a callback
+   * that cannot identify the channel cheaply. It must also not run afterwards --
+   * a match arriving between our clear and HAL's check would be swallowed by
+   * HAL, and the lost compare would cost a full counter wrap (71.6 minutes).
+   * Nothing else uses TIM2 interrupts. */
+  v_switch_cycle_isr();
+  return;
+  /* USER CODE END TIM2_IRQn 0 */
+  HAL_TIM_IRQHandler(&htim2);
+  /* USER CODE BEGIN TIM2_IRQn 1 */
+
+  /* USER CODE END TIM2_IRQn 1 */
 }
 
 /**

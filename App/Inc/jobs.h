@@ -50,6 +50,7 @@ enum
     JOB_PENDULUM_RUN,
     JOB_EXTI_REPORT,
     JOB_NVM_COMMIT,
+    JOB_CYCLE_COMPLETE,                 // u8_param1 = switch channel that finished
 
     // ---------------------------------------------------
 

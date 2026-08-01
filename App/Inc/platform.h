@@ -75,13 +75,6 @@ do { \
 
 #define ELAPSED_TIME(ts)    (SYSTEM_TICK() - (ts))
 
-// Memory allocation sizes for NVM configuration and parameter storage
-#define NVM_PARAM_RAM_SIZE              512
-
-// NVM automatic commit delay - 10mS units
-// See v_nvm_commit_check() in app_main.c
-#define NVM_AUTO_COMMIT_DELAY           500     // 5 seconds (500 * 10mS)
-
 //------------------------------------------------------------------------------
 // MCU peripheral / IP block assignments
 //------------------------------------------------------------------------------

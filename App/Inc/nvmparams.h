@@ -190,6 +190,28 @@ typedef enum PACKED
     // System parameters
     // New parameters should be added to the end of this list.
 
+    // Switch outputs - manual pulse width, milliseconds
+    NVM_PARAM_SWITCH_PULSE_MS,          // 0x100
+
+    // Switch cycling parameters, three per channel.
+    // These MUST remain contiguous and in this order: the ID for a given
+    // (channel, parameter) pair is computed arithmetically as
+    //     NVM_PARAM_CYCLE_A_REPEAT + (channel * SWITCH_CYCLE_PARAM_COUNT) + parameter
+    // See x_switch_cycle_nvm_id() in switch_out.c, which guards the assumption
+    // with _Static_assert.
+    NVM_PARAM_CYCLE_A_REPEAT,           // 0x101
+    NVM_PARAM_CYCLE_A_ON_US,
+    NVM_PARAM_CYCLE_A_OFF_US,
+    NVM_PARAM_CYCLE_B_REPEAT,
+    NVM_PARAM_CYCLE_B_ON_US,
+    NVM_PARAM_CYCLE_B_OFF_US,
+    NVM_PARAM_CYCLE_C_REPEAT,
+    NVM_PARAM_CYCLE_C_ON_US,
+    NVM_PARAM_CYCLE_C_OFF_US,
+    NVM_PARAM_CYCLE_D_REPEAT,
+    NVM_PARAM_CYCLE_D_ON_US,
+    NVM_PARAM_CYCLE_D_OFF_US,           // 0x10C
+
     // Parameters used for test/debug
     NVM_PARAM_TEST_1 = 0xFFF0,
     NVM_PARAM_TEST_2 = 0xFFF1,

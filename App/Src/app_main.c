@@ -17,11 +17,12 @@
  *==========================================================================*/
 
 #include "device_config.h"          /* stdint/stdio, main.h, platform.h, globals.h */
-#include "tim.h"                     /* PERIODIC_INT_TIMER_HANDLE (htim6) */
+#include "tim.h"                     /* PERIODIC_INT_TIMER_HANDLE (htim14) */
 #include "utils.h"
 #include "jobs.h"
 #include "nvmparams.h"
 #include "debug_menu.h"
+#include "switch_out.h"
 
 /*============================================================================
  * STARTUP BANNER
@@ -69,6 +70,10 @@ void v_param_init(void)
                  &u32_test_param_1);
     x_nvm_get(&g_x_nvm_param, NVM_PARAM_TEST_1, &u32_test_param_1);
 
+    /* Switch-output parameters. Must sit between the pool init above and the
+     * commit below, so a virgin pool creates every object in one flash write. */
+    v_switch_out_nvm_init();
+
     x_nvm_commit(&g_x_nvm_param);
 }
 
@@ -79,11 +84,12 @@ void v_param_init(void)
 void v_hardware_init(void)
 {
     v_param_init();
+    v_switch_out_init();
     HAL_TIM_Base_Start_IT(&PERIODIC_INT_TIMER_HANDLE);
 }
 
 /*============================================================================
- * PERIODIC (10 ms) INTERRUPT SERVICE
+ * PERIODIC (1 ms) INTERRUPT SERVICE
  *==========================================================================*/
 
 #define PERIODIC_TEST_INTERVAL_MS       1000
@@ -121,6 +127,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     {
         v_periodic_int_test();
         v_timer_update();
+        v_switch_out_tick();
     }
 }
 
@@ -147,7 +154,25 @@ void v_process_next_job(void)
             break;
 
         case JOB_NVM_COMMIT:
+            /* A commit erases and rewrites a flash page -- tens of milliseconds,
+             * against cycling phase times that can be as short as 10 uS. Rather
+             * than risk stalling the compare ISR mid-run, hold the commit off
+             * and let the auto-commit timer re-offer it: u8_need_commit is still
+             * set, so zeroing the timer re-arms the countdown in v_timer_update()
+             * and the parameters reach flash once the bench run finishes. */
+            if (u8_switch_cycle_any_running())
+            {
+                g_x_nvm_param.u16_commit_timer = 0;
+                break;
+            }
             x_nvm_commit(&g_x_nvm_param);
+            break;
+
+        case JOB_CYCLE_COMPLETE:
+            /* Queued from the TIM2 ISR, which cannot printf. */
+            printf("\r\nSwitch %s cycling complete, %lu cycles\r\n",
+                   pc_switch_out_name(x_job.u8_param1),
+                   (unsigned long) g_x_switch_cycle[x_job.u8_param1].u32_cycles_done);
             break;
 
         case JOB_PERIODIC:
