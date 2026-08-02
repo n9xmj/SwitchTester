@@ -507,10 +507,10 @@ static const menu_item_t x_switch_menu[] =
         .item_type = MENU_ITEM_HELP_TEXT_FIXED,
         .key = 0,
         .text = "\r\n--- Switch outputs (SWITCH_A..D, active high) ---\r\n"
-                "  [a b c d]  Force OFF          A..D\r\n"
-                "  [A B C D]  Force ON           A..D\r\n"
-                "  [1 2 3 4]  Pulse ON for [w]   A..D\r\n"
-                "  [! @ # $]  Toggle             A..D\r\n"
+                "[a b c d]  Force OFF          A..D\r\n"
+                "[A B C D]  Force ON           A..D\r\n"
+                "[1 2 3 4]  Pulse ON for [w]   A..D\r\n"
+                "[! @ # $]  Toggle             A..D\r\n"
     },
     {
         .item_type = MENU_ITEM_HELP,

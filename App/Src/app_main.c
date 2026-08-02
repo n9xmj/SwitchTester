@@ -23,6 +23,8 @@
 #include "nvmparams.h"
 #include "debug_menu.h"
 #include "switch_out.h"
+#include "uart_stream.h"
+#include "stdio_retarget.h"
 
 /*============================================================================
  * STARTUP BANNER
@@ -81,9 +83,40 @@ void v_param_init(void)
  * HARDWARE / SUBSYSTEM INIT
  *==========================================================================*/
 
+/*
+ * Bind the console UART to uart_stream and move stdio onto it.
+ *
+ * Until this runs, stdio uses a blocking HAL fallback, so anything printed
+ * earlier (the start-up banner) still reaches the terminal. After it, HAL is
+ * locked out of USART2 entirely -- the handle is marked busy, and the vector in
+ * stm32g0xx_it.c routes to uart_stream.
+ *
+ * Ring buffers are allocated here (NULL storage pointers) rather than declared
+ * statically: this is a bind-time, application-lifetime allocation, not the
+ * repeated alloc/free pattern that fragments a heap.
+ */
+static void v_console_stream_init(void)
+{
+    uart_stream_h_t h_console;
+
+    h_console = x_uart_stream_init(&DEBUG_UART_HANDLE,
+                                   DEV_CONFIG_CONSOLE_RX_BUF_SIZE, NULL,
+                                   DEV_CONFIG_CONSOLE_TX_BUF_SIZE, NULL);
+
+    if (h_console == UART_STREAM_HANDLE_INVALID)
+    {
+        /* Stay on the HAL fallback; the console keeps working, just polled. */
+        printf("WARNING: console uart_stream bind failed - stdio stays on HAL\r\n");
+        return;
+    }
+
+    v_stdio_retarget_attach_stream(h_console);
+}
+
 void v_hardware_init(void)
 {
     v_param_init();
+    v_console_stream_init();
     v_switch_out_init();
     HAL_TIM_Base_Start_IT(&PERIODIC_INT_TIMER_HANDLE);
 }
