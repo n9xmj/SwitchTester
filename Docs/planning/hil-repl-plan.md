@@ -68,8 +68,9 @@ exists.
 | **S7** | 🔵 | Deferral rule and queue-overflow policy (drop + dropped-count) *(phase 2)* |
 | **S8** | 🟡 | Timestamp source and capture point — `TIM2->CNT`, sampled at event time |
 | **S9** | 🔵 | Event subscription / arming — which events report, and when *(phase 2)* |
-| **S10** | 🔴 | Minimum cycle-period guard — where enforced, and reject vs clamp |
+| **S10** | 🟢 | Minimum cycle-period guard — 50 ms, REPL-commanded cycling only |
 | **S11** | 🟡 | Host receive contract — dispatch by sigil, never by position |
+| **S12** | 🟡 | Menu-mode human log — separate gate flag, emitted from the job runner |
 | **I1** | 🟡 | Hook point — where the 0xDA intercept lives |
 | **I2** | 🟡 | Op-table home + registration-time collision checking |
 | **I3** | 🟡 | Build gate for release images |
@@ -117,6 +118,18 @@ Established; do not re-litigate unless explicitly reopened.
   `TIM2->CNT` is free-running, `Prescaler = 63` on a 64 MHz clock → **1 µs** per
   tick, `Period = 0xFFFFFFFF`, wrapping every **71.6 minutes**. TIM2 is already
   the cycling timebase and is never stopped. **S8** turns on this difference.
+- **What this project is, and what follows from it (stated 2026-08-02).**
+  SwitchTester is a **hobby project and bench instrument** — built to chase a
+  specific pushbutton "lockup" race condition in a consumer product. It is *not*
+  a commercial product. The consequence is a deliberate asymmetry that should not
+  be argued away in a later session: **automated (REPL-commanded) runs are
+  guarded; human-initiated ones get relaxed or no guards.** Being able to feed the
+  menu deliberately insane values to see where the system breaks is a *wanted*
+  capability, not an oversight. **S10** is the first instance of this rule.
+- **A hardware floor already exists.** `SWITCH_CYCLE_MIN_LEAD_US` is **4 µs**
+  (`switch_out.c:69`) — the missed-compare guard clamps any schedule closer than
+  that to `CNT + 4 µs`. It is a correctness guard, not a policy one, and it is the
+  true bottom of the range no matter what any higher-level limit says.
 - **Intended rate profile (2026-08-02).** A typical full switch cycle is around
   **1 second**, possibly longer. Edge timing and on/off time *resolution* need to
   be **better than 1 ms**; the cycle *period* is never in the milliseconds, let
@@ -225,40 +238,65 @@ mode no event exists to race with anything.
 
 ---
 
-### S10 — Minimum cycle-period guard
+### S12 — Menu-mode human log
 
-**Status:** 🔴 · **Needs user:** yes
+**Status:** 🟡 · **Needs user:** no
 
-**Question:** Cycle setters should refuse an absurdly short period —
-`on_time + off_time >= REPL_MIN_CYCLE_PERIOD_MS`, a definable constant, ~50 ms
-proposed. Two things need deciding, and they are related.
+Cycling transitions may be worth *watching* from the debug menu too, not just
+reporting to a host. That is a different feature from the REPL event queue and it
+must not reuse the same gate: **S6**'s flag means "a host is attached and events
+may be enqueued", and overloading it would couple the human view to REPL mode.
 
-**Where is it enforced?** The stated intent is "at least those done via REPL".
-That leaves three ways to reach a sub-threshold cycle anyway:
+Two constraints carry over unchanged, though:
 
-- the debug menu, which sets the same parameters with no guard;
-- an NVM restore — and this project has already been bitten once by a pool whose
-  contents came from a *different* project (2026-08-02), so "the stored value is
-  sane" is not a safe assumption here;
-- a REPL-set value that was legal, followed by a menu edit that is not.
+- **No `printf` from an ISR** — same reason as **S6**. Emission goes through the
+  job runner, with the ISR doing nothing but recording what happened.
+- **Timestamps are captured at the event**, not at print time (**S8**), or the
+  log shows when the job ran rather than when the switch moved.
 
-The single choke point that catches all of them is `v_switch_cycle_start()` — no
-matter how the parameters got there, nothing cycles until it runs.
+**Leaning:** a second, independent gate flag; the transition ISR records into a
+small structure and posts a job; the job formats and prints. Whether that shares
+**S6**'s ring or gets its own is an implementation detail to settle when the row
+is built — sharing is tempting but couples two features with different lifetimes,
+and the ring is 512 bytes.
 
-**Reject or clamp?** Clamping silently runs a different test than the host asked
-for, which on a test instrument is the same class of error as a silently
-mis-parsed command (**S1**). Rejecting is consistent with everything else in this
-protocol.
-
-**Leaning / recommendation:** enforce in **both** places, for different reasons —
-a **reject at the REPL setter** so the host gets an immediate, specific error
-naming the offending value, and a **hard check at `v_switch_cycle_start()`** so
-the invariant genuinely holds regardless of path, including a foreign NVM pool.
-The menu keeps its unguarded setters for HuIL experimentation; it just cannot
-start a run that violates the floor. Constant lives in `device_config.h` beside
-the other tunables.
+Low priority — this is a convenience, and the REPL path is the one that matters
+for the campaign the tester exists to run.
 
 **Resolution:** _pending_
+
+---
+
+### S10 — Minimum cycle-period guard *(resolved)*
+
+**Status:** 🟢
+
+**`on_time + off_time >= 50 ms`, enforced only on REPL-commanded cycling.** The
+threshold is a definable constant in `device_config.h`. Violations are **rejected**
+with a structured error naming the offending value (**S1**), never clamped —
+silently running a different test than the host asked for is the failure mode this
+whole protocol exists to prevent.
+
+**The debug menu is deliberately exempt.** Its setters keep a much lower floor —
+1000 µs on/off proposed — or none at all, above the 4 µs hardware guard that
+`SWITCH_CYCLE_MIN_LEAD_US` already enforces for correctness. Feeding the menu
+absurd values to find where the system breaks is a wanted experiment.
+
+**Rationale, and why the earlier recommendation was declined.** The proposal on
+the table was to *also* hard-check at `v_switch_cycle_start()`, so the floor held
+regardless of path — menu edits, and NVM restores, which matters here because this
+project has already been bitten by a pool carrying another project's contents. That
+was rejected on the correct grounds: this is bench tooling, not a commercial
+product, and the guard exists to protect *automated* runs, not to protect the
+operator from themselves.
+
+**The residual case, recorded for honesty rather than as an objection:** a cycle
+configured below 50 ms from the menu, followed by REPL entry, will report events at
+that rate. The numbers say it does not matter — at the proposed 1000 µs floor the
+worst case is ~1000 edges/s, and at ~350 µs per ASCII frame that is roughly a third
+of the link, which **S7**'s drain loop and overflow accounting already handle. With
+no menu floor at all the cycler bottoms out at the 4 µs hardware guard, but the
+**S6** REPL-mode enqueue gate means nothing is being queued in menu mode anyway.
 
 ---
 
@@ -928,8 +966,8 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 4 · 🟡 15 · 🔴 5 · 🔵 4 (28 rows) + 5 wish rows (one
-  promoted). **Next ID: S10** — still unanswered, and with **D6** the only thing
-  gating phase 1.
+- **Plan status:** 🟢 5 · 🟡 16 · 🔴 4 · 🔵 4 (29 rows) + 5 wish rows (one
+  promoted). **Next ID: D6** — the op set, and the last row gating phase 1.
+  (**S4** is red but decidable without new input; **T1**/**T2** follow the code.)
 
 **End of hil-repl-plan.md**
