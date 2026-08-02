@@ -257,13 +257,41 @@ damage, not provenance. (Note `u32_crc32()` is stubbed to a constant in this
 project anyway — the HAL CRC peripheral is not wired in, so validation is
 signature-only.)
 
-**Proposed guard, not yet implemented:** a `NVM_PARAM_SCHEMA_VERSION` object
-holding a compile-time constant, created and checked first in `v_param_init()`.
-On mismatch or absence, wipe the pool so every `x_nvm_create()` lays down fresh
-defaults. Application-side rather than inside `nvmparams`, which is a
-mission-critical API with a decade of production use behind it and should not be
-altered for something the application can handle. Matters more once this module
-is promoted back into `G0B1_Skeleton` and forks onward.
+**Proposed guard, not yet implemented — pool ownership validation.**
+
+`nvm_header_t` already carries `c_label[16]`, set from `x_nvm_pool_init()`'s
+`p_c_label` argument (`"PARAMS"` here). It is **only ever written**, in the
+format path; the restore path checks signature and CRC and never compares it.
+So a caller-supplied pool-identity string already exists in the header,
+unvalidated.
+
+Adding a `strncmp` on restore turns it into an ownership check:
+
+- **No layout change** — decisive, since altering `nvm_header_t` would invalidate
+  every pool in every project already deployed with this API.
+- No object or config-zone ID consumed.
+- Checked in the header **before any object parsing**, so it cannot be confused
+  by a damaged object chain — unlike an object-based version tag.
+- 16 bytes of identity rather than 32 bits.
+- Feeds the existing `NVM_ERROR_POOL_CORRUPT` → reformat path.
+
+**Must be opt-in**, gated on `p_c_label != NULL` exactly as the format path
+already is. Enabling it unconditionally would make every deployed device across
+every project using this API reformat its pool on the next firmware update,
+wiping field settings. Opt-in keeps the change purely additive.
+
+Add a distinct `NVM_ERROR_POOL_FOREIGN` rather than reusing `POOL_CORRUPT`, so
+the log reports *wrong owner* rather than *damaged* — precisely the distinction
+that was missing when this bit.
+
+Caveat: `"PARAMS"` is generic enough that `G0B1_Skeleton` likely passes the same
+string, so it would **not** have caught the 2026-08-02 case. Project-unique
+labels (`"SWTEST-PARAMS"`) are the caller discipline the scheme depends on.
+
+Keep it application-facing in intent but implemented inside `nvmparams`, since
+the check has to happen during pool init where the application has no hook.
+The API is mission-critical with a decade of production use, so the additive,
+opt-in shape matters more than the feature itself.
 
 ## NVM-persisted parameters
 
