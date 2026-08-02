@@ -89,6 +89,46 @@ list.
 | **W4** | Sense-triggered / sense-instrumented cycling | Blocked on the SENSE-inputs feature; gets its own D-log |
 | **W5** | HIL automation backdoor in `v_debug_menu_service()` | May need the user's `uart_stream` API; reference impl in `LED_Strip_Controller_G474` |
 | **W6** | Multi-sector wear levelling for `nvmparams` | Noted by the user as a known gap in the API |
+| **W7** | **Arbitrary square-wave generator** — DMA feeds CCR from a preloaded edge buffer, so a cycle need not be evenly spaced | Long-term; sketch below. Interrupts stay enabled alongside DMA for event recording |
+
+### W7 — arbitrary-waveform cycling via DMA *(sketch, not a design)*
+
+Recorded 2026-08-02 while fresh; no design work has started.
+
+**The idea.** Today's cycle engine is PWM-shaped: `on_time + off_time` *is* the
+period, and every cycle is identical. Instead, preload a buffer of CCR values and
+let DMA transfer the next one into the channel's CCR on each compare match. The
+sequence becomes arbitrary — 10 ms on, 50 ms off, 100 ms on, 20 ms off, … up to
+the buffer length — and on buffer exhaustion the DMA re-arms and replays from the
+start. The CPU is out of the edge path entirely.
+
+**Why it fits what is already here.** The ISR's current job is exactly "write the
+next compare value into CCR"; DMA does that same store without waking the core.
+`CCxIE` and `CCxDE` can both be set, so the compare still raises its interrupt for
+event recording (the REPL's **S6**/**S8** event queue) while DMA handles the
+rearm. G0B1 has twelve DMA channels across DMA1/DMA2 with DMAMUX, so four
+independent switch channels are affordable.
+
+**The gotcha to remember, because it is not obvious.** DMA stores a value; it
+cannot add. The buffer therefore holds *absolute* CCR values, and on the second
+pass those absolute times are all in the past. Two ways out, with very different
+costs:
+
+- **Re-base in software** on the DMA transfer-complete interrupt: add the total
+  sequence duration to every entry, once per pass. O(N) per pass, N small, at
+  roughly 1 Hz — genuinely cheap, and it preserves everything below.
+- **ARR-modulated burst DMA** (the classic STM32 arbitrary-waveform trick, writing
+  ARR+CCR pairs through `DCR`/`DMAR`) is relative by construction and needs no
+  re-basing — **but it would destroy the free-running 32-bit timebase.** `ARR` is
+  `0xFFFFFFFF` today, and that is precisely what makes the cycler's modulo-2³²
+  compare arithmetic coherent *and* what makes `TIM2->CNT` usable as the shared
+  1 µs timestamp source (see **S8** in
+  [`hil-repl-plan.md`](hil-repl-plan.md)). Taking this route means moving the
+  timestamp base to another timer first.
+
+So the re-basing approach is almost certainly the one to take, and the reason is
+worth writing down now: TIM2 is not just the switch driver, it is the project's
+clock.
 
 ---
 
