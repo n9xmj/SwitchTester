@@ -69,6 +69,7 @@ exists.
 | **S8** | 🟡 | Timestamp source and capture point — `TIM2->CNT`, sampled at event time |
 | **S9** | 🔵 | Event subscription / arming — which events report, and when *(phase 2)* |
 | **S10** | 🔴 | Minimum cycle-period guard — where enforced, and reject vs clamp |
+| **S11** | 🟡 | Host receive contract — dispatch by sigil, never by position |
 | **I1** | 🟡 | Hook point — where the 0xDA intercept lives |
 | **I2** | 🟡 | Op-table home + registration-time collision checking |
 | **I3** | 🟡 | Build gate for release images |
@@ -122,6 +123,11 @@ Established; do not re-litigate unless explicitly reopened.
   alone microseconds. This retires the throughput objection to ASCII framing
   (**D8**) — at ~2 events/second, frame size is irrelevant — and it is what
   **S10**'s minimum-period guard formalises.
+- **The link is genuinely full duplex.** `uart_stream`'s ISR services `RXNE` and
+  `TXE` in the same handler against two separate rings, with no coupling: the
+  device transmitting does not impede reception, and vice versa. Verified in
+  `uart_stream.c` (the RX drain loop and the TX fill loop are independent). This
+  is what makes **S11** a host-parser question rather than a wire problem.
 - **Async event sources will be ISR context.** Cycling transitions come from the
   TIM2 compare ISR (priority 0); sense comparator edges will come from EXTI
   (priority 3). Neither can call `printf`, so **S6** is not optional.
@@ -167,6 +173,53 @@ hold.
 
 **Leaning:** take all four. Combined they are perhaps thirty lines and one empty
 function.
+
+**Resolution:** _pending_
+
+---
+
+### S11 — Host receive contract
+
+**Status:** 🟡 · **Needs user:** no
+
+**The identified window is real, and it is harmless.** The host commits to
+sending a command; in the same one-or-two-byte-time window the device dequeues an
+event and emits it. The host then reads `*EVT …` where it might have expected its
+response.
+
+Nothing is corrupted. The link is full duplex — two rings, two directions, no
+coupling — so a device→host event frame and a host→device command frame in flight
+simultaneously do not interfere on the wire. The device's own invariant also
+survives: emission happens only in the main loop, one whole frame at a time, so
+an event can precede or follow a response but can never land inside one.
+
+What the window actually breaks is a *host parser that identifies a response by
+position* — the common pyserial idiom of "write the command, read one line, that
+line is the answer".
+
+**Options considered:**
+
+- **A `ready for events` / `stop events` token pair.** Host declares when async
+  is welcome. This does not close the window: the `stop events` token races the
+  device's in-flight emit exactly as before, so the host must *still* handle a
+  straggler arriving after it asked for silence. It adds a two-state mode that
+  can disagree between the ends, and while events are suppressed the device is
+  queueing them anyway — so the deferral has moved, not disappeared.
+- **Sigil dispatch as a contract.** The host reads lines and routes by first
+  character: `*` and `#` go to handlers, and the first `=OK` / `!ERR` line is the
+  response to the outstanding command. The window becomes a non-event because no
+  code anywhere assumes positional ordering.
+
+**Leaning / recommendation:** sigil dispatch, stated as a protocol contract
+rather than left as an implementation detail of the runner — *the host must be
+prepared for an async frame at any point at which it is reading device output.*
+This is already **I5** obligation 1 seen from the host side, and it is why that
+obligation applies to the phase-1 runner even though phase 1 emits no events: a
+runner written to the contract needs no change when phase 2 lands, and one
+written to positional reads has to be rewritten.
+
+Note that the **S6** REPL-mode enqueue gate bounds this further — outside REPL
+mode no event exists to race with anything.
 
 **Resolution:** _pending_
 
@@ -269,11 +322,18 @@ have to be answered together:
    reset? If events are enqueued while no host is attached, the queue fills and
    the dropped-count is meaningless by the time anyone reads it.
 
-**Leaning / recommendation:** default **off**; a subscription mask op that takes
-a class and a channel set; subscriptions cleared on REPL exit, so the queue is
-never accumulating for an absent host and re-entry always starts from a known
-state. The host arms what it wants immediately after `<HRN v1 RDY>`. Not
-persisted to NVM — this is session state, not configuration.
+**Largely superseded by the S6 REPL-mode gate.** With enqueue disabled outside
+REPL mode, "default off" and "cleared on exit" are both satisfied structurally —
+the coarse subscription *is* REPL mode, and question 3 (lifetime) answers itself.
+What remains of this row is only the fine-grained part: whether a host that wants
+to watch one channel while three others cycle as background load can say so.
+
+**Leaning / recommendation:** phase 2 ships with the REPL-mode gate alone — all
+classes, all channels, reported whenever a host is attached. A per-class /
+per-channel mask op is added only if a real campaign wants it; at the intended
+~1 s cycle rate, filtering to save two frames a second is not worth an op, a
+mask, and the chance of a host silently filtering out the thing it came to
+measure. Never persisted to NVM — session state, not configuration.
 
 **Resolution:** _pending_
 
@@ -309,8 +369,22 @@ can preempt EXTI at priority 3 mid-enqueue. That needs either a short PRIMASK
 guard around the head advance or all event sources at one priority — the guard is
 a handful of cycles and does not constrain the priority map, so prefer it.
 
+**Enqueue is gated on REPL mode.** While the debug menu owns the console, no
+interrupt or background process may push into the queue at all; the gate flips to
+allowed on REPL entry and back on exit. This is a single flag tested at the top of
+the enqueue path, and it settles several things at once: nothing accumulates for
+an absent host, the queue cannot overflow while nobody is listening, a dropped
+count is only ever attributable to a live session, and the ISR cost outside REPL
+mode is one predictable-branch test.
+
+**Corollary — reset the queue on entry, not just enable it.** A previous REPL
+session can exit with events still queued. Without a head/tail/dropped-counter
+reset at entry, those stale events are emitted into the new session carrying
+timestamps from the old one, which is exactly the sort of thing that produces an
+unreproducible measurement nobody can explain. Reset costs three stores.
+
 **Leaning:** 64 records (512 bytes), statically allocated, PRIMASK-guarded
-enqueue, formatted at dequeue.
+enqueue, gated on REPL mode, reset at entry, formatted at dequeue.
 
 **Resolution:** _pending_
 
@@ -321,8 +395,37 @@ enqueue, formatted at dequeue.
 **Status:** 🔵 — phase 2, design below is the standing plan · **Needs user:** no
 
 Locked by **Q1**: async frames are emitted only between the end of one response
-frame and the start of the next — never inside one. So the flush point is the top
-of the REPL's wait-for-command state, before the read blocks.
+frame and the start of the next — never inside one.
+
+**Drain structure.** The executive loop makes the deferral rule structural rather
+than something that has to be remembered at each emit site:
+
+```c
+for (;;)
+{
+    if (<lead char available from host>)
+    {
+        <capture the rest of the command frame>
+        <dispatch on opcode>
+        <emit the response frame>
+    }
+
+    <service the event queue -- emit at most ONE event frame>
+}
+```
+
+Two properties fall out of this ordering and both are wanted. Command service
+comes first, so a pending command is never delayed behind a backlog. And exactly
+one event per iteration — rather than draining the whole queue — bounds the
+latency a command can suffer to a single frame time instead of up to 64 of them;
+when the host is idle the loop spins freely and a backlog still drains as fast as
+the link allows.
+
+**One hazard in the capture step.** `<capture the rest of the command frame>` is
+a blocking read. A host that sends a lead character and then stalls would wedge
+the device there, so **S3**'s idle timeout must apply *inside* frame capture, not
+only at the wait-for-command read — otherwise the anti-wedge guarantee has a hole
+exactly one byte wide.
 
 Two consequences that the rule creates and that need explicit answers:
 
@@ -809,22 +912,24 @@ a whole run with nobody noticing.
   3. Op table + collision scan (**I2**), ops in **D6** order
   4. Cycle-period floor (**S10**) at the REPL setter and at cycle start
   5. Bench: enter, `V`, `L`, one op of each shape, exit by all three routes
-  6. `scripts/` host runner (**T1**) — skipping unknown sigils from day one
+  6. `scripts/` host runner (**T1**) — sigil dispatch from day one (**S11**)
   7. Design-doc sync (**T2**)
 
 - **Phase 2 — async events:**
-  8. Event ring + ISR enqueue + real flush (**S6**, **S7**, **S8**); the cycling
-     ISR is the first producer
-  9. Subscription mask (**S9**)
-  10. Bench: arm events on a slow cycle, force an overflow deliberately and
-      confirm `*OVF`, confirm no event ever lands inside a response frame
+  8. Event ring + REPL-mode enqueue gate + one-per-iteration drain (**S6**,
+     **S7**, **S8**); the cycling ISR is the first producer
+  9. Fine-grained subscription mask (**S9**) — only if a campaign asks for it
+  10. Bench: events on a slow cycle, force an overflow deliberately and confirm
+      `*OVF`, confirm no event ever lands inside a response frame, and confirm
+      the runner survives an event arriving in the command-commit window (**S11**)
 
 - **One producer shape, forever.** Every async source added later (sense EXTI,
   ADC completion) enqueues the same 8-byte record and inherits framing,
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 4 · 🟡 14 · 🔴 5 · 🔵 4 (27 rows) + 5 wish rows (one
-  promoted). **Next ID: S10**, then **D6** — the two rows gating phase 1.
+- **Plan status:** 🟢 4 · 🟡 15 · 🔴 5 · 🔵 4 (28 rows) + 5 wish rows (one
+  promoted). **Next ID: S10** — still unanswered, and with **D6** the only thing
+  gating phase 1.
 
 **End of hil-repl-plan.md**
