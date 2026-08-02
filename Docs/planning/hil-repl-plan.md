@@ -24,11 +24,20 @@ on `HARNESS_ENTER` (0xDA), left on `HARNESS_EXIT` (0xA5), `Q`, or an idle
 timeout — that bypasses the menu system entirely and speaks a line-oriented,
 framed protocol instead.
 
-v1 scope is the drive side only: force/pulse/toggle the four switch outputs,
+The channel carries **two kinds of device→host traffic** (**Q1**, locked):
+*command responses*, which answer exactly one host request, and *async events*,
+which the device emits on its own — a cycled output changing state, a sense
+comparator transitioning, captured ADC data. Async frames never interleave into a
+response frame: they are queued while a transaction is in flight and flushed when
+the REPL returns to wait-for-command. Both frame kinds carry a lead identifier so
+the host can tell them apart, and async frames are timestamped at the moment of
+the event (**S8**).
+
+v1 op scope is the drive side only: force/pulse/toggle the four switch outputs,
 start/stop/configure cycling, read back state, and assert on the transport error
-counters. Sense-channel ops come later, when the sense design exists. The
-protocol is deliberately ASCII and line-oriented — a binary framed transport is
-wish-list material (**W1**), not v1.
+counters. Sense-channel *ops* come later, when the sense design exists — but the
+async *machinery* is v1, because retrofitting unsolicited output into a strict
+request/response protocol forces a v2 of every host parser already written.
 
 ---
 
@@ -36,23 +45,28 @@ wish-list material (**W1**), not v1.
 
 | ID | Status | Subject (one line) |
 |----|--------|--------------------|
+| **Q1** | 🟢 | **What the host runner must do** — command/response *and* async events, both v1 |
 | **D1** | 🟢 | Entry / exit protocol — 0xDA in, 0xA5 / `Q` / idle timeout out |
 | **D2** | 🟡 | Command namespace — full `0x20..0x7E`, case-sensitive (drop `toupper()`) |
-| **D3** | 🔴 | Response framing — uniform terminated envelope vs per-op free-form |
-| **D4** | 🟡 | Line grammar — first char is the command, remainder is the argument string |
+| **D3** | 🟡 | Frame identity — how the host tells a response from an async event |
+| **D4** | 🟡 | Host→device grammar — freeform opcode+args vs fixed packet with length/CRC |
 | **D5** | 🟡 | Prompt / echo policy while in harness mode |
 | **D6** | 🔴 | v1 op set — which commands actually ship |
 | **D7** | 🟡 | Module name and file home |
+| **D8** | 🔴 | **Wire encoding — ASCII/hex lines vs binary records** |
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
 | **S2** | 🟡 | Cooperative pumping and re-entrancy vs `v_debug_menu_service()`'s lock |
 | **S3** | 🟡 | Idle-timeout value and what state the tester is left in |
 | **S4** | 🔴 | Behaviour while channels are cycling — entry, NVM commit deferral, exit |
 | **S5** | 🟡 | Transport error counters as an assertable builtin |
+| **S6** | 🟡 | Async event queue — ISR-safe fixed records, formatted at dequeue |
+| **S7** | 🟡 | Deferral rule and queue-overflow policy (drop + dropped-count) |
+| **S8** | 🟡 | Timestamp source and capture point — `TIM2->CNT`, sampled at event time |
+| **S9** | 🔴 | Event subscription / arming — which events report, and when |
 | **I1** | 🟡 | Hook point — where the 0xDA intercept lives |
 | **I2** | 🟡 | Op-table home + registration-time collision checking |
 | **I3** | 🟡 | Build gate for release images |
 | **I4** | 🟡 | Line-buffer sizing and static (not stack) allocation |
-| **Q1** | 🔴 | **What must the host runner actually do?** — drives **D6** and most of the rest |
 | **T1** | 🔴 | Host-side Python runner |
 | **T2** | 🔴 | Sync decisions back into `SwitchTester-Design.md` |
 | **T3** | 🔵 | Promote the REPL to `G0B1_Skeleton` alongside `uart_stream` |
@@ -61,8 +75,8 @@ wish-list material (**W1**), not v1.
 
 | ID | Subject |
 |----|---------|
-| **W1** | Binary framed transport — length + COBS + CRC, for bulk or timing-critical traffic |
-| **W2** | Asynchronous event push — tester emits unsolicited records (edge timestamps, cycle completions) |
+| **W1** | Binary bulk-payload variant — length + COBS + CRC for ADC capture streams, if **D8** goes ASCII |
+| **W2** | ~~Async event push~~ — **promoted to v1** (**Q1**); machinery is **S6**–**S9** |
 | **W3** | Sense-channel ops — blocked on the sense design, which does not exist yet |
 | **W4** | Harness on a *second* UART so the console stays human while a script drives |
 | **W5** | Scripted sequence upload — host pushes a small program the tester runs unattended |
@@ -90,6 +104,14 @@ Established; do not re-litigate unless explicitly reopened.
   `u32_switch_out_pulse_remaining`, `v_switch_cycle_start/stop/stop_all`,
   `u8_switch_cycle_running`, `u8_switch_cycle_any_running`. No new plumbing
   needed to expose drive control — only argument parsing and response framing.
+- **Two timebases exist, and they are not equivalent.** `SYSTEM_TICK()` is
+  `HAL_GetTick()` — **1 ms** resolution (`PERIODIC_TIMER_INTERVAL_MS` is 1).
+  `TIM2->CNT` is free-running, `Prescaler = 63` on a 64 MHz clock → **1 µs** per
+  tick, `Period = 0xFFFFFFFF`, wrapping every **71.6 minutes**. TIM2 is already
+  the cycling timebase and is never stopped. **S8** turns on this difference.
+- **Async event sources will be ISR context.** Cycling transitions come from the
+  TIM2 compare ISR (priority 0); sense comparator edges will come from EXTI
+  (priority 3). Neither can call `printf`, so **S6** is not optional.
 - **Identity macros available** for a version/ping builtin: `PRODUCT_NAME`,
   `PLATFORM_NAME`, `FIRMWARE_VERSION`, `BUILD_CONFIG` (in `device_config.h`).
   There is **no** `BUILD_NUMBER` here, unlike the reference project.
@@ -100,62 +122,215 @@ Established; do not re-litigate unless explicitly reopened.
 
 ## Detail sections
 
-### Q1 — What must the host runner actually do?
+### D8 — Wire encoding
 
-**Status:** 🔴 · **Needs user:** yes
+**Status:** 🔴 · **Needs user:** yes — the largest remaining fork
 
-**Question:** What campaign is the host script running? The op set (**D6**), the
-response format (**D3**) and whether asynchronous push (**W2**) is v1 or v2 all
-fall out of this, and guessing wrong means designing the protocol twice.
+**Question:** Are frames ASCII (printable lines, hex for any binary payload), or
+binary records (length-prefixed or COBS-framed, with a CRC)?
 
-Three plausible shapes, which pull in different directions:
+**Options considered:**
 
-- **Soak driver** — host configures the cycle parameters, starts channels, comes
-  back hours later and asks "are you still cycling, how many transitions, any
-  transport errors?" Needs counters and a status query; needs almost no
-  throughput; wants **W2** never.
-- **Step sequencer** — host drives the tester step by step, asserting the DUT's
-  reaction after each step. Needs low latency, a strict command→response
-  handshake, and every command to return a parseable completion.
-- **Measurement harness** — host wants timestamped edges back, which means the
-  tester must emit records the host did not individually ask for. That is **W2**,
-  and if it is v1 the framing decision (**D3**) has to accommodate unsolicited
-  output from the start.
+- **ASCII lines, hex payloads.** Self-delimiting on CR — no escaping problem, no
+  framing layer, no CRC strictly needed because a truncated line fails to parse.
+  A whole session is readable in Tera Term, including the async events, which
+  matters a lot while debugging the REPL itself. Costs 2× on the wire for binary
+  data and needs `printf`/`strtoul` on both ends.
+- **Binary records.** Half the bytes, no formatting cost in the flush path, exact
+  field widths. But it needs a real framing layer (a length prefix resynchronises
+  badly after a lost byte; COBS does not, which is why **W1** names it), needs a
+  CRC because nothing else detects truncation, and makes the shared console
+  unreadable to a human — you would be debugging the protocol through a hex dump
+  on a channel you also use as the menu.
+- **ASCII framing, binary payload.** The worst of both: still needs escaping or
+  hex for the payload, still unreadable, still needs a CRC.
 
-**Leaning / recommendation:** design for the **step sequencer**, which is the
-strict superset of the soak driver, and keep **W2** out of v1 — but with **D3**
-choosing a frame shape that can carry an unsolicited record later without
-breaking existing host parsers.
+**Throughput check, so this is decided on numbers.** At 921600 baud 8N1 the link
+carries ~92 kB/s. A 32-byte ASCII event frame is ~350 µs. A channel cycling at a
+1 ms half-period emits 2000 events/s → ~70 % of the link, which is already
+uncomfortable; binary would halve it to ~35 %. But that is a pathological cycle
+rate for a switch tester, and **S9**'s subscription model is the real answer to
+event floods — not saving bytes on frames nobody asked for.
+
+**Leaning / recommendation:** **ASCII lines with hex payloads** for v1. The one
+case that genuinely justifies binary is bulk ADC capture, which is sense-side
+work that does not exist yet; **D3**'s frame identifier leaves room to add a
+binary frame kind later without disturbing the ASCII ones (**W1**). Being able to
+watch a live host session in a terminal window is worth a lot during bring-up,
+and this protocol has to be debugged before it can be trusted.
 
 **Resolution:** _pending_
 
 ---
 
-### D3 — Response framing
+### D3 — Frame identity
 
-**Status:** 🔴 · **Needs user:** yes
+**Status:** 🟡 · **Needs user:** no
 
-**Question:** Does every command return a uniform, terminated envelope, or does
-each op print whatever suits it, the way the reference implementation does?
+**Question:** How does the host distinguish a command response from an async
+event, and how does it know a frame is complete?
+
+Locked by **Q1**: both frame kinds carry a lead identifier, async is never
+inserted into a response frame, and a response is a bounded thing the host reads
+to completion.
 
 **Options considered:**
 
-- **Per-op free-form** (reference behaviour). Each op prints its own thing;
-  `<HRN OPS>` … `<HRN OPS END>` brackets the one multi-line case. Cheapest to
-  write; the host needs a bespoke parser per command and has no general way to
-  know a response is complete.
-- **Uniform single-line envelope** — every command answers with exactly one line,
-  `<OK …>` or `<ERR code=… …>`. Host reads one line, done. Multi-line data has to
-  be squeezed into key=value pairs or split across several commands.
-- **Uniform bracketed envelope** — `<OK cmd=X>` … payload lines … `<END>`. Host
-  always reads until `<END>`; payload can be any number of lines; an unsolicited
-  **W2** record is just a frame with a different opening tag, so existing parsers
-  can skip what they don't recognise instead of desynchronising.
+- **Per-op free-form** (reference behaviour) — no general completion signal, a
+  bespoke parser per command. Rejected: it cannot express "this is an event, not
+  your answer" at all.
+- **Uniform single-line frames** — one line per frame, sigil in column 0. Trivial
+  to parse and to resynchronise. Multi-line data must be split across frames or
+  packed into key=value pairs.
+- **Bracketed multi-line frames** — opening tag, payload lines, `<END>`. Handles
+  a four-channel state dump naturally; the host always reads to the terminator.
 
-**Leaning / recommendation:** the **bracketed envelope**. It costs two extra
-`printf`s per command and it is the only one of the three that survives contact
-with multi-line output and future async push. The single-line form is tempting
-now and painful the first time an op wants to dump four channels of state.
+**Leaning / recommendation:** bracketed frames with a **sigil as the first
+character of every device→host line**, so a host that loses sync recovers at the
+next line rather than the next frame:
+
+| Sigil | Frame kind |
+|-------|------------|
+| `=` | command response — `=OK cmd=R` … payload … `=END` |
+| `!` | command error — `!ERR cmd=R code=RANGE arg=2` (always single-line) |
+| `*` | async event — `*EVT t=<µs> src=SW ch=A val=1` |
+| `#` | human/log noise — anything not part of the protocol; host ignores the line |
+
+The `#` row is the one that is easy to forget and expensive to omit: something
+will eventually `printf` a stray line from a job or an error path while the REPL
+is active, and without a "not for you" sigil that line desynchronises the host
+mid-frame. Prefixing it makes stray output harmless instead of fatal.
+
+**Resolution:** _pending_
+
+---
+
+### S9 — Event subscription / arming
+
+**Status:** 🔴 · **Needs user:** yes
+
+**Question:** Which events are reported, and from when? Three sub-questions that
+have to be answered together:
+
+1. **Default off or default on?** If every cycling transition reports
+   unconditionally, a soak run at a 1 ms half-period floods the link with data
+   nobody asked for and overflows the queue continuously (**S7**).
+2. **Granularity.** Per event *class* (switch transitions / sense edges / ADC),
+   per channel, or the cross product? Per-class is one bitmask and is probably
+   enough; per-channel matters if the host wants to watch one DUT input while
+   three others cycle as background load.
+3. **Lifetime.** Does a subscription survive REPL exit and re-entry? Survive
+   reset? If events are enqueued while no host is attached, the queue fills and
+   the dropped-count is meaningless by the time anyone reads it.
+
+**Leaning / recommendation:** default **off**; a subscription mask op that takes
+a class and a channel set; subscriptions cleared on REPL exit, so the queue is
+never accumulating for an absent host and re-entry always starts from a known
+state. The host arms what it wants immediately after `<HRN v1 RDY>`. Not
+persisted to NVM — this is session state, not configuration.
+
+**Resolution:** _pending_
+
+---
+
+### S6 — Async event queue
+
+**Status:** 🟡 · **Needs user:** no
+
+Events originate in ISR context — TIM2 compare for cycling transitions (priority
+0), EXTI for sense edges later (priority 3). `printf` in an ISR is out of the
+question: it is not reentrant, it would block on the TX ring, and it would run
+formatting at priority 0.
+
+So the queue holds **fixed-size binary records, not strings**, and formatting
+happens in the main loop at flush time:
+
+```c
+typedef struct {
+    uint32_t u32_timestamp;   /* TIM2->CNT at the event -- S8            */
+    uint8_t  u8_class;        /* SW transition / sense edge / ADC / ...  */
+    uint8_t  u8_channel;
+    uint16_t u16_value;
+} repl_event_t;               /* 8 bytes                                 */
+```
+
+An 8-byte record in a power-of-two ring is a single-producer/single-consumer
+structure with the same discipline as `uart_stream`'s rings — producer (ISR)
+writes `head`, consumer (main loop) writes `tail`, disjoint aligned `volatile`
+indices, no critical section needed on M0+. Multiple ISR sources at *different*
+priorities do break the single-producer assumption, though: TIM2 at priority 0
+can preempt EXTI at priority 3 mid-enqueue. That needs either a short PRIMASK
+guard around the head advance or all event sources at one priority — the guard is
+a handful of cycles and does not constrain the priority map, so prefer it.
+
+**Leaning:** 64 records (512 bytes), statically allocated, PRIMASK-guarded
+enqueue, formatted at dequeue.
+
+**Resolution:** _pending_
+
+---
+
+### S7 — Deferral rule and overflow policy
+
+**Status:** 🟡 · **Needs user:** no
+
+Locked by **Q1**: async frames are emitted only between the end of one response
+frame and the start of the next — never inside one. So the flush point is the top
+of the REPL's wait-for-command state, before the read blocks.
+
+Two consequences that the rule creates and that need explicit answers:
+
+- **Transmit time is not event time.** A queued event may be emitted milliseconds
+  after it happened. This is exactly why **S8** insists the timestamp is captured
+  at the event, in the ISR — if it were sampled at flush the queueing latency
+  would be silently folded into the measurement, which defeats the purpose of
+  timestamping at all.
+- **The queue can overflow.** A long-running command plus a fast cycle rate fills
+  64 records quickly. Silent loss is the failure mode **S1** exists to prevent, so
+  overflow must be *reported*, not just survived.
+
+**Options for overflow:** drop-newest (cheap, keeps the oldest history),
+drop-oldest (keeps the most recent, needs a tail advance in the ISR), or block
+(unacceptable — this is an ISR).
+
+**Leaning:** **drop-newest** with a saturating dropped-counter, and emit a
+`*OVF n=<count>` frame at the head of the next flush whenever the counter is
+non-zero, then clear it. The host then knows precisely that its event record has
+a hole and how big, rather than quietly receiving an incomplete history. Combined
+with **S9**'s default-off subscriptions, overflow should be rare in practice.
+
+**Resolution:** _pending_
+
+---
+
+### S8 — Timestamp source and capture point
+
+**Status:** 🟡 · **Needs user:** no — but it is a correction, not a detail
+
+**Question:** What clock timestamps an async event, and when is it sampled?
+
+`SYSTEM_TICK()` / `HAL_GetTick()` is the obvious choice and is the wrong one
+here: **1 ms resolution**. A switch bounce is tens of microseconds, and the whole
+point of this tester is measuring what the DUT does at switch edges. A 1 ms
+timestamp cannot distinguish a bounce from a clean edge, and the drive side is
+already programmed in microseconds (`u32_on_time_us` / `u32_off_time_us`).
+
+`TIM2->CNT` is free-running at **1 µs**, 32-bit, never stopped, and is *already*
+the timebase the cycling engine schedules against — so a switch-transition event
+and the compare that caused it are expressed in the same units, on the same
+clock, with no conversion.
+
+**Two refinements worth taking:**
+
+- For a **cycling transition**, do not read `CNT` in the ISR — the `CCR` value
+  that fired *is* the exact edge time, unaffected by interrupt latency. Reading
+  `CNT` instead folds in however long the ISR took to be entered.
+- `TIM2->CNT` wraps every **71.6 minutes**, which is well inside a soak run. The
+  device should not try to extend it; the host unwraps trivially by watching for
+  a decrease in a monotonic event stream. Document the wrap rather than hiding it.
+
+**Leaning:** `TIM2->CNT` (or the firing `CCR`) as a raw 32-bit microsecond
+stamp, captured in the ISR at enqueue, wrap documented and handled host-side.
 
 **Resolution:** _pending_
 
@@ -238,20 +413,35 @@ cases of the builtin letters. Loud failure beats a namespace booby trap.
 
 ---
 
-### D4 — Line grammar
+### D4 — Host→device grammar
 
 **Status:** 🟡 · **Needs user:** no
 
-First non-space character is the command; the remainder, leading whitespace
-trimmed, is handed to the op as a single `const char *`. Each op parses its own
-arguments. CR or LF terminates; empty lines are ignored.
+**Question:** Does the host→device direction get the same rigour as device→host —
+a fixed packet with length, opcode, sub-opcode, validation and an EOT marker — or
+a freeform opcode plus argument text?
 
-This is the reference's grammar and it is fine. The one thing worth adding is a
-shared numeric-argument helper so `<ch>` parsing and range-checking is not
-reimplemented (and mis-implemented) in six ops.
+**The asymmetry is the point.** The two directions have different consumers and
+should not be assumed to need the same format:
 
-**Leaning:** adopt as described, plus a `b_harness_arg_u32()` helper that reports
-"missing" and "out of range" distinctly, so **S1**'s error responses can say which.
+- **Device→host is parsed by a machine** and is where a mis-parse silently
+  corrupts a test result. That direction earns strict framing (**D3**).
+- **Host→device is parsed by a 500-line C parser on an MCU**, and is the
+  direction a human types by hand when debugging the REPL from Tera Term. A
+  length-prefixed CRC'd packet makes that impossible without a tool, and buys
+  little: a corrupted command is *already* rejected rather than partially
+  executed (**S1**), and the transport counts its own ORE/FE/NE/PE (**S5**).
+
+**Leaning:** freeform — first non-space character is the opcode, the remainder
+(leading whitespace trimmed) goes to the op as a single `const char *`, CR or LF
+terminates, empty lines ignored. Sub-opcodes, where a command needs one, are just
+the first argument token (`C 1 start`) rather than a protocol-level field. Add a
+shared `b_repl_arg_u32()` helper so channel parsing and range-checking is not
+reimplemented — and mis-implemented — in six ops, and so **S1**'s error frames
+can distinguish "missing" from "out of range".
+
+If a command ever needs to carry bulk data, it carries it as hex in the argument
+text (the reference does exactly this), which keeps the grammar unchanged.
 
 **Resolution:** _pending_
 
@@ -465,6 +655,40 @@ it portable — and the reason **D7** wants the HuIL routines kept out.
 
 ---
 
+### Q1 — What the host runner must do *(resolved)*
+
+**Status:** 🟢
+
+The channel carries **two transaction kinds**, and the protocol is designed for
+both from v1:
+
+1. **Command / response.** Host sends one command, device answers with one
+   bounded response frame. Responses follow a fixed, easily parseable format.
+2. **Async events.** Device-originated transmissions the host did not request —
+   a cycled output changing state, a sense comparator transitioning, captured ADC
+   data, and any other system event the host wants to know about.
+
+**Rules locked with it:**
+
+- An async transmission is **never inserted into a response frame**. It occurs
+  only between the end of one response frame and the start of the next.
+- Both kinds carry a **lead disambiguation header**, with different identifiers,
+  so the host always knows which it is reading (**D3**).
+- Async events are **timestamped** (**S8**).
+- Events arising during a command/response exchange are **queued** and flushed
+  when the REPL returns to wait-for-command (**S6**, **S7**).
+
+**Rationale:** the earlier leaning — build a step sequencer and defer async push
+to v2 — was wrong for this instrument. A switch tester whose host cannot see
+*when* an edge happened is measuring nothing; and unsolicited output cannot be
+retrofitted into a strict request/response protocol without invalidating every
+host parser written against v1. Designing the frame identity for it now costs one
+sigil.
+
+**Consequence:** wish row **W2** is promoted into v1 as **S6**–**S9**.
+
+---
+
 ### D1 — Entry / exit protocol *(resolved)*
 
 **Status:** 🟢
@@ -502,16 +726,24 @@ a whole run with nobody noticing.
 - **The cycler is unverified on hardware.** If REPL bring-up and cycler
   bench-testing happen in the same session, a failure is ambiguous — prefer
   proving the cycler by hand at the menu first.
-- **Implementation phase sketch** (once **D3**/**D6**/**Q1** are green):
-  1. `hil_repl.{c,h}` — executive, line reader, builtins, framing (**D3**)
+- **Implementation phase sketch** (once **D8**/**D6**/**S9** are green):
+  1. `hil_repl.{c,h}` — executive, line reader, builtins, frame emit (**D3**)
   2. `debug_menu.c` intercept (**I1**) + `debug_config.h` gate (**I3**)
   3. Op table + collision scan (**I2**), ops in **D6** order
-  4. Bench: enter, `V`, `L`, one op of each shape, exit by all three routes
-  5. `scripts/` host runner (**T1**)
-  6. Design-doc sync (**T2**)
+  4. Event ring + ISR enqueue + flush point (**S6**, **S7**, **S8**) — the
+     cycling ISR is the first producer, which doubles as cycler verification
+  5. Subscription mask (**S9**)
+  6. Bench: enter, `V`, `L`, one op of each shape, arm events on a slow cycle,
+     force an overflow deliberately and confirm `*OVF`, exit by all three routes
+  7. `scripts/` host runner (**T1**)
+  8. Design-doc sync (**T2**)
 
-- **Plan status:** 🟢 2 · 🟡 11 · 🔴 6 · 🔵 1 (20 rows) + 5 wish rows.
-  **Next ID: Q1** — it gates **D6**, and **D3** should be taken with its answer
-  in hand.
+- **Two producers, one consumer, forever.** Every async source added later (sense
+  EXTI, ADC completion) enqueues the same 8-byte record and inherits framing,
+  timestamping and overflow accounting for free. That is the reason to build
+  **S6** now rather than when the sense work arrives.
+
+- **Plan status:** 🟢 3 · 🟡 15 · 🔴 6 · 🔵 1 (25 rows) + 5 wish rows (one
+  promoted). **Next ID: D8** — the encoding fork; **D6** and **S9** follow it.
 
 **End of hil-repl-plan.md**
