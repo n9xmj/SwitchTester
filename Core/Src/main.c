@@ -21,9 +21,9 @@
 #include "adc.h"
 #include "comp.h"
 #include "dac.h"
+#include "usart.h"
 #include "rtc.h"
 #include "tim.h"
-#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -106,6 +106,13 @@ int main(void)
   MX_DAC1_Init();
   MX_RTC_Init();
   MX_TIM14_Init();
+  MX_LPUART1_UART_Init();
+  MX_LPUART2_UART_Init();
+  MX_USART1_UART_Init();
+  MX_USART3_UART_Init();
+  MX_USART4_UART_Init();
+  MX_USART5_UART_Init();
+  MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
 
   v_stdio_retarget(&DEBUG_UART_HANDLE);
