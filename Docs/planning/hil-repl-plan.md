@@ -33,11 +33,16 @@ the REPL returns to wait-for-command. Both frame kinds carry a lead identifier s
 the host can tell them apart, and async frames are timestamped at the moment of
 the event (**S8**).
 
-v1 op scope is the drive side only: force/pulse/toggle the four switch outputs,
-start/stop/configure cycling, read back state, and assert on the transport error
-counters. Sense-channel *ops* come later, when the sense design exists — but the
-async *machinery* is v1, because retrofitting unsolicited output into a strict
-request/response protocol forces a v2 of every host parser already written.
+**Delivery is phased.** *Phase 1* is command/response only — no event queue, no
+async frames, no capture. *Phase 2* adds the async machinery. The split is a
+schedule decision, not a design one: phase 1 must be built so phase 2 drops in,
+and the specific obligations that buys are enumerated in **I5**, which is the row
+to check before writing any phase-1 code.
+
+Phase-1 op scope is the drive side only: force/pulse/toggle the four switch
+outputs, start/stop/configure cycling, read back state, and assert on the
+transport error counters. Sense-channel ops come later, when the sense design
+exists.
 
 ---
 
@@ -53,20 +58,22 @@ request/response protocol forces a v2 of every host parser already written.
 | **D5** | 🟡 | Prompt / echo policy while in harness mode |
 | **D6** | 🔴 | v1 op set — which commands actually ship |
 | **D7** | 🟡 | Module name and file home |
-| **D8** | 🔴 | **Wire encoding — ASCII/hex lines vs binary records** |
+| **D8** | 🟢 | Wire encoding — ASCII lines, hex for binary data, both directions |
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
 | **S2** | 🟡 | Cooperative pumping and re-entrancy vs `v_debug_menu_service()`'s lock |
 | **S3** | 🟡 | Idle-timeout value and what state the tester is left in |
 | **S4** | 🔴 | Behaviour while channels are cycling — entry, NVM commit deferral, exit |
 | **S5** | 🟡 | Transport error counters as an assertable builtin |
-| **S6** | 🟡 | Async event queue — ISR-safe fixed records, formatted at dequeue |
-| **S7** | 🟡 | Deferral rule and queue-overflow policy (drop + dropped-count) |
+| **S6** | 🔵 | Async event queue — ISR-safe fixed records, formatted at dequeue *(phase 2)* |
+| **S7** | 🔵 | Deferral rule and queue-overflow policy (drop + dropped-count) *(phase 2)* |
 | **S8** | 🟡 | Timestamp source and capture point — `TIM2->CNT`, sampled at event time |
-| **S9** | 🔴 | Event subscription / arming — which events report, and when |
+| **S9** | 🔵 | Event subscription / arming — which events report, and when *(phase 2)* |
+| **S10** | 🔴 | Minimum cycle-period guard — where enforced, and reject vs clamp |
 | **I1** | 🟡 | Hook point — where the 0xDA intercept lives |
 | **I2** | 🟡 | Op-table home + registration-time collision checking |
 | **I3** | 🟡 | Build gate for release images |
 | **I4** | 🟡 | Line-buffer sizing and static (not stack) allocation |
+| **I5** | 🟡 | **Async-readiness contract — what phase 1 must do so phase 2 is a drop-in** |
 | **T1** | 🔴 | Host-side Python runner |
 | **T2** | 🔴 | Sync decisions back into `SwitchTester-Design.md` |
 | **T3** | 🔵 | Promote the REPL to `G0B1_Skeleton` alongside `uart_stream` |
@@ -109,6 +116,12 @@ Established; do not re-litigate unless explicitly reopened.
   `TIM2->CNT` is free-running, `Prescaler = 63` on a 64 MHz clock → **1 µs** per
   tick, `Period = 0xFFFFFFFF`, wrapping every **71.6 minutes**. TIM2 is already
   the cycling timebase and is never stopped. **S8** turns on this difference.
+- **Intended rate profile (2026-08-02).** A typical full switch cycle is around
+  **1 second**, possibly longer. Edge timing and on/off time *resolution* need to
+  be **better than 1 ms**; the cycle *period* is never in the milliseconds, let
+  alone microseconds. This retires the throughput objection to ASCII framing
+  (**D8**) — at ~2 events/second, frame size is irrelevant — and it is what
+  **S10**'s minimum-period guard formalises.
 - **Async event sources will be ISR context.** Cycling transitions come from the
   TIM2 compare ISR (priority 0); sense comparator edges will come from EXTI
   (priority 3). Neither can call `printf`, so **S6** is not optional.
@@ -122,42 +135,75 @@ Established; do not re-litigate unless explicitly reopened.
 
 ## Detail sections
 
-### D8 — Wire encoding
+### I5 — Async-readiness contract
 
-**Status:** 🔴 · **Needs user:** yes — the largest remaining fork
+**Status:** 🟡 · **Needs user:** no — but it is the row phase 1 is judged against
 
-**Question:** Are frames ASCII (printable lines, hex for any binary payload), or
-binary records (length-prefixed or COBS-framed, with a CRC)?
+Phase 1 ships no async machinery. The risk is that phase-1 code makes phase 2 a
+refactor instead of an addition — and worse, that it invalidates host scripts
+already written. Four obligations prevent that. All four are close to free in
+phase 1; all four are expensive to retrofit.
 
-**Options considered:**
+1. **Emit sigils from the very first frame.** Every device→host line starts with
+   `=`, `!` or `#` (**D3**) even though `*` is unused in phase 1, and the phase-1
+   host runner (**T1**) must already skip lines whose sigil it does not
+   recognise. This is the one that actually matters: if phase 1 emits bare lines,
+   every host script written against it breaks the day the first `*EVT` appears.
+2. **Ops never `printf` directly.** They emit through a framing helper —
+   `v_repl_emit(...)` — so that phase 2 can add the "not inside a response frame"
+   interlock in exactly one place. Ops that write to stdout freely cannot be
+   fenced later without touching every op.
+3. **The flush call site exists in phase 1.** `v_repl_flush_events()` is called at
+   the top of the wait-for-command state and is an empty function. Zero cost, and
+   it fixes the one architectural point — *where* async is allowed to happen —
+   while the loop is still small enough to see whole.
+4. **Response frames are terminated in phase 1** (`=END`). Emitting async
+   "between frames" is only well defined if a frame has an end. A phase-1
+   response that just trails off gives phase 2 nowhere safe to insert.
 
-- **ASCII lines, hex payloads.** Self-delimiting on CR — no escaping problem, no
-  framing layer, no CRC strictly needed because a truncated line fails to parse.
-  A whole session is readable in Tera Term, including the async events, which
-  matters a lot while debugging the REPL itself. Costs 2× on the wire for binary
-  data and needs `printf`/`strtoul` on both ends.
-- **Binary records.** Half the bytes, no formatting cost in the flush path, exact
-  field widths. But it needs a real framing layer (a length prefix resynchronises
-  badly after a lost byte; COBS does not, which is why **W1** names it), needs a
-  CRC because nothing else detects truncation, and makes the shared console
-  unreadable to a human — you would be debugging the protocol through a hex dump
-  on a channel you also use as the menu.
-- **ASCII framing, binary payload.** The worst of both: still needs escaping or
-  hex for the payload, still unreadable, still needs a CRC.
+Explicitly *not* required in phase 1: the event record struct, the ring, the
+overflow counter, the subscription mask. Those are additive once the four above
+hold.
 
-**Throughput check, so this is decided on numbers.** At 921600 baud 8N1 the link
-carries ~92 kB/s. A 32-byte ASCII event frame is ~350 µs. A channel cycling at a
-1 ms half-period emits 2000 events/s → ~70 % of the link, which is already
-uncomfortable; binary would halve it to ~35 %. But that is a pathological cycle
-rate for a switch tester, and **S9**'s subscription model is the real answer to
-event floods — not saving bytes on frames nobody asked for.
+**Leaning:** take all four. Combined they are perhaps thirty lines and one empty
+function.
 
-**Leaning / recommendation:** **ASCII lines with hex payloads** for v1. The one
-case that genuinely justifies binary is bulk ADC capture, which is sense-side
-work that does not exist yet; **D3**'s frame identifier leaves room to add a
-binary frame kind later without disturbing the ASCII ones (**W1**). Being able to
-watch a live host session in a terminal window is worth a lot during bring-up,
-and this protocol has to be debugged before it can be trusted.
+**Resolution:** _pending_
+
+---
+
+### S10 — Minimum cycle-period guard
+
+**Status:** 🔴 · **Needs user:** yes
+
+**Question:** Cycle setters should refuse an absurdly short period —
+`on_time + off_time >= REPL_MIN_CYCLE_PERIOD_MS`, a definable constant, ~50 ms
+proposed. Two things need deciding, and they are related.
+
+**Where is it enforced?** The stated intent is "at least those done via REPL".
+That leaves three ways to reach a sub-threshold cycle anyway:
+
+- the debug menu, which sets the same parameters with no guard;
+- an NVM restore — and this project has already been bitten once by a pool whose
+  contents came from a *different* project (2026-08-02), so "the stored value is
+  sane" is not a safe assumption here;
+- a REPL-set value that was legal, followed by a menu edit that is not.
+
+The single choke point that catches all of them is `v_switch_cycle_start()` — no
+matter how the parameters got there, nothing cycles until it runs.
+
+**Reject or clamp?** Clamping silently runs a different test than the host asked
+for, which on a test instrument is the same class of error as a silently
+mis-parsed command (**S1**). Rejecting is consistent with everything else in this
+protocol.
+
+**Leaning / recommendation:** enforce in **both** places, for different reasons —
+a **reject at the REPL setter** so the host gets an immediate, specific error
+naming the offending value, and a **hard check at `v_switch_cycle_start()`** so
+the invariant genuinely holds regardless of path, including a foreign NVM pool.
+The menu keeps its unguarded setters for HuIL experimentation; it just cannot
+start a run that violates the floor. Constant lives in `device_config.h` beside
+the other tunables.
 
 **Resolution:** _pending_
 
@@ -207,7 +253,7 @@ mid-frame. Prefixing it makes stray output harmless instead of fatal.
 
 ### S9 — Event subscription / arming
 
-**Status:** 🔴 · **Needs user:** yes
+**Status:** 🔵 — phase 2 · **Needs user:** yes, when phase 2 opens
 
 **Question:** Which events are reported, and from when? Three sub-questions that
 have to be answered together:
@@ -235,7 +281,7 @@ persisted to NVM — this is session state, not configuration.
 
 ### S6 — Async event queue
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🔵 — phase 2, design below is the standing plan · **Needs user:** no
 
 Events originate in ISR context — TIM2 compare for cycling transitions (priority
 0), EXTI for sense edges later (priority 3). `printf` in an ISR is out of the
@@ -272,7 +318,7 @@ enqueue, formatted at dequeue.
 
 ### S7 — Deferral rule and overflow policy
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🔵 — phase 2, design below is the standing plan · **Needs user:** no
 
 Locked by **Q1**: async frames are emitted only between the end of one response
 frame and the start of the next — never inside one. So the flush point is the top
@@ -655,6 +701,36 @@ it portable — and the reason **D7** wants the HuIL routines kept out.
 
 ---
 
+### D8 — Wire encoding *(resolved)*
+
+**Status:** 🟢
+
+**ASCII in both directions**, with hex for any raw binary-coded data. Frames are
+printable lines, self-delimiting on CR — no escaping layer, no framing layer, and
+no CRC strictly required because a truncated line fails to parse rather than
+silently decoding to something plausible.
+
+**Options considered:** binary records (length-prefixed or COBS-framed with a
+CRC) would halve the bytes and remove formatting cost from the emit path, but
+need a real framing layer — a length prefix resynchronises badly after a lost
+byte, which is why **W1** names COBS specifically — and make the shared console
+unreadable to a human, on the very channel that also serves the debug menu.
+
+**Rationale.** The throughput argument that would have favoured binary evaporated
+once the rate profile was stated: a typical full cycle is ~1 second, so events
+arrive at ~2/second and frame size is irrelevant. What remains is the ability to
+watch an entire live host session — commands, responses and later events — in a
+terminal window, which is worth a great deal while bringing up a protocol that
+has to be trusted before it can be used to trust anything else.
+
+**Left open deliberately:** oscilloscope-style analog capture on the sense inputs
+would move real volumes of data and may justify revisiting this. **D3**'s frame
+sigil means a binary frame kind can be added alongside the ASCII ones without
+disturbing them — that is **W1**, and it is a bridge to cross when the sense
+design exists, not now.
+
+---
+
 ### Q1 — What the host runner must do *(resolved)*
 
 **Status:** 🟢
@@ -726,24 +802,29 @@ a whole run with nobody noticing.
 - **The cycler is unverified on hardware.** If REPL bring-up and cycler
   bench-testing happen in the same session, a failure is ambiguous — prefer
   proving the cycler by hand at the menu first.
-- **Implementation phase sketch** (once **D8**/**D6**/**S9** are green):
-  1. `hil_repl.{c,h}` — executive, line reader, builtins, frame emit (**D3**)
+- **Phase 1 — command/response** (needs **D6** and **S10** green):
+  1. `hil_repl.{c,h}` — executive, line reader, builtins, frame emit (**D3**),
+     honouring all four **I5** obligations from the first commit
   2. `debug_menu.c` intercept (**I1**) + `debug_config.h` gate (**I3**)
   3. Op table + collision scan (**I2**), ops in **D6** order
-  4. Event ring + ISR enqueue + flush point (**S6**, **S7**, **S8**) — the
-     cycling ISR is the first producer, which doubles as cycler verification
-  5. Subscription mask (**S9**)
-  6. Bench: enter, `V`, `L`, one op of each shape, arm events on a slow cycle,
-     force an overflow deliberately and confirm `*OVF`, exit by all three routes
-  7. `scripts/` host runner (**T1**)
-  8. Design-doc sync (**T2**)
+  4. Cycle-period floor (**S10**) at the REPL setter and at cycle start
+  5. Bench: enter, `V`, `L`, one op of each shape, exit by all three routes
+  6. `scripts/` host runner (**T1**) — skipping unknown sigils from day one
+  7. Design-doc sync (**T2**)
 
-- **Two producers, one consumer, forever.** Every async source added later (sense
-  EXTI, ADC completion) enqueues the same 8-byte record and inherits framing,
-  timestamping and overflow accounting for free. That is the reason to build
-  **S6** now rather than when the sense work arrives.
+- **Phase 2 — async events:**
+  8. Event ring + ISR enqueue + real flush (**S6**, **S7**, **S8**); the cycling
+     ISR is the first producer
+  9. Subscription mask (**S9**)
+  10. Bench: arm events on a slow cycle, force an overflow deliberately and
+      confirm `*OVF`, confirm no event ever lands inside a response frame
 
-- **Plan status:** 🟢 3 · 🟡 15 · 🔴 6 · 🔵 1 (25 rows) + 5 wish rows (one
-  promoted). **Next ID: D8** — the encoding fork; **D6** and **S9** follow it.
+- **One producer shape, forever.** Every async source added later (sense EXTI,
+  ADC completion) enqueues the same 8-byte record and inherits framing,
+  timestamping and overflow accounting for free. Phase 2 is where that machinery
+  gets built; **I5** is what keeps phase 1 from making it a refactor.
+
+- **Plan status:** 🟢 4 · 🟡 14 · 🔴 5 · 🔵 4 (27 rows) + 5 wish rows (one
+  promoted). **Next ID: S10**, then **D6** — the two rows gating phase 1.
 
 **End of hil-repl-plan.md**
