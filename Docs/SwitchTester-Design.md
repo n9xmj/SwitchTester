@@ -1,10 +1,11 @@
 # SwitchTester — Design Notes
 
-> Status: **manual switch control + timer-driven cycling implemented**
-> (debug-menu driven, NVM-persisted). Cycling builds clean but is **not yet
-> bench-verified**. The sense front-end and the automation backdoor are designed
-> but not built — each is banked for its own planning pass below.
-> Last touched 2026-08-01.
+> Status: **manual switch control, timer-driven cycling, and the `uart_stream`
+> console transport are implemented.** `uart_stream` is bench-verified in
+> single-instance mode (2026-08-02); cycling builds clean but is **not yet
+> bench-verified**. The sense front-end and the HIL/script REPL are designed but
+> not built — each is banked for its own planning pass below.
+> Last touched 2026-08-02.
 
 ## Concept
 
@@ -232,6 +233,38 @@ arithmetic the NVM IDs use. Times display as raw µs plus an integer-derived
 `(500.000 mS)` gloss; repeat 0 shows as `infinite`; start/stop lines carry live
 run status.
 
+## NVM pool — inherited-data hazard
+
+The `.nvmdata` sector at `0x0807F800` is `NOLOAD`, so **reflashing never erases
+it** — deliberate, so parameters survive firmware updates. The cost is that a
+pool outlives the `nvm_param_id_t` enum that wrote it.
+
+That bit on 2026-08-02: SWITCH_A and SWITCH_B came up with nonsense cycling
+defaults while C and D were correct. This bench Nucleo is shared with
+`G0B1_Skeleton` (and SwitchTester is a fork of it, itself forked from a GPS
+baseline), so a previous project's firmware had written its own pool to the same
+address with its own enum. When the cycling IDs `0x101`–`0x10C` were added they
+landed on ID space that older pool already occupied; `x_nvm_create()` correctly
+declined to overwrite existing objects and `x_nvm_get()` faithfully returned
+their contents. Both behaved exactly as documented — the stale data was the
+input, not a fault.
+
+Cleared with the `[N]` pool-erase command; defaults now correct.
+
+**CRC would not have caught it.** The inherited pool was not corrupt, it was
+intact-but-foreign: valid signature, self-consistent contents. CRC detects
+damage, not provenance. (Note `u32_crc32()` is stubbed to a constant in this
+project anyway — the HAL CRC peripheral is not wired in, so validation is
+signature-only.)
+
+**Proposed guard, not yet implemented:** a `NVM_PARAM_SCHEMA_VERSION` object
+holding a compile-time constant, created and checked first in `v_param_init()`.
+On mismatch or absence, wipe the pool so every `x_nvm_create()` lays down fresh
+defaults. Application-side rather than inside `nvmparams`, which is a
+mission-critical API with a decade of production use behind it and should not be
+altered for something the application can handle. Matters more once this module
+is promoted back into `G0B1_Skeleton` and forks onward.
+
 ## NVM-persisted parameters
 
 Thirteen `uint32_t` objects at IDs `0x100`–`0x10C`: the manual pulse width (ms),
@@ -251,12 +284,25 @@ Deliberately out of scope until planned properly, in intended order:
 Immediate next step. Code is written and builds clean; nothing has been run on
 hardware yet.
 
-### 1. Automation / HIL backdoor
+### 1. HIL / script REPL
 
-A hook in `v_debug_menu_service()` (`debug_menu.c`) that **bypasses the menu
-system**, letting a host-side automation runner — e.g. a Python script driving a
-simple REPL — control the switch tester over the *same* UART the menu uses. The
-goal is a **deterministic script interface** for automating test runs.
+**Transport is done.** `uart_stream` is ported, wired and bench-verified — see
+[`planning/uart-stream-integration-plan.md`](planning/uart-stream-integration-plan.md).
+The console now runs on interrupt-driven TX/RX rings
+(`DEV_CONFIG_CONSOLE_TX_BUF_SIZE` 1024, RX 256), with HAL kept out of USART2's
+interrupt path entirely while still owning every other UART.
+
+What remains is the REPL layered on top of it
+
+: a hook in `v_debug_menu_service()` that **bypasses the menu
+system**, letting a host-side runner — a Python script driving a simple REPL —
+control the tester over the *same* UART the menu uses, for a **deterministic
+script interface**. Decisions already taken: drop `toupper()` from command
+dispatch, open the command namespace to the full printable range `0x20..0x7E`,
+add registration-time collision checking, expose `uart_stream`'s error count as
+a builtin the host can assert on, and keep the `HARNESS_ENTER`/`HARNESS_EXIT`
+sentinels plus an idle timeout (pattern from `LED_Strip_Controller_G474`'s
+`test_harness.c`).
 
 Deliberately sequenced **before** the sense work: once the cycler is trustworthy,
 scripted control is what makes long soak campaigns and phase sweeps practical,

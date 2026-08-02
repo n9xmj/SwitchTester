@@ -16,10 +16,10 @@ that repo's `Docs/planning/uart_stream-port-notes.md` — **not** copied here.
 **Parent spec:** [`../SwitchTester-Design.md`](../SwitchTester-Design.md).
 **Planning model:** [`decision-log-model.md`](decision-log-model.md).
 
-**Status:** IMPLEMENTING — design locked; module reworked and **building clean**
-as of 2026-08-01. Not yet bound or bench-tested. Remaining: `stdio_retarget`
-rewrite (**D3**), vector hooks in `stm32g0xx_it.c` (**D1**), bind at start-up,
-then bench verification.
+**Status:** **v1 WORKING on the bench (2026-08-02)** — console (USART2) bound and
+serving stdio in single-instance mode, verified on hardware. All 20 design rows
+green. Remaining work is the deferred rows only: skeleton promotion (**T1**),
+host-side REPL (**T2**), loopback stress rig (**T3**).
 
 **Working mode:** resolve OPEN items in chat **one at a time**; update the table
 and the matching detail section as each lands. The agent records a leaning as 🟡
