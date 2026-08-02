@@ -196,9 +196,20 @@ void v_process_next_job(void)
             if (u8_switch_cycle_any_running())
             {
                 g_x_nvm_param.u16_commit_timer = 0;
+                LOGCT(LOG_SYSTEM, "NVM commit deferred - switch cycling active");
                 break;
             }
-            x_nvm_commit(&g_x_nvm_param);
+            {
+                nvm_error_t x_nvm_status = x_nvm_commit(&g_x_nvm_param);
+
+                /* NVM_ERROR_NO_CHANGE means the pool was already clean, so no
+                 * erase/write cycle was spent. Anything negative below that is
+                 * a real failure. */
+                LOGCT(LOG_SYSTEM, "NVM commit: status %d (%s)",
+                      (int) x_nvm_status,
+                      (x_nvm_status == NVM_ERROR_NONE)      ? "written" :
+                      (x_nvm_status == NVM_ERROR_NO_CHANGE) ? "no change" : "FAILED");
+            }
             break;
 
         case JOB_CYCLE_COMPLETE:

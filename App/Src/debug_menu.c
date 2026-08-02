@@ -13,6 +13,7 @@
  *==========================================================================*/
 
 #include <stdlib.h>                  /* strtoul() for the pulse-width entry */
+#include <string.h>                  /* memset() for the NVM pool erase */
 
 #include "device_config.h"          /* stdint/stdio, platform.h (SYSTEM_TICK), main.h */
 #include "menusystem.h"
@@ -20,6 +21,7 @@
 #include "utils.h"                   /* RTC wakeup + hour-time helpers under test */
 #include "rtc.h"                     /* hrtc, for post-STOP HAL_RTC_WaitForSynchro */
 #include "switch_out.h"              /* SWITCH_A..D drive control */
+#include "nvmparams.h"               /* NVM pool dump / erase diagnostics */
 
 /*============================================================================
  * PRIVATE PROTOTYPES
@@ -42,6 +44,8 @@ static void v_cycle_help_text(void);
 static void v_cycle_key_param(char c_key, uint8_t u8_index);
 static void v_cycle_key_startstop(char c_key, uint8_t u8_index);
 static void v_cycle_stop_all(void);
+static void v_debug_nvm_dump(void);
+static void v_debug_nvm_erase(void);
 static void v_debug_soft_reset(void);
 
 /*============================================================================
@@ -476,6 +480,51 @@ static void v_cycle_stop_all(void)
  * System
  * ------------------------------------------------------------------------- */
 
+/*
+ * Dump the NVM pool: header (signature, CRC, write count) followed by every
+ * object with its ID, size and raw bytes. This is the tool for telling a
+ * corrupt pool apart from a mis-used API -- the stored IDs and sizes say
+ * directly whether objects landed where the enum says they should.
+ */
+static void v_debug_nvm_dump(void)
+{
+    x_nvm_list(&g_x_nvm_param);
+}
+
+/*
+ * Erase the NVM pool and restart, so every parameter is recreated from its
+ * compiled-in default. This is the documented recovery from a corrupt pool
+ * (see the notes at the top of nvmparams.h) and is destructive, hence the
+ * confirmation.
+ */
+static void v_debug_nvm_erase(void)
+{
+    int i_key;
+
+    printf("Erase NVM pool and reset? All saved parameters revert to defaults.\r\n"
+           "Press 'Y' to confirm, any other key to cancel: ");
+
+    i_key = i_getchar_blocking();
+    v_newline();
+
+    if ((i_key != 'Y') && (i_key != 'y'))
+    {
+        printf("Cancelled - NVM pool untouched\r\n");
+        return;
+    }
+
+    printf("Erasing NVM pool...\r\n");
+
+    v_switch_cycle_stop_all();
+    v_switch_out_all_off();
+
+    memset(g_x_nvm_param.p_v_data, 0xFF, g_x_nvm_param.u32_size);
+    x_nvm_write(&g_x_nvm_param);
+
+    HAL_Delay(250);
+    NVIC_SystemReset();
+}
+
 static void v_debug_soft_reset(void)
 {
     printf("Soft reset in 250 mS...\r\n");
@@ -649,6 +698,18 @@ static const menu_item_t x_debug_top_menu[] =
         .key = '!',
         .text = "Soft reset (system)",
         .function = v_debug_soft_reset
+    },
+    {
+        .item_type = MENU_ITEM_FUNCTION,
+        .key = 'n',
+        .text = "NVM pool dump",
+        .function = v_debug_nvm_dump
+    },
+    {
+        .item_type = MENU_ITEM_FUNCTION,
+        .key = 'N',
+        .text = "NVM pool ERASE + reset (defaults)",
+        .function = v_debug_nvm_erase
     },
     {
         .item_type = MENU_ITEM_CALL_MENU,

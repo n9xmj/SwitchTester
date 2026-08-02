@@ -239,6 +239,7 @@ typedef enum PACKED
     NVM_ERROR_OBJECT_EXISTS = -5,   // Object already exists in memory pool (returned by x_nvm_create; not really an error)
     NVM_ERROR_OBJECT_NOT_FOUND = -6, // Requested object not found in memory pool
     NVM_ERROR_POOL_CORRUPT  = -7,   // The NVM data pool is corrupt or not properly formatted
+    NVM_ERROR_NO_CHANGE     = -8,   // Commit requested but nothing was modified; no RAM->FLASH write performed (not really an error)
 
     NVM_ERROR_MINVAL        = -32768,
     NVM_ERROR_MAXVAL        = 32767

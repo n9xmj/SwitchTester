@@ -360,8 +360,13 @@ nvm_error_t x_nvm_commit(nvm_pool_t *p_x_pool)
 
     if (p_x_pool->u8_need_commit == 0)
     {
+        // Nothing was modified since the last commit, so no flash write is
+        // performed. Reported distinctly from NVM_ERROR_NONE so callers can
+        // tell "wrote it" from "nothing to write" -- the pool's whole purpose
+        // is minimising erase/write cycles, and that is only visible if the
+        // two outcomes are distinguishable.
         p_x_pool->u16_commit_timer = 0;
-        return NVM_ERROR_NONE;
+        return NVM_ERROR_NO_CHANGE;
     }
 
     nvm_header_t *p_x_nvm_header = (nvm_header_t *) p_x_pool->p_v_data;
