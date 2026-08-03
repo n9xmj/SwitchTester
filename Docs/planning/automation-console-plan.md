@@ -1,12 +1,15 @@
-# HIL / script REPL — decision log
+# Automation console — decision log
 
-A resident, machine-facing command REPL entered from the debug-menu shell by a
-sentinel byte, giving a host-side script deterministic control of the tester over
-the **same** USART2 the human menu uses. Replaces "send ESC three times, send a
-menu key, read until the timer runs out" with framed request/response, so the
-host reads until a terminator rather than guessing on a clock.
+A resident, machine-facing command console entered from the debug-menu shell by a
+sentinel byte, giving an external host deterministic control of the instrument
+over the **same** USART2 the human menu uses. Replaces "send ESC three times, send
+a menu key, read until the timer runs out" with framed request/response.
 
-- **Code home:** `App/Src/` + `App/Inc/` (module name — see **D7**)
+It is **not** a test harness and not test-only (**D7**): it is the interface *for*
+a host-side harness, and equally the way the instrument is driven in normal
+operation.
+
+- **Code home:** `App/Src/automation_console.c` + `App/Inc/automation_console.h` (**D7**)
 - **Transport:** [`uart-stream-integration-plan.md`](uart-stream-integration-plan.md) — **done and bench-verified**
 - **Parent spec:** [`../SwitchTester-Design.md`](../SwitchTester-Design.md) § "HIL / script REPL"
 - **Reference implementation:** `C:\STM32\CubeSource\LED_Strip_Controller_G474\App\{Src,Inc}\test_harness.{c,h}` — *a* solution, not *the* solution
@@ -20,7 +23,7 @@ host reads until a terminator rather than guessing on a clock.
 The debug menu is a *human* interface: single-keystroke dispatch, `toupper()`
 folding, free-form prose output, a redraw-heavy screen. None of that is safe to
 parse from a script. The REPL is a second personality on the same wire — entered
-on `HARNESS_ENTER` (0xDA), left on `HARNESS_EXIT` (0xA5), `Q`, or an idle
+on `ACON_ENTER` (0xDA), left on `ACON_EXIT` (0xA5), `Q`, or an idle
 timeout — that bypasses the menu system entirely and speaks a line-oriented,
 framed protocol instead.
 
@@ -52,13 +55,13 @@ exists.
 |----|--------|--------------------|
 | **Q1** | 🟢 | **What the host runner must do** — command/response *and* async events, both v1 |
 | **D1** | 🟢 | Entry / exit protocol — 0xDA in, 0xA5 / `Q` / idle timeout out |
-| **D2** | 🟡 | Command namespace — full `0x20..0x7E`, case-sensitive (drop `toupper()`) |
+| **D2** | 🟢 | Command namespace — strict case sensitivity, full `0x20..0x7E` |
 | **D3** | 🟢 | Frame identity and grammar — sigils carry status; 1-char keys, hex values |
-| **D4** | 🟡 | Host→device grammar — freeform opcode+args vs fixed packet with length/CRC |
-| **D5** | 🟡 | Prompt / echo policy while in harness mode |
+| **D4** | 🟢 | Host→device grammar — freeform, comma-separated, **no CRC or length** |
+| **D5** | 🟢 | No prompt, no echo; every command answers; `Z` is the no-op |
 | **D6** | 🟢 | Phase-1 op set — six commands, mask-addressed where simultaneity matters |
 | **D9** | 🟢 | Level-command encoding — Select + Set + Clear, BSRR-style, both = toggle |
-| **D7** | 🟡 | Module name and file home |
+| **D7** | 🟢 | Module name — `automation_console.{c,h}`, not a "test harness" |
 | **D8** | 🟢 | Wire encoding — ASCII lines, hex for binary data, both directions |
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
 | **S2** | 🟡 | Cooperative pumping and re-entrancy vs `v_debug_menu_service()`'s lock |
@@ -109,7 +112,7 @@ Established; do not re-litigate unless explicitly reopened.
   instance — the assertable quantity **S5** is about exposing.
 - **The REPL bypasses the menu system.** It does not wrap, reuse or re-enter
   `v_menu_exec()`. Decided when the backdoor was first sketched.
-- **Sentinels are `HARNESS_ENTER` 0xDA / `HARNESS_EXIT` 0xA5** — MS-bit set so
+- **Sentinels are `ACON_ENTER` 0xDA / `ACON_EXIT` 0xA5** — MS-bit set so
   they cannot collide with any printable menu key, and a bit-complement pair.
 - **Existing input path** is `v_debug_menu_service()` → `getchar()` →
   `v_debug_menu_exec()`, guarded by a static re-entry lock, and it is called
@@ -193,10 +196,10 @@ phase 1; all four are expensive to retrofit.
    recognise. This is the one that actually matters: if phase 1 emits bare lines,
    every host script written against it breaks the day the first `*` frame appears.
 2. **Ops never `printf` directly.** They emit through a framing helper —
-   `v_repl_emit(...)` — so that phase 2 can add the "not inside a response frame"
+   `v_acon_emit(...)` — so that phase 2 can add the "not inside a response frame"
    interlock in exactly one place. Ops that write to stdout freely cannot be
    fenced later without touching every op.
-3. **The flush call site exists in phase 1.** `v_repl_flush_events()` is called at
+3. **The flush call site exists in phase 1.** `v_acon_flush_events()` is called at
    the top of the wait-for-command state and is an empty function. Zero cost, and
    it fixes the one architectural point — *where* async is allowed to happen —
    while the loop is still small enough to see whole.
@@ -298,7 +301,7 @@ for the campaign the tester exists to run.
 **Status:** 🟢
 
 **`on_time + off_time >= 50 ms`, enforced only on REPL-commanded cycling.** The
-threshold is a definable constant in `device_config.h`. Violations are **rejected**
+threshold is `ACON_MIN_CYCLE_PERIOD_US` in `device_config.h`. Violations are **rejected**
 with a structured error naming the offending value (**S1**), never clamped —
 silently running a different test than the host asked for is the failure mode this
 whole protocol exists to prevent.
@@ -361,14 +364,14 @@ Prefixing it makes stray output harmless instead of fatal.
 
 **Grammar.**
 
-```
+``
 =<op>[,<tok>]...                 success, complete in one line
 !<op>,<CODE>[,<tok>]...          failure, complete in one line
 =<op>,K<n>[,<tok>]...            success, exactly <n> payload lines follow
 +<text>                          payload line -- free text, NOT tokenised
 *<src><ch>,T<hex>,V<hex>         async event (phase 2)
 #<text>                          not protocol; host ignores the line
-```
+``
 
 `<op>` is the single command character, echoed back so a desynchronised host
 notices immediately. A `<tok>` is **one uppercase key letter immediately followed
@@ -386,6 +389,12 @@ whitespace trimming.
 | `N` | oN-time, µs | | `T` | timestamp, µs |
 | `F` | oFf-time, µs | | `V` | value |
 
+**Protocol-level frames use the reserved opcode `~`**, so session events are
+machine-parseable in exactly the same shape as command responses rather than being
+a special case the host must pattern-match: `=~,V1` on entry (ready, protocol
+version 1), `=~,BYE` on a clean exit, `!~,TMO` on an idle timeout. `~` is reserved
+at registration (**I2**) so no domain op can claim it.
+
 A response is **one line** unless its header carries `K<n>`, in which case exactly
 that many `+` lines follow. The host reads a line, checks for `K`, reads that many
 more — no terminator scanning, and a truncated frame is *detectable* because fewer
@@ -394,13 +403,13 @@ needs the multi-line form.
 
 **Worked examples:**
 
-```
+``
 =S,L9,M4,R4                          set levels -> ok
 !W,RNG,L9,M4,R4                      write params -> rejected, out of range
 =G,L9,M4,R4,N7A120,F7A120,C0,D4D2    get params for a channel
 =L,K8                                op list, 8 payload lines follow
 +V ping / version
-```
+``
 
 **What was tightened, and what deliberately was not.** `=S,L9,M4,R4` is 13 bytes
 against 37 for the earlier `=OK cmd=S level=0x9 mode=0x4 run=0x4` — a 65 %
@@ -471,14 +480,14 @@ formatting at priority 0.
 So the queue holds **fixed-size binary records, not strings**, and formatting
 happens in the main loop at flush time:
 
-```c
+``c
 typedef struct {
     uint32_t u32_timestamp;   /* TIM2->CNT at the event -- S8            */
     uint8_t  u8_class;        /* SW transition / sense edge / ADC / ...  */
     uint8_t  u8_channel;
     uint16_t u16_value;
 } repl_event_t;               /* 8 bytes                                 */
-```
+``
 
 An 8-byte record in a power-of-two ring is a single-producer/single-consumer
 structure with the same discipline as `uart_stream`'s rings — producer (ISR)
@@ -520,7 +529,7 @@ frame and the start of the next — never inside one.
 **Drain structure.** The executive loop makes the deferral rule structural rather
 than something that has to be remembered at each emit site:
 
-```c
+``c
 for (;;)
 {
     if (<lead char available from host>)
@@ -532,7 +541,7 @@ for (;;)
 
     <service the event queue -- emit at most ONE event frame>
 }
-```
+``
 
 Two properties fall out of this ordering and both are wanted. Command service
 comes first, so a pending command is never delayed behind a backlog. And exactly
@@ -698,7 +707,7 @@ accident at implementation time.
 and a mismatch everywhere else.
 
 **Leaning:** microseconds on the wire, and rename **S10**'s constant to
-`REPL_MIN_CYCLE_PERIOD_US = 50000` so the floor is expressed in the same unit it
+`ACON_MIN_CYCLE_PERIOD_US = 50000` so the floor is expressed in the same unit it
 is checked in. A 32-bit µs field spans about 71 minutes per phase, which is far
 past any plausible cycle.
 
@@ -859,7 +868,8 @@ expected to follow.
 | 5 | Stop auto-cycling | stop bitmask | level + mode + run bitmaps (**S13**) |
 | 6 | **Get** cycling parameters | switch # (0–3) | on-time, off-time, repeat count, cycles **done** (**S16**) + the three bitmaps |
 
-Plus builtins from **D1**: `V` version/ping, `L`/`?` list, `Q` quit.
+Plus the executive builtins: `V` version/ping, `L`/`?` list, `Q` quit (**D1**),
+and `Z` no-op (**D5**).
 
 **Addressing is by mask where simultaneity matters, per-channel where it does
 not.** Commands 1, 4 and 5 take bitmasks so that several channels change together
@@ -915,34 +925,33 @@ thing that stops a run.
 
 ---
 
-### D2 — Command namespace and case sensitivity
+### D2 — Command namespace and case sensitivity *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
-Decided earlier: drop `toupper()` from harness dispatch, open the namespace to
-the full printable range `0x20..0x7E`. The reference folds case in both the
-builtin `switch` and the op-table scan, which halves an already small namespace.
+**Strict case sensitivity.** No `toupper()` anywhere in dispatch; the namespace is
+the full printable range `0x20..0x7E`. The reference implementation folds case in
+both the builtin `switch` and the op-table scan, halving an already small
+namespace — this does not.
 
-**Open sub-point:** the builtins are `V` / `L` / `?` / `Q` uppercase. Once
-dispatch is case-sensitive, `v` and `q` become *available* — and a host that
-sends lowercase by habit gets `<ERR>` instead of a version string. Either accept
-that (strict, and the error is loud) or reserve both cases of the four builtin
-letters at registration time (**I2**) so nobody can claim them.
+**I2's collision check reserves both cases of every builtin letter**, so `v` and
+`q` cannot be claimed by a domain op even though they are technically free. A host
+that sends lowercase by habit then gets a clean `!v,UNK` rather than silently
+hitting some unrelated command that happened to take the letter.
 
-**Leaning:** strict case-sensitivity, and **I2**'s collision check reserves both
-cases of the builtin letters. Loud failure beats a namespace booby trap.
-
-**Resolution:** _pending_
+**Rationale:** loud failure beats a namespace booby trap. Case folding makes
+`s` and `S` the same command forever, which is a permanent halving of the
+namespace to buy tolerance for a typo that a machine does not make.
 
 ---
 
-### D4 — Host→device grammar
+### D4 — Host→device grammar *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢 — **no checksum, no CRC, no length field**
 
-**Question:** Does the host→device direction get the same rigour as device→host —
-a fixed packet with length, opcode, sub-opcode, validation and an EOT marker — or
-a freeform opcode plus argument text?
+**The question was:** does host→device get the same rigour as device→host — a
+fixed packet with length, opcode, sub-opcode, validation and an EOT marker — or a
+freeform opcode plus arguments?
 
 **The asymmetry is the point.** The two directions have different consumers and
 should not be assumed to need the same format:
@@ -955,16 +964,16 @@ should not be assumed to need the same format:
   little: a corrupted command is *already* rejected rather than partially
   executed (**S1**), and the transport counts its own ORE/FE/NE/PE (**S5**).
 
-**Leaning:** freeform, and **comma-separated to match the response direction**
+**Resolved: freeform, comma-separated to match the response direction**
 (**D3**). First character is the opcode; the remainder splits on `,`; CR or LF
 terminates; empty lines are ignored. One splitter on each side of the link and
 one rule to remember, rather than "commas that way, spaces this way".
 
-```
+``
 S,3,1,2          select=3, set=1, clear=2
 W,1,7A120,7A120,0   channel 1, on 500000 µs, off 500000 µs, repeat 0 (infinite)
 G,1              get channel 1 parameters
-```
+``
 
 **Numerics are hex in both directions**, uniformly — one parse routine, one format
 routine, no per-field rule to look up. The honest cost is that hand-typing a time
@@ -973,49 +982,92 @@ terminal; it is paid by the host runner (**T1**) in practice, and the debug menu
 remains the human interface for anything typed by hand. Channel indices and
 bitmaps are small enough that hex and decimal coincide.
 
-Add a shared `b_repl_arg_u32()` helper so channel parsing and range-checking is
-not reimplemented — and mis-implemented — in six ops, and so **S1**'s error frames
-can distinguish "missing" from "out of range".
+A shared `b_acon_arg_u32()` helper does the field parsing and range-checking, so
+it is not reimplemented — and mis-implemented — across six ops, and so **S1**'s
+error frames can distinguish "missing" from "out of range".
+
+**Why no CRC.** A corrupted command is already rejected rather than partially
+executed (**S1**); the transport counts its own ORE/FE/NE/PE per instance
+(**S5**), so line-level corruption is observable and assertable without a
+per-frame check; and a truncated command line simply fails to parse. A CRC would
+add a field to every command, a computation on both ends, and a hand-typing
+barrier at the terminal, in exchange for detecting a class of error the layers
+above and below already catch.
 
 If a command ever needs to carry bulk data, it carries it as hex in a field, which
 keeps the grammar unchanged.
 
-**Resolution:** _pending_
+---
+
+### D5 — Prompt / echo policy *(resolved)*
+
+**Status:** 🟢
+
+**No prompt, no echo.** The menu echoes `Cmd [x]` per *keystroke* and prints
+`{Ready}:`; a 30-character command line would produce 30 echo lines for a host to
+filter. Automation-console mode emits neither. The response frame (**D3**) is the
+only output, which is what makes the channel deterministic.
+
+**Every non-empty command line produces exactly one response frame** — recognised
+or not. An unknown opcode returns `!<op>,UNK`. There is no silent path, so a host
+that gets nothing back knows the link or the device is at fault, never the
+protocol.
+
+**Empty lines remain silent, and that is deliberate — not an exception.** A host
+sending CRLF line endings delivers a bare `
+` after every `
+`. If an empty line
+produced a response, every single command would generate a spurious extra frame
+and the host would run permanently one frame out of step. Empty input is discarded
+before dispatch.
+
+**A dedicated no-op is therefore needed, and it is `Z`.** It takes no arguments,
+touches nothing, and returns `=Z`. Three uses:
+
+- *"Are you there"* — the minimal liveness check, 4 bytes out and 4 back.
+- **Resynchronisation.** A host that suspects a partial line is sitting in the
+  device's buffer sends `
+` (flushes the line, silently) then `Z` (gets a known
+  frame). Confirmation of sync without side effects.
+- **Latency measurement**, with no work in the path to confound it.
+
+`V` remains the identity ping and is the better call at session start — it pins
+product, platform, firmware and build config — but it is not a no-op, and using an
+error response as a liveness probe would be worse than either.
+
+Entry and exit still announce themselves so a host knows the mode switch landed;
+those banners get sigils like everything else (**I5** obligation 1).
 
 ---
 
-### D5 — Prompt / echo policy
+### D7 — Module name and file home *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
-The menu echoes `Cmd [x]` for every keystroke and prints `{Ready}:`. Both are
-noise a host must filter, and the echo is per-*character*, so a 30-character
-command line produces 30 echo lines.
+**`automation_console.{c,h}`** in `App/Src` / `App/Inc`.
 
-**Leaning:** harness mode echoes nothing and prints no prompt. The response frame
-(**D3**) is the only output, which is exactly what makes the channel
-deterministic. `<HRN v1 RDY>` on entry and `<HRN BYE>` on exit stay — a host
-needs to know the mode switch landed.
+**Why not `test_harness` or `hil_repl`.** Both names are wrong in the same
+direction, and my earlier `hil_repl` leaning was wrong for the same reason
+`test_harness` was: this module is **not** a test harness — it is the interface
+*for* one, and the harness lives on the host. Nor is it test-only. It is how an
+external host controls the instrument, which includes real-world operation and
+not merely platform self-test. A name carrying `test` or `hil` would mislead
+every future reader about what the module is allowed to be used for, and would
+invite exactly the scope confusion the reference implementation already suffers
+from — `test_harness.c` there is 955 lines, most of it *human*-interactive
+routines (key echo, line editor, field entry) that have nothing to do with the
+machine interface; the executive is about 120 of them.
 
-**Resolution:** _pending_
+Only the executive is carried across. If SwitchTester later wants HuIL test
+routines, they get their own file.
 
----
-
-### D7 — Module name and file home
-
-**Status:** 🟡 · **Needs user:** no
-
-The reference calls it `test_harness.{c,h}`, but that file is 955 lines and most
-of it is *human*-interactive test routines (`_huil` key echo, line editor, field
-entry) that have nothing to do with the machine REPL — the REPL executive is
-about 120 lines of it.
-
-**Leaning:** name it for what it is — `hil_repl.{c,h}` in `App/Src` / `App/Inc` —
-and carry across only the executive. If SwitchTester later wants HuIL test
-routines they get their own file. Naming it `test_harness` here would import the
-reference's scope confusion along with its code.
-
-**Resolution:** _pending_
+**Naming inside the module:** public functions take the full module prefix in
+keeping with `v_switch_cycle_*` / `u32_uart_stream_*` —
+`v_automation_console_run()`, `v_automation_console_service()`. Constants and
+statics use the short form `ACON_` / `acon_` to stay readable —
+`ACON_ENTER` (0xDA), `ACON_EXIT` (0xA5), `ACON_ENABLED`, `ACON_IDLE_TIMEOUT_MS`,
+`b_acon_arg_u32()`. The sentinel *values* are unchanged (**D1**); only the
+spelling of their names moves.
 
 ---
 
@@ -1055,7 +1107,7 @@ timeout needs to be much longer, or it needs to be settable by the host.
 
 **Leaning:** default 60 s, and a host-settable value via an op argument — the
 host knows its own cadence better than a compile-time constant does. Timeout
-prints `<HRN TIMEOUT>` and exits without disturbing drive state (**S4**).
+prints `!~,TMO` and exits without disturbing drive state (**S4**).
 
 **Resolution:** _pending_
 
@@ -1085,7 +1137,7 @@ the console.
 
 `v_debug_menu_service()` currently does `getchar()` → `printf("Cmd [%s]")` →
 `v_debug_menu_exec()`. The intercept goes between the read and the echo: if the
-byte is `HARNESS_ENTER`, call the REPL and `continue`, so the sentinel is never
+byte is `ACON_ENTER`, call the REPL and `continue`, so the sentinel is never
 echoed and never reaches the menu dispatcher.
 
 **Leaning:** intercept in `v_debug_menu_service()`, one `if` before the echo,
@@ -1124,7 +1176,7 @@ scan costs nothing and it runs on a test build.
 
 Reference gates the whole module on `TEST_HARNESS_ENABLED`, defaulting to 1.
 
-**Leaning:** same pattern, `HIL_REPL_ENABLED`, defaulting to 1, defined in
+**Leaning:** same pattern, `ACON_ENABLED`, defaulting to 1, defined in
 `debug_config.h` alongside the other debug switches rather than in the module
 header — SwitchTester keeps its build switches in one place. Note that
 SwitchTester *is* a bench instrument, so there is no real release image to strip;
@@ -1156,8 +1208,8 @@ exactly the failure mode **S1** exists to prevent.
 
 **Status:** 🔴 · **Needs user:** no — but blocked on **D3** and **D6**
 
-A small `pyserial` driver: open COM3 at the console baud, send `HARNESS_ENTER`,
-wait for `<HRN v1 RDY>`, then a `command(cmd, *args) -> parsed response` method
+A small `pyserial` driver: open COM3 at the console baud, send `ACON_ENTER`,
+wait for `=~,V1`, then a `command(cmd, *args) -> parsed response` method
 that reads until the frame terminator. Lives in `scripts/` alongside the existing
 build/flash scripts.
 
@@ -1260,9 +1312,9 @@ sigil.
 
 **Status:** 🟢
 
-`HARNESS_ENTER` = 0xDA enters, printing `<HRN v1 RDY>`. `HARNESS_EXIT` = 0xA5 or
-a `Q` line exits, printing `<HRN BYE>`. An idle timeout (**S3**) also exits,
-printing `<HRN TIMEOUT>` first. Both sentinels have the MS bit set so they cannot
+`ACON_ENTER` = 0xDA enters, printing `=~,V1`. `ACON_EXIT` = 0xA5 or
+a `Q` line exits, printing `=~,BYE`. An idle timeout (**S3**) also exits,
+printing `!~,TMO` first. Both sentinels have the MS bit set so they cannot
 collide with a printable menu key and cannot be typed by accident from a
 terminal; they are a bit-complement pair (0x5A | 0x80 and ~0x5A).
 
@@ -1294,8 +1346,8 @@ a whole run with nobody noticing.
   bench-testing happen in the same session, a failure is ambiguous — prefer
   proving the cycler by hand at the menu first.
 - **Phase 1 — command/response** — **unblocked; every gating row is green:**
-  1. `hil_repl.{c,h}` — executive, line reader, builtins, frame emit (**D3**),
-     honouring all four **I5** obligations from the first commit
+  1. `automation_console.{c,h}` — executive, line reader, builtins, frame emit
+     (**D3**), honouring all four **I5** obligations from the first commit
   2. `debug_menu.c` intercept (**I1**) + `debug_config.h` gate (**I3**)
   3. Op table + collision scan (**I2**), the six **D6** commands in order
   4. Shared state-bitmap helpers (**I6**) + cycle-period floor (**S10**) at the
@@ -1317,10 +1369,10 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 11 · 🟡 17 · 🔴 3 · 🔵 4 (35 rows) + 5 wish rows (one
+- **Plan status:** 🟢 15 · 🟡 13 · 🔴 3 · 🔵 4 (35 rows) + 5 wish rows (one
   promoted). **Nothing gates phase 1 any more** — the three remaining reds are
   **S4** (decidable without new input; leaning recorded), and **T1**/**T2**,
   which follow the code rather than precede it. The twenty yellows all carry
   leanings; they are implementation guidance, not open questions.
 
-**End of hil-repl-plan.md**
+**End of automation-console-plan.md**

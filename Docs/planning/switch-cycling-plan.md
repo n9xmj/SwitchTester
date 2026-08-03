@@ -123,7 +123,7 @@ costs:
   `0xFFFFFFFF` today, and that is precisely what makes the cycler's modulo-2³²
   compare arithmetic coherent *and* what makes `TIM2->CNT` usable as the shared
   1 µs timestamp source (see **S8** in
-  [`hil-repl-plan.md`](hil-repl-plan.md)). Taking this route means moving the
+  [`automation-console-plan.md`](automation-console-plan.md)). Taking this route means moving the
   timestamp base to another timer first.
 
 So the re-basing approach is almost certainly the one to take, and the reason is
