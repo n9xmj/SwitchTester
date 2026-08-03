@@ -58,14 +58,14 @@ exists.
 | **D2** | 🟢 | Command namespace — strict case sensitivity, full `0x20..0x7E` |
 | **D3** | 🟢 | Frame identity and grammar — sigils carry status; 1-char keys, hex values |
 | **D4** | 🟢 | Host→device grammar — freeform, comma-separated, **no CRC or length** |
-| **D5** | 🟢 | No prompt, no echo; every command answers; `Z` is the no-op |
+| **D5** | 🟢 | No prompt, no echo; every command answers; `Z` / `' '` are the no-op |
 | **D6** | 🟢 | Phase-1 op set — six commands, mask-addressed where simultaneity matters |
 | **D9** | 🟢 | Level-command encoding — Select + Set + Clear, BSRR-style, both = toggle |
 | **D7** | 🟢 | Module name — `automation_console.{c,h}`, not a "test harness" |
 | **D8** | 🟢 | Wire encoding — ASCII lines, hex for binary data, both directions |
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
 | **S2** | 🟢 | Re-entry lock already covers it — verified, no code change needed |
-| **S3** | 🟡 | Idle-timeout value and what state the tester is left in |
+| **S3** | 🟢 | 15 s `#define`, reset on any byte, announced exit `!~,TMO` |
 | **S4** | 🟢 | Cycling: entry/exit non-disturbing, commits deferred, `P` forces one |
 | **S5** | 🟡 | Transport error counters as an assertable builtin |
 | **S6** | 🔵 | Async event queue — ISR-safe fixed records, formatted at dequeue *(phase 2)* |
@@ -86,7 +86,7 @@ exists.
 | **I5** | 🟡 | **Async-readiness contract — what phase 1 must do so phase 2 is a drop-in** |
 | **I6** | 🟢 | State readback — three bitmaps: level (`IDR`), mode (`OCxM`), cycling-active |
 | **I7** | 🟡 | Sigil-prefix stray output at `_write()` so logs cannot desync the host |
-| **I8** | 🟡 | `v_acon_emit()` — the frame emitter; sigil is an argument, not a convention |
+| **I8** | 🟢 | `v_acon_emit()` — the frame emitter; sigil is an argument, not a convention |
 | **T1** | 🔴 | Host-side Python runner |
 | **T2** | 🔴 | Sync decisions back into `SwitchTester-Design.md` |
 | **T3** | 🔵 | Promote the REPL to `G0B1_Skeleton` alongside `uart_stream` |
@@ -882,7 +882,7 @@ caught by **I2**'s registration scan at startup:
 |:--:|---------|-|:--:|---------|
 | `S` | set switch levels (**D9**) | | `V` | version / identity ping |
 | `R` | read switch state | | `L` `?` | list ops |
-| `W` | write cycling parameters | | `Z` | no-op (**D5**) |
+| `W` | write cycling parameters | | `Z` `' '` | no-op (**D5**) |
 | `G` | get cycling parameters | | `Q` | quit |
 | `C` | start cycling | | `~` | *reserved* — session frames (**D3**) |
 | `X` | stop cycling | | | |
@@ -1060,8 +1060,14 @@ produced a response, every single command would generate a spurious extra frame
 and the host would run permanently one frame out of step. Empty input is discarded
 before dispatch.
 
-**A dedicated no-op is therefore needed, and it is `Z`.** It takes no arguments,
-touches nothing, and returns `=Z`. Three uses:
+**A dedicated no-op is therefore needed. It is `Z`, with `' '` (0x20) as an
+alias.** It takes no arguments, touches nothing, and returns `=Z` — *both*
+spellings answer `=Z`, so the host never has to deal with a frame whose opcode
+field is a space, which whitespace trimming anywhere in the chain could silently
+eat. Space is a natural fit: it is literally the first character of **D2**'s
+`0x20..0x7E` namespace. **I2** reserves both.
+
+Three uses:
 
 - *"Are you there"* — the minimal liveness check, 4 bytes out and 4 back.
 - **Resynchronisation.** A host that suspects a partial line is sitting in the
@@ -1073,6 +1079,33 @@ touches nothing, and returns `=Z`. Three uses:
 `V` remains the identity ping and is the better call at session start — it pins
 product, platform, firmware and build config — but it is not a no-op, and using an
 error response as a liveness probe would be worse than either.
+
+**Keep-alives.** A host that must block on some external process holds the session
+open by sending a no-op inside the **S3** window: `" "`, two bytes. The idle
+timer resets on *any* received byte, so a keep-alive works even if it lands
+mid-line.
+
+**Why 0x0A is *not* a no-op alias.** (Also worth noting the code: 0x0A is LF; CR
+is 0x0D.) Neither can be the no-op, and it is the same reason empty lines stay
+silent above — this is that decision seen from the other side. A bare `
+` or ``
+does not *reach* dispatch as a command character: the line reader consumes it as a
+**terminator**, so what dispatch would see is an empty line. Making an empty line
+answer is precisely the thing that puts a CRLF host permanently one frame out of
+step, because every `...
+` command would produce its response *plus* a spurious
+no-op frame.
+
+The alternative — swallowing an `
+` that immediately follows a `` — works for
+back-to-back CRLF but then silently eats a legitimate standalone `
+` keep-alive
+that happens to follow a command, and needs a time bound to distinguish the cases.
+That is a lot of fragility to save one byte.
+
+`' '` has none of that trouble: it is a *printable* character, so `" "` is a
+genuine non-empty line whose first character is the no-op opcode, dispatched by
+exactly the same path as every other command. No special case anywhere.
 
 Entry and exit still announce themselves so a host knows the mode switch landed;
 those banners get sigils like everything else (**I5** obligation 1).
@@ -1159,23 +1192,41 @@ by the same argument if the console ever uses them.
 
 ---
 
-### S3 — Idle timeout
+### S3 — Idle timeout *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
-Reference uses 15 s, reset on any received byte, and auto-exits to the menu. This
-is an anti-wedge measure: without it, a host that dies mid-session leaves the
-board unreachable from a terminal.
+**15 seconds**, as `ACON_IDLE_TIMEOUT_MS` in `debug_config.h` alongside the other
+build switches. An anti-wedge measure: without it, a host that dies mid-session
+leaves the board unreachable from a terminal.
 
-**Open sub-point:** 15 s is short for a soak campaign where the host connects,
-starts a run, and comes back in an hour. Either the host must keep-alive, or the
-timeout needs to be much longer, or it needs to be settable by the host.
+**The timer resets on any received byte**, not on a completed command — so a
+keep-alive works even if it arrives mid-line, and a host streaming a long command
+cannot time out partway through sending it.
 
-**Leaning:** default 60 s, and a host-settable value via an op argument — the
-host knows its own cadence better than a compile-time constant does. Timeout
-prints `!~,TMO` and exits without disturbing drive state (**S4**).
+**It applies inside frame capture, not only at wait-for-command** (**S7**).
+Otherwise a host that sends a lead character and then dies wedges the device in
+the capture loop, and the anti-wedge guarantee has a hole exactly one byte wide.
 
-**Resolution:** _pending_
+**Exit is announced, never silent:** `!~,TMO`. The `!` sigil is doing real work
+here — a timeout is an exit the host did not ask for, so it is reported as a
+failure rather than as the clean `=~,BYE`.
+
+**The session-frame rule, stated once:** *any* `~` frame after entry means the
+session has ended. `=~,BYE` if the host caused it (`Q` or the exit sentinel),
+`!~,TMO` if it did not. A host needs to watch for one opcode, and the sigil tells
+it whether to be surprised.
+
+**Keeping the timeout short is a deliberate trade.** The earlier leaning here was
+60 s plus a host-settable value, on the reasoning that a soak campaign might
+connect, start a run and return in an hour. That was solving the wrong problem:
+**a soak run does not need the session held open.** Cycling continues after exit
+(**S4**), so the host can start a run, leave, and reconnect later. What actually
+needs the session held open is a host blocked on some external process — and that
+host can send a no-op keep-alive (**D5**), which is 2 bytes every few seconds. A
+short fixed timeout plus keep-alives is more robust than a long one, because the
+board recovers from a dead host in 15 seconds rather than a minute, and it removes
+a host-settable knob that could be set to something absurd.
 
 ---
 
@@ -1243,9 +1294,9 @@ go direct to `uart_stream`.
 
 ---
 
-### I8 — The frame emitter
+### I8 — The frame emitter *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
 **Yes — `printf` is unavailable to the console, by construction.** **I7** routes
 everything that goes through `_write()` into the `#` filter, so the console's own
@@ -1315,10 +1366,6 @@ already sizes well above the ~11 ms it takes to drain a full 1024-byte ring at
 **Keep the format specifiers integer and string only.** No `%f` anywhere — the
 cycling design is already integer-microseconds with no floating point, and keeping
 it that way avoids linking newlib's float formatter into an M0+ image.
-
-**Leaning:** as described.
-
-**Resolution:** _pending_
 
 ---
 
@@ -1562,7 +1609,7 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 18 · 🟡 13 · 🔴 2 · 🔵 4 (37 rows) + 5 wish rows (one
+- **Plan status:** 🟢 20 · 🟡 11 · 🔴 2 · 🔵 4 (37 rows) + 5 wish rows (one
   promoted). **Every design row is settled.** The two remaining reds are
   **T1**/**T2**, which follow the code rather than precede it; the twelve yellows
   all carry leanings and read as implementation guidance, not open questions.
