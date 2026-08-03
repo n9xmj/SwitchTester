@@ -61,7 +61,7 @@ exists.
 | **D5** | 🟢 | No prompt, no echo; everything answers; no-op is `Z` / `' '` / bare CR |
 | **D6** | 🟢 | Phase-1 op set — six commands, mask-addressed where simultaneity matters |
 | **D9** | 🟢 | Level-command encoding — Select + Set + Clear, BSRR-style, both = toggle |
-| **D10** | 🟡 | Human mode — mode is an entry parameter; in-band switch is **I9** |
+| **D10** | 🟢 | Human mode — mode is an entry parameter; no in-band switch |
 | **D7** | 🟢 | Module name — `automation_console.{c,h}`, not a "test harness" |
 | **D8** | 🟢 | Wire encoding — ASCII lines, hex for binary data, both directions |
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
@@ -88,7 +88,7 @@ exists.
 | **I6** | 🟢 | State readback — three bitmaps: level (`IDR`), mode (`OCxM`), cycling-active |
 | **I7** | 🟡 | `#`-prefix stray output at `_write()`, at column 0 — stdio is unbuffered |
 | **I8** | 🟢 | `v_acon_emit()` — the frame emitter; sigil is an argument, not a convention |
-| **I9** | 🟡 | How human mode returns control — ESC is `i_getline()`'s only exit code |
+| **I9** | 🟢 | `i_getline()` gains a silent `^C` exit returning −2; no consumer edits |
 | **T1** | 🔴 | Host-side Python runner |
 | **T2** | 🔴 | Sync decisions back into `SwitchTester-Design.md` |
 | **T3** | 🔵 | Promote the REPL to `G0B1_Skeleton` alongside `uart_stream` |
@@ -938,7 +938,7 @@ caught by **I2**'s registration scan at startup:
 | `S` | set switch levels (**D9**) | | `V` | version / identity ping |
 | `R` | read switch state | | `L` `?` | list ops |
 | `W` | write cycling parameters | | `Z` `' '` CR | no-op (**D5**) |
-| *tbd* | mode switch — **I9** |
+| `^C` | quit — alias of `Q` (**D10**) |
 | `G` | get cycling parameters | | `Q` | quit |
 | `C` | start cycling | | `~` | *reserved* — session frames (**D3**) |
 | `X` | stop cycling | | | |
@@ -1047,7 +1047,7 @@ registration, so a domain op cannot claim one):
 | `0x0D` CR | line terminator; a bare CR is the no-op (**D5**) |
 | `0x20` space | no-op alias (**D5**) |
 | `0x5E` `^` | caret-notation introducer for control-char echoes (**D3**) |
-| `0x18` / `0x1B` | candidate mode-switch keys — **I9** |
+| `0x03` `^C` | quit alias / escape hatch (**D10**) |
 | `V` `L` `?` `Q` `Z` | builtins — **both cases** reserved |
 | `~` | protocol/session frames (**D3**) |
 
@@ -1349,9 +1349,9 @@ the console.
 
 ---
 
-### D10 — Human mode
+### D10 — Human mode *(resolved)*
 
-**Status:** 🟡 · **Needs user:** yes — on the caret-input point below
+**Status:** 🟢
 
 **The mode is chosen at entry, by the caller**, and switched in-band with `^X`
 (0x18, CAN). Two readers, one dispatcher:
@@ -1390,15 +1390,35 @@ for script mode, and a human never asks for human mode.
 It also gives hand-driving a **discoverable** entry point. Sending 0xDA from a
 terminal is awkward; picking a menu key is not.
 
-**An in-band switch is wanted too**, for the cases the entry path does not cover —
-a human wanting to watch raw byte-at-a-time behaviour, or a script session being
-taken over by hand. Script→human is trivial (the raw reader sees any byte we
-choose); **human→script is constrained by what `i_getline()` can report, and that
-is open as I9** — the candidate keys are `^X` and ESC, and which one is reachable
-depends on whether the shared reader is extended.
+**There is no in-band mode switch at all.** Mode comes from the entry argument and
+nothing changes it for the life of the session. `^E` and `^X` are both dropped;
+0x05 and 0x18 go back to the free pool. What a stuck operator actually needs is
+not a way to change mode — it is a way *out*, and that is `^C` (below).
 
-**`^E` is dropped** either way. With the mode set at entry and one in-band switch,
-a second mechanism earns nothing; 0x05 goes back to the free pool.
+**`^C` (0x03) is the escape hatch, and it is an alias for quit — not a mode
+switch.** It is a **dispatcher-level opcode**, which matters: the most likely way
+to find the board "stuck" in the console is a *script* session whose host died, so
+the hatch has to work in SCRIPT mode, not only in the human reader. One quit
+implementation, two delivery paths:
+
+| Mode | How `^C` arrives | Result |
+|---|---|---|
+| SCRIPT | raw reader reads byte 0x03, dispatches it | `=~,BYE`, exit |
+| HUMAN | `i_getline()` returns −2 (**I9**), console synthesises the same quit | `=~,BYE`, exit |
+
+**Why this is bulletproof rather than merely adequate:** the idle timeout and `^C`
+cover exactly each other's gaps. **S3**'s timeout applies in SCRIPT mode, where
+there is a host but possibly no operator — a dead host releases the console in
+15 s unattended. `^C` serves HUMAN mode, where there is no timeout but there *is*
+an operator sitting at the terminal. Neither mode is left without a recovery path,
+and neither needs the other's.
+
+**And "stuck in automation mode" is not a hang.** The console pumps
+`v_app_polling_task()` every spin (**S2**), so jobs, cycling, the pulse timebase
+and the watchdog all keep running the entire time. The board is responsive and
+doing its work; only the console's input interpretation differs. Combined with
+**D5** — tap Enter, get `=Z`, and you know exactly where you are — diagnosis and
+recovery are two keystrokes with no equipment.
 
 **`i_getline()` is the right reader, and the pumping concern does not apply.** It
 blocks through `i_getchar_blocking()`, which loops `v_app_polling_task()` +
@@ -1478,12 +1498,51 @@ want one, it belongs on this row later.
 
 ---
 
-### I9 — How human mode returns control
+### I9 — `i_getline()` gains a silent `^C` exit *(resolved)*
 
-**Status:** 🟡 · **Needs user:** yes — options below, nothing chosen
+**Status:** 🟢
 
-**Facts first** (`utils.c`, verified 2026-08-02). `i_getline()` has exactly **two**
-exits:
+**`i_getline()` is modified in place**: `^C` (0x03) becomes a third exit state,
+`GETLINE_CANCEL_EXIT`, returning **−2**. It emits **nothing** — no `<Cancel>`, no
+CRLF, no line-clearing erase. Silent by design, because in the automation console
+any unframed output would be noise on a machine-readable stream.
+
+```c
+if (u8_done == GETLINE_ESCAPE_EXIT) { return -1; }
+if (u8_done == GETLINE_CANCEL_EXIT) { return -2; }
+return i_len;
+```
+
+**In-place modification is safe here, and it was not for `^X` — that is the whole
+reason `^C` is the right key.** `^C` is currently **unhandled**: it falls into the
+`< 0x20` silent-discard bucket, so nothing anywhere responds to it today. Adding a
+branch introduces *new* behaviour where there was none, rather than *changing*
+existing behaviour. `^X` already means "clear the line and keep going", and
+repurposing it would have been a regression — which is what the wrapper in the
+earlier option C existed to avoid. With `^C` there is nothing to avoid.
+
+**Consumers need no edit.** Exactly one call site exists in the repository —
+`u8_debug_entry_u32()` at `debug_menu.c:163` — and it already tests
+`if (i_length < 0)`. `^C` therefore cancels a menu entry exactly as ESC does,
+which is both universal convention and previously a no-op, so nothing regresses.
+`< 0` rather than `== GETLINE_ESCAPE_EXIT` is the house style for this check and
+is what keeps future exit states from breaking callers.
+
+**Also settled by this:** ESC keeps meaning "cancel this line" inside the console,
+so an arrow key (ESC `[` `A`) discards the line and nothing worse — no mode
+change, no spurious frames. The hazard that option A carried is gone without
+paying for option C's wrapper or option D's duplicated reader.
+
+**Optional, still separate:** `i_getline()` handles `\b` but not `0x7F`, and
+terminals disagree on which Backspace sends. Unlike the `^C` addition, that one
+*does* change existing behaviour, so it stays a separate decision.
+
+---
+
+#### Options considered *(kept for audit)*
+
+**The starting facts** (`utils.c`, verified 2026-08-02). Before this change,
+`i_getline()` had exactly **two** exits:
 
 | Key | Handling | Return |
 |---|---|---|
@@ -1532,18 +1591,13 @@ would silently convert the menu's clear-and-retype into abandon-entry — a
 regression in a path nobody asked to change. Options C and D both avoid this; A
 avoids it by not touching anything.
 
-**Leaning:** **C**. It gets the behaviour right — ESC stays "cancel line", so an
-arrow key cannot silently change mode — and the wrapper means no existing consumer
-is broken or refactored, which was the constraint. **A** is genuinely tempting for
-its zero-change property, and if the arrow-key case is judged unimportant it is the
-cheapest thing that works.
+**Chosen: none of the four.** Switching the key from `^X` to `^C` removed the
+constraint they were all working around — `^C` had no existing behaviour to
+preserve, so the in-place edit that was unsafe for `^X` is safe for `^C`, and the
+wrapper (C) and the duplicated reader (D) both become unnecessary.
 
-**Separate, optional:** `i_getline()` handles `\b` but not `0x7F` (DEL), and
-terminals disagree on which Backspace sends. Widening it would fix the debug menu
-too, but it *does* change existing behaviour, so it is listed apart from the
-options above rather than folded into any of them.
-
-**Resolution:** _pending_
+The `0x7F`/DEL point raised alongside those options is unaffected by the choice and
+carries forward — see the resolution above.
 
 ---
 
@@ -1864,7 +1918,8 @@ sigil.
 **Status:** 🟢
 
 `ACON_ENTER` = 0xDA enters, printing `=~,V1`. `ACON_EXIT` = 0xA5 or
-a `Q` line exits, printing `=~,BYE`. An idle timeout (**S3**) also exits,
+a `Q` line exits, printing `=~,BYE`; `^C` (0x03) is an alias for `Q`
+and exits identically in either mode (**D10**). An idle timeout (**S3**) also exits,
 printing `!~,TMO` first. Both sentinels have the MS bit set so they cannot
 collide with a printable menu key and cannot be typed by accident from a
 terminal; they are a bit-complement pair (0x5A | 0x80 and ~0x5A).
@@ -1923,7 +1978,7 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 20 · 🟡 13 · 🔴 2 · 🔵 4 (39 rows) + 5 wish rows (one
+- **Plan status:** 🟢 22 · 🟡 11 · 🔴 2 · 🔵 4 (39 rows) + 5 wish rows (one
   promoted). **Every design row is settled.** The two remaining reds are
   **T1**/**T2**, which follow the code rather than precede it; the twelve yellows
   all carry leanings and read as implementation guidance, not open questions.
