@@ -55,10 +55,10 @@ exists.
 |----|--------|--------------------|
 | **Q1** | 🟢 | **What the host runner must do** — command/response *and* async events, both v1 |
 | **D1** | 🟢 | Entry / exit protocol — 0xDA in, 0xA5 / `Q` / idle timeout out |
-| **D2** | 🟢 | Command namespace — strict case sensitivity, full `0x20..0x7E` |
+| **D2** | 🟢 | Command namespace — strict case, `0x01..0x7F`; MSB-set stays out-of-band |
 | **D3** | 🟢 | Frame identity and grammar — sigils carry status; 1-char keys, hex values |
 | **D4** | 🟢 | Host→device grammar — freeform, comma-separated, **no CRC or length** |
-| **D5** | 🟢 | No prompt, no echo; every command answers; `Z` / `' '` are the no-op |
+| **D5** | 🟢 | No prompt, no echo; everything answers; no-op is `Z` / `' '` / bare CR |
 | **D6** | 🟢 | Phase-1 op set — six commands, mask-addressed where simultaneity matters |
 | **D9** | 🟢 | Level-command encoding — Select + Set + Clear, BSRR-style, both = toggle |
 | **D7** | 🟢 | Module name — `automation_console.{c,h}`, not a "test harness" |
@@ -173,16 +173,12 @@ Established; do not re-litigate unless explicitly reopened.
 - **stdio is raw, unbuffered, and does no EOL translation** (verified
   2026-08-02). `v_stdio_retarget()` sets `_IONBF` on `stdout`, `stdin` *and*
   `stderr` (`stdio_retarget.c:72-74` — not `Core/`), and `_write()` hands the
-  buffer straight to `u16_uart_stream_tx_multi_blocking()` with no `
-` → `
-`
+  buffer straight to `u16_uart_stream_tx_multi_blocking()` with no `\n` → `\r\n`
   expansion. `_read()` is non-blocking and equally untranslated.
   Three consequences this design depends on: **(a)** the console's line reader
-  sees `` and `
-` exactly as the host sent them, so the CRLF reasoning in
+  sees `\r` and `\n` exactly as the host sent them, so the CRLF reasoning in
   **D5**/**S3** rests on real behaviour rather than an assumption; **(b)**
-  `v_acon_emit()`'s explicit `
-` reaches the wire verbatim (**I8**); **(c)**
+  `v_acon_emit()`'s explicit `\r\n` reaches the wire verbatim (**I8**); **(c)**
   unbuffered output means one log entry arrives as *several* `_write()` calls,
   which is what shapes **I7**.
 - **Async event sources will be ISR context.** Cycling transitions come from the
@@ -381,14 +377,14 @@ Prefixing it makes stray output harmless instead of fatal.
 
 **Grammar.**
 
-``
+```
 =<op>[,<tok>]...                 success, complete in one line
 !<op>,<CODE>[,<tok>]...          failure, complete in one line
 =<op>,K<n>[,<tok>]...            success, exactly <n> payload lines follow
 +<text>                          payload line -- free text, NOT tokenised
 *<src><ch>,T<hex>,V<hex>         async event (phase 2)
 #<text>                          not protocol; host ignores the line
-``
+```
 
 `<op>` is the single command character, echoed back so a desynchronised host
 notices immediately. A `<tok>` is **one uppercase key letter immediately followed
@@ -420,13 +416,13 @@ needs the multi-line form.
 
 **Worked examples:**
 
-``
+```
 =S,L9,M4,R4                          set levels -> ok
 !W,RNG,L9,M4,R4                      write params -> rejected, out of range
 =G,L9,M4,R4,N7A120,F7A120,C0,D4D2    get params for a channel
 =L,K8                                op list, 8 payload lines follow
 +V ping / version
-``
+```
 
 **What was tightened, and what deliberately was not.** `=S,L9,M4,R4` is 13 bytes
 against 37 for the earlier `=OK cmd=S level=0x9 mode=0x4 run=0x4` — a 65 %
@@ -497,14 +493,14 @@ formatting at priority 0.
 So the queue holds **fixed-size binary records, not strings**, and formatting
 happens in the main loop at flush time:
 
-``c
+```c
 typedef struct {
     uint32_t u32_timestamp;   /* TIM2->CNT at the event -- S8            */
     uint8_t  u8_class;        /* SW transition / sense edge / ADC / ...  */
     uint8_t  u8_channel;
     uint16_t u16_value;
 } repl_event_t;               /* 8 bytes                                 */
-``
+```
 
 An 8-byte record in a power-of-two ring is a single-producer/single-consumer
 structure with the same discipline as `uart_stream`'s rings — producer (ISR)
@@ -546,7 +542,7 @@ frame and the start of the next — never inside one.
 **Drain structure.** The executive loop makes the deferral rule structural rather
 than something that has to be remembered at each emit site:
 
-``c
+```c
 for (;;)
 {
     if (<lead char available from host>)
@@ -558,7 +554,7 @@ for (;;)
 
     <service the event queue -- emit at most ONE event frame>
 }
-``
+```
 
 Two properties fall out of this ordering and both are wanted. Command service
 comes first, so a pending command is never delayed behind a backlog. And exactly
@@ -897,7 +893,7 @@ caught by **I2**'s registration scan at startup:
 |:--:|---------|-|:--:|---------|
 | `S` | set switch levels (**D9**) | | `V` | version / identity ping |
 | `R` | read switch state | | `L` `?` | list ops |
-| `W` | write cycling parameters | | `Z` `' '` | no-op (**D5**) |
+| `W` | write cycling parameters | | `Z` `' '` CR | no-op (**D5**) |
 | `G` | get cycling parameters | | `Q` | quit |
 | `C` | start cycling | | `~` | *reserved* — session frames (**D3**) |
 | `X` | stop cycling | | | |
@@ -983,10 +979,35 @@ registration scan would have caught at startup anyway — better to not build it
 
 **Status:** 🟢
 
-**Strict case sensitivity.** No `toupper()` anywhere in dispatch; the namespace is
-the full printable range `0x20..0x7E`. The reference implementation folds case in
-both the builtin `switch` and the op-table scan, halving an already small
-namespace — this does not.
+**Strict case sensitivity.** No `toupper()` anywhere in dispatch. The reference
+implementation folds case in both the builtin `switch` and the op-table scan,
+halving an already small namespace — this does not.
+
+**The namespace is `0x01..0x7F`, not just the printable range.** There is no
+reason to exclude `0x01..0x1F` merely because those codes are unprintable: an
+opcode is a byte a machine sends, and a control character is as good a byte as any.
+
+| Range | Status |
+|---|---|
+| `0x01..0x7F` | **available as opcodes**, minus the reservations below |
+| `0x00` | reserved — out-of-band |
+| `0x80..0xFF` | reserved — entry/exit sentinels (`ACON_ENTER` 0xDA, `ACON_EXIT` 0xA5) and any future out-of-band signalling |
+
+**Reserved inside the usable range** (**I2** enforces all of these at
+registration, so a domain op cannot claim one):
+
+| Code | Why |
+|---|---|
+| `0x0A` LF | ignored everywhere by the line reader (**D4**) |
+| `0x0D` CR | line terminator; a bare CR is the no-op (**D5**) |
+| `0x20` space | no-op alias (**D5**) |
+| `V` `L` `?` `Q` `Z` | builtins — **both cases** reserved |
+| `~` | protocol/session frames (**D3**) |
+
+**Guidance, not restriction: prefer printable opcodes for ordinary commands.**
+A printable opcode can be typed at a terminal while debugging; a control-character
+one cannot. The control range is there for commands that *should* be hard to send
+by accident, not as the default place to put the next feature.
 
 **I2's collision check reserves both cases of every builtin letter**, so `v` and
 `q` cannot be claimed by a domain op even though they are technically free. A host
@@ -1019,15 +1040,36 @@ should not be assumed to need the same format:
   executed (**S1**), and the transport counts its own ORE/FE/NE/PE (**S5**).
 
 **Resolved: freeform, comma-separated to match the response direction**
-(**D3**). First character is the opcode; the remainder splits on `,`; CR or LF
-terminates; empty lines are ignored. One splitter on each side of the link and
-one rule to remember, rather than "commas that way, spaces this way".
+(**D3**). First character is the opcode; the remainder splits on `,`. One splitter
+on each side of the link and one rule to remember, rather than "commas that way,
+spaces this way".
 
-``
+**Line termination: CR terminates, LF is ignored — everywhere, unconditionally.**
+Not "CR or LF", and not "CR, with LF swallowed if it follows one". `0x0A` is
+consumed and discarded wherever it appears, so it can never terminate a line,
+never become an opcode, and never produce a frame.
+
+That single rule is what makes a **bare CR a response-generating no-op** (**D5**)
+without reintroducing the CRLF hazard:
+
+| Host sends | Result |
+|---|---|
+| `S,3,1,2\r\n` | `\r` terminates a non-empty line → command runs; `\n` discarded. **One** frame. |
+| `\r` | empty line → no-op → `=Z` |
+| `\r\n\r\n` | two no-ops — what a human pressing Enter twice expects |
+| `\n\r` | `\n` discarded, `\r` terminates → identical to bare CR |
+
+**The cost, stated plainly:** a host that sends LF-only line endings never
+terminates a line, and its session ends on the **S3** idle timeout. That is a
+discoverable failure rather than a silent corruption, it is documented, and the
+host runner (**T1**) is ours and sends CR. Terminals send CR. The trade buys an
+unambiguous reader with no lookahead, no timing window and no special case.
+
+```
 S,3,1,2          select=3, set=1, clear=2
 W,1,7A120,7A120,0   channel 1, on 500000 µs, off 500000 µs, repeat 0 (infinite)
 G,1              get channel 1 parameters
-``
+```
 
 **Numerics are hex in both directions**, uniformly — one parse routine, one format
 routine, no per-field rule to look up. The honest cost is that hand-typing a time
@@ -1062,33 +1104,40 @@ keeps the grammar unchanged.
 filter. Automation-console mode emits neither. The response frame (**D3**) is the
 only output, which is what makes the channel deterministic.
 
-**Every non-empty command line produces exactly one response frame** — recognised
-or not. An unknown opcode returns `!<op>,UNK`. There is no silent path, so a host
-that gets nothing back knows the link or the device is at fault, never the
-protocol.
+**Every command line produces exactly one response frame** — recognised or not,
+empty or not. An unknown opcode returns `!<op>,UNK`. There is no silent path at
+all, so a host that gets nothing back knows the link or the device is at fault,
+never the protocol.
 
-**Empty lines remain silent, and that is deliberate — not an exception.** A host
-sending CRLF line endings delivers a bare `
-` after every `
-`. If an empty line
-produced a response, every single command would generate a spurious extra frame
-and the host would run permanently one frame out of step. Empty input is discarded
-before dispatch.
+**Empty lines answer too**, and that is only safe because of **D4**'s termination
+rule: LF is discarded unconditionally, so a CRLF host's trailing `\n` never
+reaches dispatch and cannot produce the spurious second frame that would otherwise
+put it permanently one frame out of step. Get that rule wrong and
+empty-lines-answer becomes a desynchronisation bug; with it, the exception
+disappears entirely.
 
-**A dedicated no-op is therefore needed. It is `Z`, with `' '` (0x20) as an
-alias.** It takes no arguments, touches nothing, and returns `=Z` — *both*
-spellings answer `=Z`, so the host never has to deal with a frame whose opcode
-field is a space, which whitespace trimming anywhere in the chain could silently
-eat. Space is a natural fit: it is literally the first character of **D2**'s
-`0x20..0x7E` namespace. **I2** reserves both.
+**The no-op is `Z`, with `' '` (0x20) and a bare CR as aliases.** It takes no
+arguments, touches nothing, and returns `=Z` — *all three* spellings normalise to
+that one response, so the host never handles a frame whose opcode field is a space
+or a control character, which whitespace trimming anywhere in the chain could
+silently eat. **I2** reserves all three.
 
-Three uses:
+**Bare CR is the one that matters operationally, and the reason is human.**
+Checking a console's responsiveness by tapping Enter or space is ingrained muscle
+memory — it is why the debug menus bind `.key = '\r'` to reprint help. If the
+device is somehow stuck in the automation console, tapping Enter returns `=Z`
+instead of the expected menu help, and the state is diagnosed in one keystroke
+with no host, no script and no guessing. The symmetry is deliberate: **CR always
+produces a response in either mode, and *which* response tells you which mode you
+are in.**
 
-- *"Are you there"* — the minimal liveness check, 4 bytes out and 4 back.
+Four uses:
+
+- *"Are you there"* — the minimal liveness check; a bare CR is one byte out.
+- **Mode diagnosis by hand**, as above.
 - **Resynchronisation.** A host that suspects a partial line is sitting in the
-  device's buffer sends `
-` (flushes the line, silently) then `Z` (gets a known
-  frame). Confirmation of sync without side effects.
+  device's buffer sends CR: that terminates and discards whatever was accumulating
+  and returns a known frame, in one byte.
 - **Latency measurement**, with no work in the path to confound it.
 
 `V` remains the identity ping and is the better call at session start — it pins
@@ -1096,35 +1145,19 @@ product, platform, firmware and build config — but it is not a no-op, and usin
 error response as a liveness probe would be worse than either.
 
 **Keep-alives.** A host that must block on some external process holds the session
-open by sending a no-op inside the **S3** window: `" 
-"`, two bytes. The idle
+open by sending a no-op inside the **S3** window — a bare CR is one byte. The idle
 timer resets on *any* received byte, so a keep-alive works even if it lands
 mid-line.
 
-**Why 0x0A is *not* a no-op alias.** (Also worth noting the code: 0x0A is LF; CR
-is 0x0D.) Neither can be the no-op, and it is the same reason empty lines stay
-silent above — this is that decision seen from the other side. A bare `
-` or `
-`
-does not *reach* dispatch as a command character: the line reader consumes it as a
-**terminator**, so what dispatch would see is an empty line. Making an empty line
-answer is precisely the thing that puts a CRLF host permanently one frame out of
-step, because every `...
-` command would produce its response *plus* a spurious
-no-op frame.
+**LF (0x0A) is still not an alias, and no longer needs to be.** It is discarded
+unconditionally (**D4**), which is precisely what lets CR *be* one. An earlier
+version of this row kept empty lines silent because both CR and LF terminated,
+which made a CRLF host's trailing LF indistinguishable from a deliberate blank
+line. Demoting LF from "terminator" to "ignored" removes that ambiguity at its
+source: the constraint was in the reader, not in the protocol, and fixing the
+reader turned a hazard into a feature.
 
-The alternative — swallowing an `
-` that immediately follows a `
-` — works for
-back-to-back CRLF but then silently eats a legitimate standalone `
-` keep-alive
-that happens to follow a command, and needs a time bound to distinguish the cases.
-That is a lot of fragility to save one byte.
-
-`' '` has none of that trouble: it is a *printable* character, so `" 
-"` is a
-genuine non-empty line whose first character is the no-op opcode, dispatched by
-exactly the same path as every other command. No special case anywhere.
+(Codes, since the reasoning turns on them: CR is 0x0D, LF is 0x0A.)
 
 Entry and exit still announce themselves so a host knows the mode switch landed;
 those banners get sigils like everything else (**I5** obligation 1).
@@ -1295,14 +1328,12 @@ the console exists:
   `v_print_timestamp()` → `printf("[%s] ")` → `vprintf(fmt)`. Prefixing each call
   would produce `#(1.234) #[SYS] #NVM commit: ...`. The `#` must go in only at
   **column 0**.
-- So: keep an at-line-start flag, set at session entry and whenever a `` or `
-`
+- So: keep an at-line-start flag, set at session entry and whenever a `\r` or `\n`
   is passed through. When the flag is set and the next byte is not itself a
   newline, inject `#` and clear it. `_write()` then emits in segments rather than
   one block, which costs a short scan per call and only while a session is active.
 - **Do not repurpose `ui_stdout_after_crlf_char_count` for this.** It is nearly the
-  right state and is tempting, but it resets on `` only and ignores `
-`, and
+  right state and is tempting, but it resets on `\r` only and ignores `\n`, and
   `utils.c` reads it through `ui_stdout_chars_after_crlf()` for output formatting.
   Widening its reset condition to fix this filter would change behaviour for an
   unrelated caller. A private flag is two bytes.
@@ -1319,11 +1350,9 @@ call site that emits a partial line simply continues that line on the next call,
 which is the right answer rather than a hazard. This is strictly more robust than
 the per-buffer scheme it replaces.
 
-**Note on line endings:** `logging.c`'s `v_newline()` emits `` *then* `
-`
+**Note on line endings:** `logging.c`'s `v_newline()` emits `\r` *then* `\n`
 (`logging.c:17-21`), so log lines are CRLF-terminated on the wire. The flag resets
-on either character, so a bare `
-` from anywhere else is handled too.
+on either character, so a bare `\n` from anywhere else is handled too.
 
 **Leaning:** filter in `_write()`, gated on a session-active flag, with a private
 at-line-start flag driving `#` injection; console frames go direct to
@@ -1370,12 +1399,10 @@ to remember. A call site cannot omit it, cannot typo it, and cannot invent one.
 That obligation is the single most expensive thing to retrofit in this whole
 design, so it is worth making structurally impossible to violate.
 
-**The emitter appends `
-` itself.** Every frame is exactly one line, so no call
+**The emitter appends `\r\n` itself.** Every frame is exactly one line, so no call
 site should be able to forget the terminator — forgetting it would run two frames
 together and desync the host in a way that looks like a protocol bug rather than a
-missing `
-`. It follows that **format strings never contain a newline**, which is
+missing `\n`. It follows that **format strings never contain a newline**, which is
 a clean invariant to state and to assert on in debug builds.
 
 **Truncation must be detected, and must not be emitted.** `vsnprintf()` returns the
