@@ -64,7 +64,7 @@ exists.
 | **D7** | 🟢 | Module name — `automation_console.{c,h}`, not a "test harness" |
 | **D8** | 🟢 | Wire encoding — ASCII lines, hex for binary data, both directions |
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
-| **S2** | 🟡 | Cooperative pumping and re-entrancy vs `v_debug_menu_service()`'s lock |
+| **S2** | 🟢 | Re-entry lock already covers it — verified, no code change needed |
 | **S3** | 🟡 | Idle-timeout value and what state the tester is left in |
 | **S4** | 🟢 | Cycling: entry/exit non-disturbing, commits deferred, `P` forces one |
 | **S5** | 🟡 | Transport error counters as an assertable builtin |
@@ -85,6 +85,7 @@ exists.
 | **I4** | 🟡 | Line-buffer sizing and static (not stack) allocation |
 | **I5** | 🟡 | **Async-readiness contract — what phase 1 must do so phase 2 is a drop-in** |
 | **I6** | 🟢 | State readback — three bitmaps: level (`IDR`), mode (`OCxM`), cycling-active |
+| **I7** | 🟡 | Sigil-prefix stray output at `_write()` so logs cannot desync the host |
 | **T1** | 🔴 | Host-side Python runner |
 | **T2** | 🔴 | Sync decisions back into `SwitchTester-Design.md` |
 | **T3** | 🔵 | Promote the REPL to `G0B1_Skeleton` alongside `uart_stream` |
@@ -1108,25 +1109,52 @@ spelling of their names moves.
 
 ---
 
-### S2 — Cooperative pumping and re-entrancy
+### S2 — Cooperative pumping and re-entrancy *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢 — **no code change required; verified against the call graph**
 
-The REPL loop blocks — it owns the console until it exits. Two hazards:
+The console reads with bare `getchar()` and pumps `v_app_polling_task()`
+directly. It never calls `v_debug_menu_service()` or `v_debug_delay()`.
 
-- It must pump `v_app_polling_task()` every spin or the rest of the application
-  stops (jobs, the pulse timebase, NVM commit).
-- `v_debug_menu_service()` has a static re-entry lock and is re-entered from
-  `v_debug_delay()`. If the REPL is called *from* the service loop and its own
-  spin calls anything that reaches `v_debug_menu_service()`, the lock silently
-  swallows input — or worse, the menu consumes bytes meant for the REPL.
+**The existing re-entry lock already provides the guarantee.** Traced 2026-08-02:
 
-**Leaning:** the REPL reads with bare `getchar()` and pumps `v_app_polling_task()`
-directly, never `v_debug_menu_service()`. Since it is invoked from inside the
-service loop, the re-entry lock is already held for its whole duration, which is
-the correct guarantee — but that is load-bearing and belongs in a comment.
+```
+app_main()                                   app_main.c:257
+  v_app_polling_task()                       app_main.c:244
+    KICK_WATCHDOG()
+    v_debug_menu_service()                   debug_menu.c:777
+      u8_reentry_lock = 1                    <-- set here, cleared only on return
+      getchar() -> 0xDA
+        v_automation_console_run()           <-- I1 intercept, inside the lock
+          loop:
+            v_app_polling_task()
+              KICK_WATCHDOG()                <-- still kicked. good
+              v_debug_menu_service()         <-- returns immediately, lock held
+              v_process_next_job()           <-- still runs. wanted
+            getchar()                        <-- console gets every byte
+    v_process_next_job()
+```
 
-**Resolution:** _pending_
+Because the console is entered from *inside* `v_debug_menu_service()`, the lock
+is held for the console's entire lifetime, and the nested
+`v_debug_menu_service()` reached through `v_app_polling_task()` returns at its
+first statement. No recursion, no call stacking, no second reader.
+
+**The lock is load-bearing for correctness, not tidiness — and that deserves a
+comment at both ends.** Without it the nested service call would `getchar()`
+bytes destined for the console *and dispatch them as menu keys*, executing
+arbitrary menu commands in the middle of an automation session. It is not merely
+that the menu would be noisy; it would be actuating the instrument.
+
+**What still runs nested, deliberately:** `KICK_WATCHDOG()` (so a long session
+cannot trip the watchdog) and `v_process_next_job()` (so jobs, the pulse timebase
+and deferred commits keep working). The job runner continuing to run is wanted —
+and it is also why **I7** exists, since jobs log.
+
+**Also verified:** `v_debug_menu_service()` has exactly one caller outside its own
+file (`app_main.c:246`), and `v_debug_delay()` has none. `i_getchar_blocking()`
+and `i_getline()` in `utils.c` pump `v_app_polling_task()` too, so they are safe
+by the same argument if the console ever uses them.
 
 ---
 
@@ -1163,6 +1191,52 @@ exists.
 zero it at the start of a run. Once the loopback rig (**T3** in the transport
 plan) is up, the same op should be able to report *any* bound instance, not just
 the console.
+
+**Resolution:** _pending_
+
+---
+
+### I7 — Stray output during a session
+
+**Status:** 🟡 · **Needs user:** no
+
+**The problem, which S2 creates by design.** `v_process_next_job()` keeps running
+nested inside the console loop — that is wanted — and **jobs log**.
+`JOB_NVM_COMMIT` prints `NVM commit: status %d (...)`; `JOB_CYCLE_COMPLETE` and
+anything else added later will print too. Those lines land in the middle of the
+host's stream. **D3** anticipated exactly this with the `#` sigil, but nothing
+yet *applies* it — `logging.c` calls `printf`/`vprintf` directly.
+
+**Prefixing inside `logging.c` does not work.** There is no single choke point: a
+log entry is assembled from several calls (`v_print_color()`, `v_print_timestamp()`,
+then `vprintf`), and the variants differ in which prefix helpers they use —
+`v_log_printf()` uses none at all. Hooking each would mean touching every variant
+and would still miss a bare `printf` from anywhere else.
+
+**The choke point that does work is `_write()`.** Everything printed converges
+there, so a line-oriented filter applied at that one place catches log output,
+stray `printf`, and anything a future job adds, without those call sites knowing
+the console exists:
+
+- While a session is active, `_write()` emits `#` at the start of the buffer and
+  after every `
+` it passes through.
+- **The console's own frames bypass `_write()` entirely** — `v_acon_emit()` writes
+  to `uart_stream` directly, so it carries its own sigils and is unaffected. This
+  falls out of **I5** obligation 2 rather than being an extra rule.
+
+The result is that *nothing* can desync the host, including output from code
+written years from now by someone who never read this document.
+
+**Known constraint:** a log format string containing an embedded `
+` produces a
+correctly-prefixed second line, so multi-line entries are fine — but a format
+string that emits a *partial* line and returns (no trailing newline) will have the
+next entry's `#` appear mid-line. Existing logging always terminates its entries,
+so this is a note for future call sites rather than a present defect.
+
+**Leaning:** filter in `_write()`, gated on a session-active flag; console frames
+go direct to `uart_stream`.
 
 **Resolution:** _pending_
 
@@ -1385,7 +1459,8 @@ a whole run with nobody noticing.
 - **Phase 1 — command/response** — **unblocked; every gating row is green:**
   1. `automation_console.{c,h}` — executive, line reader, builtins, frame emit
      (**D3**), honouring all four **I5** obligations from the first commit
-  2. `debug_menu.c` intercept (**I1**) + `debug_config.h` gate (**I3**)
+  2. `debug_menu.c` intercept (**I1**) + `debug_config.h` gate (**I3**) +
+     `_write()` sigil filter (**I7**)
   3. Op table + collision scan (**I2**), the seven **D6** commands in order
   4. Shared state-bitmap helpers (**I6**) + cycle-period floor (**S10**) at the
      REPL parameter setter only
@@ -1406,7 +1481,7 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 17 · 🟡 12 · 🔴 2 · 🔵 4 (35 rows) + 5 wish rows (one
+- **Plan status:** 🟢 18 · 🟡 12 · 🔴 2 · 🔵 4 (36 rows) + 5 wish rows (one
   promoted). **Every design row is settled.** The two remaining reds are
   **T1**/**T2**, which follow the code rather than precede it; the twelve yellows
   all carry leanings and read as implementation guidance, not open questions.
