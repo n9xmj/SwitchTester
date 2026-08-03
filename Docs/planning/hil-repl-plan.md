@@ -56,7 +56,7 @@ exists.
 | **D3** | 🟡 | Frame identity and grammar — sigils, status in the header, `n=` payload counts |
 | **D4** | 🟡 | Host→device grammar — freeform opcode+args vs fixed packet with length/CRC |
 | **D5** | 🟡 | Prompt / echo policy while in harness mode |
-| **D6** | 🟢 | Phase-1 op set — five commands, mask-addressed where simultaneity matters |
+| **D6** | 🟢 | Phase-1 op set — six commands, mask-addressed where simultaneity matters |
 | **D9** | 🟢 | Level-command encoding — Select + Set + Clear, BSRR-style, both = toggle |
 | **D7** | 🟡 | Module name and file home |
 | **D8** | 🟢 | Wire encoding — ASCII lines, hex for binary data, both directions |
@@ -75,6 +75,7 @@ exists.
 | **S13** | 🟢 | Switch-op responses carry state; ok/error lives in the frame header |
 | **S14** | 🟡 | Time units on the wire, and whether REPL-set params persist to NVM |
 | **S15** | 🟡 | Start/stop edge cases — already cycling, level on stop, repeat exhaustion |
+| **S16** | 🟡 | Repeat progress reporting — cycles *remaining* vs cycles *done* |
 | **I1** | 🟡 | Hook point — where the 0xDA intercept lives |
 | **I2** | 🟡 | Op-table home + registration-time collision checking |
 | **I3** | 🟡 | Build gate for release images |
@@ -687,6 +688,50 @@ explicit op the host calls deliberately, not a side effect of configuring.
 
 ---
 
+### S16 — Repeat progress reporting
+
+**Status:** 🟡 · **Needs user:** yes
+
+**The problem: `repeat_count == 0` means "run until stopped".** Confirmed in
+`switch_out.h:63` and in the ISR at `switch_out.c:167` —
+`if (repeat_count && (cycles_done >= repeat_count))` — so a zero repeat count
+never terminates. It is also `SWITCH_CYCLE_REPEAT_DEFAULT`, which makes the
+infinite run the *common* case, not an edge case.
+
+That makes "**# cycles remaining**, 0 if stopped or in manual mode" ambiguous in
+three different ways, all of which encode as `0`:
+
+| Situation | "remaining" | What the host should conclude |
+|---|:---:|---|
+| Stopped / manual | 0 | not running |
+| Finite run, just completed | 0 | ran to completion |
+| **Infinite run, cycling right now** | 0 (?) | *actively running* — the opposite |
+
+**Options considered:**
+
+- **Report `remaining` as specified**, with a sentinel for infinite (`0xFFFFFFFF`
+  or `-1`). Works, but a sentinel is a thing to remember, and the field is still
+  a derived quantity the device computes on the host's behalf.
+- **Report `done` (`u32_cycles_done`) instead.** Always well defined — including
+  during an infinite run, which is exactly the case a soak campaign cares about,
+  since "how many cycles has it completed" *is* the question. The host computes
+  `remaining = repeat - done` itself whenever `repeat != 0`, and knows there is no
+  such thing as remaining when `repeat == 0`. No sentinel, no ambiguity.
+- **Report both.** Redundant — `remaining` is derivable from the other two fields.
+
+**Leaning / recommendation:** report **`done`** alongside the initial repeat
+count. It carries strictly more information than `remaining` — after a finite run
+completes, `done` is the final tally, whereas `remaining` collapses to 0 and tells
+you nothing — and it is the only one of the two that stays meaningful for the
+default infinite run.
+
+`u32_cycles_done` is ISR-written and main-loop-read, but it is 32-bit and aligned,
+so the read is a single `LDR` on M0+ and cannot tear.
+
+**Resolution:** _pending_
+
+---
+
 ### S15 — Start/stop edge cases
 
 **Status:** 🟡 · **Needs user:** no
@@ -754,11 +799,10 @@ the reason to carry it:
   a bug, and on an instrument the ability to see that is worth four bits.
 
 **What three bitmaps still cannot express: repeat progress.** "How many cycles
-have completed" is a per-channel *count* (`u32_cycles_done` against the repeat
-target), not a boolean, and a soak campaign will want it. That is per-channel data
-and does not belong in a bitmap — it wants either its own command later or the
-multi-line `n=<count>` response form (**D3**). Deliberately not added to the read
-command now; noted so it is a decision rather than an oversight.
+have completed" is a per-channel *count*, not a boolean, so it does not belong in
+a bitmap. **Resolved by giving it its own command** — **D6** command 6, the getter
+complement to the parameter setter — rather than by widening the read command.
+The reporting semantics are **S16**.
 
 **Implementation:** `u8_switch_out_level_bitmap()`, `u8_switch_out_mode_bitmap()`
 and `u8_switch_cycle_run_bitmap()` in `switch_out.c`, so the REPL, the menu and
@@ -770,7 +814,7 @@ any later logging share one implementation.
 
 **Status:** 🟢
 
-Five commands, plus the executive builtins. Deliberately a starting set; more are
+Six commands, plus the executive builtins. Deliberately a starting set; more are
 expected to follow.
 
 | # | Command | Inputs | Returns |
@@ -780,6 +824,7 @@ expected to follow.
 | 3 | Set cycling parameters | switch # (0–3), on-time, off-time, repeat count | level + mode + run bitmaps (**S13**) |
 | 4 | Start auto-cycling | start bitmask | level + mode + run bitmaps (**S13**) |
 | 5 | Stop auto-cycling | stop bitmask | level + mode + run bitmaps (**S13**) |
+| 6 | **Get** cycling parameters | switch # (0–3) | on-time, off-time, repeat count, progress (**S16**) + the three bitmaps |
 
 Plus builtins from **D1**: `V` version/ping, `L`/`?` list, `Q` quit.
 
@@ -794,6 +839,14 @@ nothing to synchronise.
 
 Setting parameters (3) is deliberately separate from starting (4), so a host can
 stage several channels' configurations and then start them together.
+
+**Command 6 is the getter complement to command 3** — same per-channel
+addressing, returning the configured on-time, off-time and repeat count plus
+run progress. It is what carries the per-channel data the three bitmaps of
+**I6** structurally cannot: a count is not a bit. It also lets a host verify
+what it configured without inferring it, and read the final tally after a
+finite run has completed. Whether progress is reported as *remaining* or *done*
+is **S16**. Response stays single-line, so it needs no `n=` payload (**D3**).
 
 **Parameter storage is shared with the debug menu** — the REPL sets the same
 values the menu does. Whether it also *persists* them is **S14**.
@@ -1197,7 +1250,7 @@ a whole run with nobody noticing.
   1. `hil_repl.{c,h}` — executive, line reader, builtins, frame emit (**D3**),
      honouring all four **I5** obligations from the first commit
   2. `debug_menu.c` intercept (**I1**) + `debug_config.h` gate (**I3**)
-  3. Op table + collision scan (**I2**), the five **D6** commands in order
+  3. Op table + collision scan (**I2**), the six **D6** commands in order
   4. Shared state-bitmap helpers (**I6**) + cycle-period floor (**S10**) at the
      REPL parameter setter only
   5. Bench: enter, `V`, `L`, one op of each shape, exit by all three routes
@@ -1217,7 +1270,7 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 9 · 🟡 18 · 🔴 3 · 🔵 4 (34 rows) + 5 wish rows (one
+- **Plan status:** 🟢 9 · 🟡 19 · 🔴 3 · 🔵 4 (35 rows) + 5 wish rows (one
   promoted). **Nothing gates phase 1 any more** — the three remaining reds are
   **S4** (decidable without new input; leaning recorded), and **T1**/**T2**,
   which follow the code rather than precede it. The twenty yellows all carry
