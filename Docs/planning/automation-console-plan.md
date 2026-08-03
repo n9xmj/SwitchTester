@@ -68,29 +68,29 @@ exists.
 | **S2** | 🟢 | Re-entry lock already covers it — verified, no code change needed |
 | **S3** | 🟢 | 15 s `#define`, reset on any byte, announced exit `!~,TMO` |
 | **S4** | 🟢 | Cycling: entry/exit non-disturbing, commits deferred, `P` forces one |
-| **S5** | 🟡 | Transport error counters as an assertable builtin |
+| **S5** | 🟢 | Transport error counters as an assertable builtin — the `E` op |
 | **S6** | 🔵 | Async event queue — ISR-safe fixed records, formatted at dequeue *(phase 2)* |
 | **S7** | 🔵 | Deferral rule and queue-overflow policy (drop + dropped-count) *(phase 2)* |
-| **S8** | 🟡 | Timestamp source and capture point — `TIM2->CNT`, sampled at event time |
+| **S8** | 🔵 | Timestamp source — `TIM2->CNT` tentative; wide-counter idea *(phase 2)* |
 | **S9** | 🔵 | Event subscription / arming — which events report, and when *(phase 2)* |
 | **S10** | 🟢 | Minimum cycle-period guard — 50 ms, REPL-commanded cycling only |
-| **S11** | 🟡 | Host receive contract — dispatch by sigil, never by position |
-| **S12** | 🟡 | Menu-mode human log — separate gate flag, emitted from the job runner |
+| **S11** | 🟢 | Host receive contract — dispatch by sigil, never by position |
+| **S12** | 🔵 | Menu-mode human log — folded into phase-2 event-queue planning |
 | **S13** | 🟢 | Switch-op responses carry state; ok/error lives in the frame header |
 | **S14** | 🟢 | µs on the wire; no auto-persist — commit is the explicit `P` command |
-| **S15** | 🟡 | Start/stop edge cases — already cycling, level on stop, repeat exhaustion |
+| **S15** | 🟢 | Start/stop edge cases — restart from ON, stop stays LOW, exhaustion reported |
 | **S16** | 🟢 | Repeat progress — report cycles *done*; host derives remaining |
-| **I1** | 🟡 | Hook point — where the 0xDA intercept lives |
-| **I2** | 🟡 | Op-table home + registration-time collision checking |
-| **I3** | 🟡 | Build gate for release images |
-| **I4** | 🟡 | Line-buffer sizing and static (not stack) allocation |
-| **I5** | 🟡 | **Async-readiness contract — what phase 1 must do so phase 2 is a drop-in** |
+| **I1** | 🟢 | Hook point — one `if` in `v_debug_menu_service()`, before the echo |
+| **I2** | 🟢 | Op-table collision scan on entry — mode-appropriate conflict report |
+| **I3** | 🟢 | **No build gate** — the console ships in every build configuration |
+| **I4** | 🟢 | Input line buffer 256 B, `#define`-settable, static |
+| **I5** | 🔵 | Async-readiness contract — absorbed into D3/I7/I8 *(phase 2)* |
 | **I6** | 🟢 | State readback — three bitmaps: level (`IDR`), mode (`OCxM`), cycling-active |
-| **I7** | 🟡 | `#`-prefix stray output at `_write()`, at column 0 — stdio is unbuffered |
+| **I7** | 🟢 | stdout suppressed in SCRIPT mode; console I/O bypasses stdio entirely |
 | **I8** | 🟢 | `v_acon_emit()` — the frame emitter; sigil is an argument, not a convention |
 | **I9** | 🟢 | `i_getline()` gains a silent `^C` exit returning −2; no consumer edits |
-| **T1** | 🔴 | Host-side Python runner |
-| **T2** | 🔴 | Sync decisions back into `SwitchTester-Design.md` |
+| **T1** | 🔵 | Host-side Python runner — deferred until there is code to drive |
+| **T2** | 🔵 | Sync decisions back into `SwitchTester-Design.md` — after the code lands |
 | **T3** | 🔵 | Promote the REPL to `G0B1_Skeleton` alongside `uart_stream` |
 
 ### Wish list (v2+)
@@ -590,8 +590,8 @@ those banners get sigils like everything else (**I5** obligation 1).
 
 **Status:** 🟢
 
-Seven commands, plus the executive builtins. Deliberately a starting set; more
-are expected to follow.
+Eight commands, plus the executive builtins. Deliberately a starting set; more
+are expected to follow. Command 8 arrived with **S5**, after the original seven.
 
 | # | Command | Inputs | Returns |
 |---|---------|--------|---------|
@@ -602,6 +602,7 @@ are expected to follow.
 | 5 | Stop auto-cycling | stop bitmask | level + mode + run bitmaps (**S13**) |
 | 6 | **Get** cycling parameters | switch # (0–3) | on-time, off-time, repeat count, cycles **done** (**S16**) + the three bitmaps |
 | 7 | Commit parameters to NVM now | none | written / no-change, or refused while cycling (**S4**) |
+| 8 | Transport error counters | none, or a reset flag | ORE/FE/NE/PE count (**S5**) |
 
 **Opcode assignment** — fixed here so collisions are designed out rather than
 caught by **I2**'s registration scan at startup:
@@ -616,6 +617,7 @@ caught by **I2**'s registration scan at startup:
 | `C` | start cycling | | `~` | *reserved* — session frames (**D3**) |
 | `X` | stop cycling | | | |
 | `P` | persist to NVM (**S4**) | | | |
+| `E` | error counters (**S5**) | | | |
 
 **Addressing is by mask where simultaneity matters, per-channel where it does
 not.** Commands 1, 4 and 5 take bitmasks so that several channels change together
@@ -640,8 +642,7 @@ Response stays single-line, so it needs no `n=` payload (**D3**).
 **Parameter storage is shared with the debug menu** — the REPL sets the same
 values the menu does. Whether it also *persists* them is **S14**.
 
-**Deferred from the earlier candidate list:** pulse, toggle, all-off, transport
-error counters (**S5**) and NVM commit/status. All remain sensible additions;
+**Deferred from the earlier candidate list:** pulse, toggle and all-off. All remain sensible additions;
 none is needed to run a first campaign, and several are expressible with the five
 above (all-off is a level command with every channel selected).
 
@@ -902,8 +903,6 @@ that argument — `i_getline()` does not print one either, so both modes stay
 consistent with each other and with the row above. If hand-driving turns out to
 want one, it belongs on this row later.
 
-**Resolution:** _pending_
-
 ---
 
 ### S1 — Reject on error, structured error response *(resolved)*
@@ -1053,21 +1052,19 @@ registration scan would have caught at startup anyway — better to not build it
 
 ---
 
-### S5 — Transport error counters as a builtin
+### S5 — Transport error counters as a builtin *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
 Inherited decision from the transport plan (**S5** there): `uart_stream` counts
 ORE/FE/NE/PE per instance and the count becomes queryable, so a host can assert
 it has not moved across a run. `u32_uart_stream_get_error_count()` already
 exists.
 
-**Leaning:** an `E` op that returns the console instance's count, plus a way to
+**Resolved:** an `E` op that returns the console instance's count, plus a way to
 zero it at the start of a run. Once the loopback rig (**T3** in the transport
 plan) is up, the same op should be able to report *any* bound instance, not just
 the console.
-
-**Resolution:** _pending_
 
 ---
 
@@ -1118,7 +1115,7 @@ unreproducible measurement nobody can explain. Reset costs three stores.
 **Leaning:** 64 records (512 bytes), statically allocated, PRIMASK-guarded
 enqueue, gated on REPL mode, reset at entry, formatted at dequeue.
 
-**Resolution:** _pending_
+**Resolution:** _deferred to phase 2_
 
 ---
 
@@ -1181,13 +1178,13 @@ non-zero, then clear it. The host then knows precisely that its event record has
 a hole and how big, rather than quietly receiving an incomplete history. Combined
 with **S9**'s default-off subscriptions, overflow should be rare in practice.
 
-**Resolution:** _pending_
+**Resolution:** _deferred to phase 2_
 
 ---
 
-### S8 — Timestamp source and capture point
+### S8 — Timestamp source and capture point *(deferred)*
 
-**Status:** 🟡 · **Needs user:** no — but it is a correction, not a detail
+**Status:** 🔵 — phase 2; direction below is tentative
 
 **Question:** What clock timestamps an async event, and when is it sampled?
 
@@ -1211,10 +1208,33 @@ clock, with no conversion.
   device should not try to extend it; the host unwraps trivially by watching for
   a decrease in a monotonic event stream. Document the wrap rather than hiding it.
 
-**Leaning:** `TIM2->CNT` (or the firing `CCR`) as a raw 32-bit microsecond
-stamp, captured in the ISR at enqueue, wrap documented and handled host-side.
+**Tentative direction:** `TIM2->CNT` (or the firing `CCR`) as the source, captured
+in the ISR at enqueue. Locked far enough to build phase 1 against; the width
+question below is phase-2 work.
 
-**Resolution:** _pending_
+**Open for phase 2 — widening past 32 bits.** A TIM2 update (overflow) interrupt
+incrementing a high word would give a 40-bit or 64-bit stamp. Notes for when this
+is picked up:
+
+- **The cost is nothing.** One interrupt every 71.6 minutes. Keep the high word a
+  plain `uint32_t` incremented in the ISR and compose to `uint64_t` at *format*
+  time, so no 64-bit arithmetic ever runs in interrupt context.
+- **The read is not atomic, and this is the classic bug.** Reading `high` then
+  `CNT` can straddle a wrap and yield a stamp wrong by 2³² µs — 71 minutes, in the
+  direction that looks plausible. The standard fix is a double read: read `high`,
+  read `CNT`, read `high` again, and retry if it moved. Inside the TIM2 ISR itself
+  the hazard is absent, since update and compare flags are serviced in one handler
+  invocation; it bites for *other* ISRs, which is exactly where sense-edge
+  timestamps (EXTI, priority 3) will be taken.
+- **Check whether it is needed first.** A 32-bit stamp plus host-side unwrapping
+  already gives unlimited range while consecutive events are under 71 minutes
+  apart — trivially true at the intended rates. The case it does *not* cover is a
+  host attaching mid-campaign, which cannot know how many wraps have passed. That
+  may be answerable far more cheaply by having a status response report the
+  device's current wide tick once, letting the host anchor, rather than widening
+  every event frame.
+- Wire cost is not an objection either way: 16 hex characters against 8, at a
+  couple of events per second.
 
 ---
 
@@ -1249,7 +1269,7 @@ per-channel mask op is added only if a real campaign wants it; at the intended
 mask, and the chance of a host silently filtering out the thing it came to
 measure. Never persisted to NVM — session state, not configuration.
 
-**Resolution:** _pending_
+**Resolution:** _deferred to phase 2_
 
 ---
 
@@ -1286,9 +1306,9 @@ no menu floor at all the cycler bottoms out at the 4 µs hardware guard, but the
 
 ---
 
-### S11 — Host receive contract
+### S11 — Host receive contract *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
 **The identified window is real, and it is harmless.** The host commits to
 sending a command; in the same one-or-two-byte-time window the device dequeues an
@@ -1319,7 +1339,7 @@ line is the answer".
   response to the outstanding command. The window becomes a non-event because no
   code anywhere assumes positional ordering.
 
-**Leaning / recommendation:** sigil dispatch, stated as a protocol contract
+**Resolved:** sigil dispatch, stated as a protocol contract
 rather than left as an implementation detail of the runner — *the host must be
 prepared for an async frame at any point at which it is reading device output.*
 This is already **I5** obligation 1 seen from the host side, and it is why that
@@ -1330,13 +1350,11 @@ written to positional reads has to be rewritten.
 Note that the **S6** REPL-mode enqueue gate bounds this further — outside REPL
 mode no event exists to race with anything.
 
-**Resolution:** _pending_
-
 ---
 
-### S12 — Menu-mode human log
+### S12 — Menu-mode human log *(deferred)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🔵 — phase 2, with the event-queue design
 
 Cycling transitions may be worth *watching* from the debug menu too, not just
 reporting to a host. That is a different feature from the REPL event queue and it
@@ -1358,8 +1376,6 @@ and the ring is 512 bytes.
 
 Low priority — this is a convenience, and the REPL path is the one that matters
 for the campaign the tester exists to run.
-
-**Resolution:** _pending_
 
 ---
 
@@ -1426,13 +1442,11 @@ stored configuration is not reproducible from a clean boot, which is the propert
 a test campaign most needs. If persistence is ever wanted it should be an
 explicit op the host calls deliberately, not a side effect of configuring.
 
-**Resolution:** _pending_
-
 ---
 
-### S15 — Start/stop edge cases
+### S15 — Start/stop edge cases *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
 Three cases the command set does not yet define, each of which will otherwise be
 defined by whatever the code happens to do:
@@ -1455,7 +1469,10 @@ defined by whatever the code happens to do:
   emits an async event — this is one of the better arguments for **S6** existing
   at all, since polling for it is exactly what async is meant to replace.
 
-**Resolution:** _pending_
+**Resolved: all three leanings above are adopted as written.** Flagged as
+provisional by the decision — how the tester actually behaves in use may argue
+for changing the stop level or the already-cycling case, and this row is where
+that would be reopened.
 
 ---
 
@@ -1506,26 +1523,24 @@ happened.
 
 ---
 
-### I1 — Hook point
+### I1 — Hook point *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
 `v_debug_menu_service()` currently does `getchar()` → `printf("Cmd [%s]")` →
 `v_debug_menu_exec()`. The intercept goes between the read and the echo: if the
 byte is `ACON_ENTER`, call the REPL and `continue`, so the sentinel is never
 echoed and never reaches the menu dispatcher.
 
-**Leaning:** intercept in `v_debug_menu_service()`, one `if` before the echo,
+**Resolved:** intercept in `v_debug_menu_service()`, one `if` before the echo,
 guarded by the **I3** build gate. Keeps the REPL out of `debug_menu.c` proper —
 `debug_menu.c` gains an include and three lines.
 
-**Resolution:** _pending_
-
 ---
 
-### I2 — Op table and collision checking
+### I2 — Op table and collision checking *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
 Decided earlier: add registration-time collision checking — the reference has
 none, so two ops claiming the same letter means the second is unreachable and
@@ -1536,52 +1551,87 @@ duplicate-scan in C) versus a runtime scan at init that complains loudly on the
 console. Table home: single static table in the REPL module (reference) versus
 per-module registration.
 
-**Leaning:** single static table in the REPL module — SwitchTester has one
+**Resolved:** single static table in the module — SwitchTester has one
 subsystem worth driving today — plus a one-time O(n²) runtime scan at first entry
 that reports duplicates and builtin-letter squatting (**D2**). n is a dozen; the
 scan costs nothing and it runs on a test build.
 
-**Resolution:** _pending_
+**The scan runs once on every console entry**, not at boot and not per
+command. The table is `static const`, so the result cannot change within a run;
+entry is simply the moment where reporting it is useful. Cost is n² byte
+comparisons with n around a dozen — a few hundred cycles, once, on a bench tool.
+No state to keep, no once-per-boot flag to get wrong.
+
+**The conflict report is mode-appropriate** (**D10**), which is the first place
+outside echo where the two modes diverge in output:
+
+| Mode | Report |
+|---|---|
+| SCRIPT | a standard error frame, `!~,DUP,...`, so a host can fail the run
+  immediately rather than discovering a shadowed op by its symptoms |
+| HUMAN | plain readable text, in the style `menusystem` already uses for the
+  same class of problem |
+
+This mirrors how key-code duplication is already handled in `menusystem`, so the
+console is not inventing a second convention for the same failure.
 
 ---
 
-### I3 — Build gate
+### I3 — Build gate *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
 Reference gates the whole module on `TEST_HARNESS_ENABLED`, defaulting to 1.
 
-**Leaning:** same pattern, `ACON_ENABLED`, defaulting to 1, defined in
+**Superseded leaning:** same pattern, `ACON_ENABLED`, defaulting to 1, in
 `debug_config.h` alongside the other debug switches rather than in the module
 header — SwitchTester keeps its build switches in one place. Note that
 SwitchTester *is* a bench instrument, so there is no real release image to strip;
 the gate is for tidiness and for when this is promoted to the skeleton (**T3**).
 
-**Resolution:** _pending_
+**Resolved: there is no build gate.** The automation console is compiled into
+**every** build configuration; `ACON_ENABLED` is dropped before it exists.
+
+The reference project gates its harness because it ships a product image. This
+does not ship anything — SwitchTester *is* the bench instrument, so there is no
+release build to strip and nothing the gate would protect. What a gate would
+reliably do is make the console absent from precisely the build someone reaches
+for when they need it, which is a worse failure than the few kilobytes it saves.
 
 ---
 
-### I4 — Line-buffer sizing
+### I4 — Line-buffer sizing *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
 Reference carries an 8 KiB-ish static line buffer because its `P` op takes a long
 hex-encoded PLAY string. SwitchTester's candidate ops (**D6**) are a letter and
 up to four small integers.
 
-**Leaning:** 96 bytes, static (not stack — the REPL runs on the main-loop stack
+**Superseded leaning:** 96 bytes, static (not stack — it runs on the main-loop stack
 inside an already-nested call). Overflow characters are dropped and the line
 still terminates on CR, but overflow must produce an `<ERR>` rather than
 silently executing a truncated command — the reference drops silently, which is
 exactly the failure mode **S1** exists to prevent.
 
-**Resolution:** _pending_
+**Resolved: 256 bytes, `#define`-settable as `ACON_LINE_MAX`, static.**
+
+RAM is not tight on this part, and the 96-byte figure was sized to today's
+commands — which is exactly the kind of assumption that becomes a limit later. A
+plausible later use is the host pushing a bulk data frame: an edge-time sequence
+for the DMA-driven arbitrary-waveform generator (**W7** in
+[`switch-cycling-plan.md`](switch-cycling-plan.md)) is hex on the wire and would
+not fit in 96 bytes. Making it a `#define` means that case is a constant change
+rather than a redesign.
+
+The emit buffer (**I8**) stays at 128 and gets its own `#define` for symmetry —
+responses are bounded by the frame grammar and do not grow with input size.
 
 ---
 
-### I5 — Async-readiness contract
+### I5 — Async-readiness contract *(deferred)*
 
-**Status:** 🟡 · **Needs user:** no — but it is the row phase 1 is judged against
+**Status:** 🔵 — phase 2; see the note below on what already binds
 
 Phase 1 ships no async machinery. The risk is that phase-1 code makes phase 2 a
 refactor instead of an addition — and worse, that it invalidates host scripts
@@ -1612,8 +1662,6 @@ hold.
 
 **Leaning:** take all four. Combined they are perhaps thirty lines and one empty
 function.
-
-**Resolution:** _pending_
 
 ---
 
@@ -1666,9 +1714,9 @@ any later logging share one implementation.
 
 ---
 
-### I7 — Stray output during a session
+### I7 — Stray output during a session *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
 **The problem, which S2 creates by design.** `v_process_next_job()` keeps running
 nested inside the console loop — that is wanted — and **jobs log**.
@@ -1720,11 +1768,30 @@ the per-buffer scheme it replaces.
 (`logging.c:17-21`), so log lines are CRLF-terminated on the wire. The flag resets
 on either character, so a bare `\n` from anywhere else is handled too.
 
-**Leaning:** filter in `_write()`, gated on a session-active flag, with a private
-at-line-start flag driving `#` injection; console frames go direct to
-`uart_stream`.
+**Superseded leaning:** a `#`-injecting filter in `_write()`, driven by a private
+at-line-start flag.
 
-**Resolution:** _pending_
+**Resolved: do not filter stdout — suppress it.** In SCRIPT mode `_write()`
+discards, and the console's own output never goes near stdio: `v_acon_emit()`
+(**I8**) writes to `uart_stream` directly. Nothing stray can reach the wire, so
+there is nothing to prefix, and the column-tracking machinery above is not needed
+at all.
+
+**stdout stays enabled in HUMAN mode**, and must — `i_getline()` echoes through
+`printf`, so suppressing it there would blank the very feature human mode exists
+for. There is also no host parser to protect, so interleaved log output is
+readable context rather than corruption. The mode already carries this
+distinction (**D10**); no new flag is needed.
+
+**D3**'s `#` sigil stays defined as belt-and-braces — it costs nothing and gives
+anything that ever writes directly to the port a harmless way to be ignored.
+
+**Consequence worth recording: the console no longer depends on stdio at all.**
+Its input is `getchar()` only in SCRIPT mode and its output is `uart_stream`
+throughout, so pointing it at a *different* UART becomes a matter of passing a
+different handle. Not wanted for this pass, but it turns wish row **W4** — the
+console on a second port while the first stays human — from a redesign into a
+parameter.
 
 ---
 
@@ -1906,7 +1973,7 @@ carries forward — see the resolution above.
 
 ### T1 — Host-side Python runner
 
-**Status:** 🔴 · **Needs user:** no — but blocked on **D3** and **D6**
+**Status:** 🔵 — deferred until there is code to drive
 
 A small `pyserial` driver: open COM3 at the console baud, send `ACON_ENTER`,
 wait for `=~,V1`, then a `command(cmd, *args) -> parsed response` method
@@ -1915,20 +1982,16 @@ build/flash scripts.
 
 Cannot be written until the framing is chosen.
 
-**Resolution:** _pending_
-
 ---
 
 ### T2 — Sync to the design doc
 
-**Status:** 🔴 · **Needs user:** no
+**Status:** 🔵 — deferred until the code lands
 
 `Docs/SwitchTester-Design.md` § "HIL / script REPL" currently carries the
 pre-decision sketch, including a stale paragraph about possibly needing an
 interrupt-driven UART manager (`uart_stream` is done). Once the board is mostly
 green, replace that section with the settled contract and link here.
-
-**Resolution:** _pending_
 
 ---
 
@@ -1978,9 +2041,9 @@ it portable — and the reason **D7** wants the HuIL routines kept out.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 22 · 🟡 11 · 🔴 2 · 🔵 4 (39 rows) + 5 wish rows (one
-  promoted). **Every design row is settled.** The two remaining reds are
-  **T1**/**T2**, which follow the code rather than precede it; the twelve yellows
-  all carry leanings and read as implementation guidance, not open questions.
+- **Plan status:** 🟢 30 · 🔵 9 (39 rows) + 5 wish rows. **No row is open.**
+  Every phase-1 decision is locked; the nine deferred rows are phase-2 async work
+  (**S6**–**S9**, **S12**, **I5**), tooling that follows the code (**T1**, **T2**)
+  and skeleton promotion (**T3**). **Next step is implementation, not planning.**
 
 **End of automation-console-plan.md**
