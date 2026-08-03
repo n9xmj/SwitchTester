@@ -72,7 +72,7 @@ exists.
 | **S10** | 🟢 | Minimum cycle-period guard — 50 ms, REPL-commanded cycling only |
 | **S11** | 🟡 | Host receive contract — dispatch by sigil, never by position |
 | **S12** | 🟡 | Menu-mode human log — separate gate flag, emitted from the job runner |
-| **S13** | 🟡 | Mutating commands return post-state, not a bare acknowledgement |
+| **S13** | 🟢 | Switch-op responses carry state; ok/error lives in the frame header |
 | **S14** | 🟡 | Time units on the wire, and whether REPL-set params persist to NVM |
 | **S15** | 🟡 | Start/stop edge cases — already cycling, level on stop, repeat exhaustion |
 | **I1** | 🟡 | Hook point — where the 0xDA intercept lives |
@@ -305,43 +305,72 @@ no menu floor at all the cycler bottoms out at the 4 µs hardware guard, but the
 
 ---
 
-### D3 — Frame identity
+### D3 — Frame identity and grammar
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟡 · **Needs user:** yes — the concrete grammar below wants a nod
 
 **Question:** How does the host distinguish a command response from an async
-event, and how does it know a frame is complete?
+event, how does it know a frame is complete, and **where does the ok/error status
+live**?
 
 Locked by **Q1**: both frame kinds carry a lead identifier, async is never
 inserted into a response frame, and a response is a bounded thing the host reads
 to completion.
 
-**Options considered:**
+**Status is structural, not a payload field.** It is carried by the sigil plus
+the header token, so a host branches to its error path from the *first character*
+of the line, before parsing anything. Encoding it as `st=OK` inside a uniform
+frame would work equally well on the wire but forces every reader to parse before
+it can tell success from failure.
 
-- **Per-op free-form** (reference behaviour) — no general completion signal, a
-  bespoke parser per command. Rejected: it cannot express "this is an event, not
-  your answer" at all.
-- **Uniform single-line frames** — one line per frame, sigil in column 0. Trivial
-  to parse and to resynchronise. Multi-line data must be split across frames or
-  packed into key=value pairs.
-- **Bracketed multi-line frames** — opening tag, payload lines, `<END>`. Handles
-  a four-channel state dump naturally; the host always reads to the terminator.
-
-**Leaning / recommendation:** bracketed frames with a **sigil as the first
-character of every device→host line**, so a host that loses sync recovers at the
-next line rather than the next frame:
+**Every device→host line carries a sigil in column 0:**
 
 | Sigil | Frame kind |
 |-------|------------|
-| `=` | command response — `=OK cmd=R` … payload … `=END` |
-| `!` | command error — `!ERR cmd=R code=RANGE arg=2` (always single-line) |
-| `*` | async event — `*EVT t=<µs> src=SW ch=A val=1` |
-| `#` | human/log noise — anything not part of the protocol; host ignores the line |
+| `=` | command response, success |
+| `!` | command response, failure |
+| `*` | async event (phase 2) |
+| `#` | human/log noise — not part of the protocol; host ignores the line |
 
-The `#` row is the one that is easy to forget and expensive to omit: something
-will eventually `printf` a stray line from a job or an error path while the REPL
-is active, and without a "not for you" sigil that line desynchronises the host
-mid-frame. Prefixing it makes stray output harmless instead of fatal.
+The `#` row is easy to forget and expensive to omit: something will eventually
+`printf` a stray line from a job or an error path while the REPL is active, and
+without a "not for you" sigil that line desynchronises the host mid-frame.
+Prefixing it makes stray output harmless instead of fatal.
+
+**Grammar — single-line by default, self-describing when not.**
+
+```
+=OK  cmd=<c> [k=v ...]                     success, complete in one line
+!ERR cmd=<c> code=<CODE> [k=v ...]         failure, complete in one line
+=OK  cmd=<c> n=<count> [k=v ...]           success, exactly <count> payload
+=<payload line>                              lines follow, each sigil-prefixed
+*EVT t=<µs> src=<s> ch=<c> val=<v>         async event (phase 2)
+#<free text>                               ignored by the host
+```
+
+A response is **one line** unless its header carries `n=<count>`, in which case
+exactly that many sigil-prefixed payload lines follow. The host reads a line,
+checks for `n=`, and reads that many more — no terminator scanning, and a
+truncated frame is *detectable* because fewer lines arrive than were promised.
+Of the phase-1 commands only the `L` op-list needs the multi-line form.
+
+**This reverses the earlier leaning in this row, and the reason is new
+information.** The bracketed `=END` form was argued for on the grounds that a
+single-line frame would have to "squeeze a four-channel state dump into key=value
+pairs". Now that **D6** is locked, that dump is two hex bitmaps — the objection
+does not survive contact with the actual payload. A declared count is also
+strictly better than a terminator: it detects truncation, which a terminator
+cannot.
+
+**Worked examples:**
+
+```
+=OK cmd=S mode=0x4 level=0x9
+!ERR cmd=W code=RANGE arg=on_us val=1000 min=50000 mode=0x4 level=0x9
+=OK cmd=L n=8
+=V  version / ping
+...
+```
 
 **Resolution:** _pending_
 
@@ -577,30 +606,33 @@ assembles a mask by hand under any encoding.
 
 ---
 
-### S13 — Mutating commands return post-state
+### S13 — Switch-op responses carry state *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
-The proposal has the level command return the resulting levels, and the other
-three return "acknowledgement". That asymmetry is worth removing in the more
-useful direction: **every mutating command returns the resulting state**, in the
-same shape the read command returns it.
+**Every switch-oriented command — success or failure — returns the resulting
+state**, as the mode bitmap plus the level bitmap read from `IDR` (**I6**). There
+is no bare-acknowledgement response.
 
-**Why:** a bare ack forces a script that wants to verify into a second round
-trip, and the two-step is racy — between the ack and the read, a cycling channel
-has moved on. Returning the post-state makes each command self-verifying in one
-exchange, and it costs nothing, since the state is already assembled in order to
-answer the read command at all.
+The ok/error status is *not* part of that payload; it lives in the frame header
+(**D3**), so the two concerns stay separate: the sigil and header say whether the
+command succeeded, the payload says what the hardware is now doing.
 
-It also gives the host a free assertion at every step of a sequence rather than
-only where it remembered to ask, which is exactly the property a step sequencer
-wants.
+**Why state rather than an ack.** A bare ack forces a script that wants to verify
+into a second round trip, and that two-step is racy — between the ack and the
+read, a cycling channel has moved on. Returning post-state makes every command
+self-verifying in one exchange, and it costs nothing because the state is already
+assembled to answer the read command at all. It also gives a host a free
+assertion at every step of a sequence rather than only where it remembered to
+ask.
 
-**Leaning:** one shared response payload — mode bitmap plus level bitmap
-(**I6**) — emitted by the read command and by all four mutating commands. One
-formatter, one parser, one thing to document.
+**Errors carry state too.** A rejected command has not changed anything, but the
+host still learns what the hardware is doing without a follow-up read — and the
+value it wanted to check is usually exactly the one it was trying to set.
 
-**Resolution:** _pending_
+**Implementation:** one formatter emitting `mode=0x<n> level=0x<n>`, shared by
+the read command and all four mutating commands. One parser on the host side, one
+thing to document.
 
 ---
 
@@ -711,9 +743,9 @@ expected to follow.
 |---|---------|--------|---------|
 | 1 | Set switch output levels (manual mode) | `Select`, `Set`, `Clear` masks (**D9**) | applied level bitmap |
 | 2 | Read switch state | none | mode bitmap + level bitmap (**I6**) |
-| 3 | Set cycling parameters | switch # (0–3), on-time, off-time, repeat count | ack (**S13** proposes post-state) |
-| 4 | Start auto-cycling | start bitmask | ack (**S13** proposes post-state) |
-| 5 | Stop auto-cycling | stop bitmask | ack (**S13** proposes post-state) |
+| 3 | Set cycling parameters | switch # (0–3), on-time, off-time, repeat count | mode + level bitmaps (**S13**) |
+| 4 | Start auto-cycling | start bitmask | mode + level bitmaps (**S13**) |
+| 5 | Stop auto-cycling | stop bitmask | mode + level bitmaps (**S13**) |
 
 Plus builtins from **D1**: `V` version/ping, `L`/`?` list, `Q` quit.
 
@@ -1151,7 +1183,7 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 7 · 🟡 20 · 🔴 3 · 🔵 4 (34 rows) + 5 wish rows (one
+- **Plan status:** 🟢 8 · 🟡 19 · 🔴 3 · 🔵 4 (34 rows) + 5 wish rows (one
   promoted). **Nothing gates phase 1 any more** — the three remaining reds are
   **S4** (decidable without new input; leaning recorded), and **T1**/**T2**,
   which follow the code rather than precede it. The twenty yellows all carry
