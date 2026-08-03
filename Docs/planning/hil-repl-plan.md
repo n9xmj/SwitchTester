@@ -362,19 +362,21 @@ Prefixing it makes stray output harmless instead of fatal.
 **Grammar.**
 
 ```
-=<op> [<tok> ...]                success, complete in one line
-!<op> <CODE> [<tok> ...]         failure, complete in one line
-=<op> K<n> [<tok> ...]           success, exactly <n> payload lines follow
-+<text>                          payload line
-*<src><ch> T<hex> V<hex>         async event (phase 2)
+=<op>[,<tok>]...                 success, complete in one line
+!<op>,<CODE>[,<tok>]...          failure, complete in one line
+=<op>,K<n>[,<tok>]...            success, exactly <n> payload lines follow
++<text>                          payload line -- free text, NOT tokenised
+*<src><ch>,T<hex>,V<hex>         async event (phase 2)
 #<text>                          not protocol; host ignores the line
 ```
 
 `<op>` is the single command character, echoed back so a desynchronised host
 notices immediately. A `<tok>` is **one uppercase key letter immediately followed
-by a hex value** — no `=`, no `0x`, no separator inside the token; tokens are
-separated by single spaces, which is what keeps a hex value containing `A`–`F`
-unambiguous.
+by a hex value** — no `=`, no `0x`, no separator inside the token. **Tokens are
+comma-separated**, so a host splits on `,` and reads each field as
+`key = tok[0], value = int(tok[1:], 16)`. The comma is exact where a space is
+not: nothing accidentally emits a double comma, and no field can be lost to
+whitespace trimming.
 
 | Key | Meaning | | Key | Meaning |
 |:---:|---------|-|:---:|---------|
@@ -393,21 +395,21 @@ needs the multi-line form.
 **Worked examples:**
 
 ```
-=S L9 M4 R4                          set levels -> ok
-!W RNG L9 M4 R4                      write params -> rejected, out of range
-=G L9 M4 R4 N7A120 F7A120 C0 D4D2    get params for a channel
-=L K8                                op list, 8 payload lines follow
+=S,L9,M4,R4                          set levels -> ok
+!W,RNG,L9,M4,R4                      write params -> rejected, out of range
+=G,L9,M4,R4,N7A120,F7A120,C0,D4D2    get params for a channel
+=L,K8                                op list, 8 payload lines follow
 +V ping / version
 ```
 
-**What was tightened, and what deliberately was not.** `=S L9 M4 R4` is 13 bytes
+**What was tightened, and what deliberately was not.** `=S,L9,M4,R4` is 13 bytes
 against 37 for the earlier `=OK cmd=S level=0x9 mode=0x4 run=0x4` — a 65 %
 reduction. Removed: the `OK`/`ERR` words (the sigil already says it), the `cmd=`
 key (position after the sigil says it), the `0x` prefixes, the `=` inside every
 token, and the echo of the offending value on an error (the host sent it and
 already knows it).
 
-**Not** taken all the way to pure positional (`=S 9 4 4`), which would save four
+**Not** taken all the way to pure positional (`=S,9,4,4`), which would save four
 more bytes. Terminal readability is the entire reason **D8** chose ASCII over
 binary; spending four bytes to keep a response self-describing is consistent with
 that decision, whereas positional fields would undercut the rationale while still
@@ -561,7 +563,7 @@ drop-oldest (keeps the most recent, needs a tail advance in the ISR), or block
 (unacceptable — this is an ISR).
 
 **Leaning:** **drop-newest** with a saturating dropped-counter, and emit a
-`*O D<count>` frame (source `O` for overflow, `D` for dropped) at the head of
+`*O,D<count>` frame (source `O` for overflow, `D` for dropped) at the head of
 the next flush whenever the counter is
 non-zero, then clear it. The host then knows precisely that its event record has
 a hole and how big, rather than quietly receiving an incomplete history. Combined
@@ -677,7 +679,7 @@ ask.
 host still learns what the hardware is doing without a follow-up read — and the
 value it wanted to check is usually exactly the one it was trying to set.
 
-**Implementation:** one formatter emitting `L<n> M<n> R<n>` (**D3**), shared by
+**Implementation:** one formatter emitting `L<n>,M<n>,R<n>` (**D3**), shared by
 the read command, the getter and all four mutating commands. One parser on the host side, one
 thing to document.
 
@@ -953,16 +955,30 @@ should not be assumed to need the same format:
   little: a corrupted command is *already* rejected rather than partially
   executed (**S1**), and the transport counts its own ORE/FE/NE/PE (**S5**).
 
-**Leaning:** freeform — first non-space character is the opcode, the remainder
-(leading whitespace trimmed) goes to the op as a single `const char *`, CR or LF
-terminates, empty lines ignored. Sub-opcodes, where a command needs one, are just
-the first argument token (`C 1 start`) rather than a protocol-level field. Add a
-shared `b_repl_arg_u32()` helper so channel parsing and range-checking is not
-reimplemented — and mis-implemented — in six ops, and so **S1**'s error frames
+**Leaning:** freeform, and **comma-separated to match the response direction**
+(**D3**). First character is the opcode; the remainder splits on `,`; CR or LF
+terminates; empty lines are ignored. One splitter on each side of the link and
+one rule to remember, rather than "commas that way, spaces this way".
+
+```
+S,3,1,2          select=3, set=1, clear=2
+W,1,7A120,7A120,0   channel 1, on 500000 µs, off 500000 µs, repeat 0 (infinite)
+G,1              get channel 1 parameters
+```
+
+**Numerics are hex in both directions**, uniformly — one parse routine, one format
+routine, no per-field rule to look up. The honest cost is that hand-typing a time
+means converting first (500 ms → `7A120`), which is mildly unpleasant at a
+terminal; it is paid by the host runner (**T1**) in practice, and the debug menu
+remains the human interface for anything typed by hand. Channel indices and
+bitmaps are small enough that hex and decimal coincide.
+
+Add a shared `b_repl_arg_u32()` helper so channel parsing and range-checking is
+not reimplemented — and mis-implemented — in six ops, and so **S1**'s error frames
 can distinguish "missing" from "out of range".
 
-If a command ever needs to carry bulk data, it carries it as hex in the argument
-text (the reference does exactly this), which keeps the grammar unchanged.
+If a command ever needs to carry bulk data, it carries it as hex in a field, which
+keeps the grammar unchanged.
 
 **Resolution:** _pending_
 
