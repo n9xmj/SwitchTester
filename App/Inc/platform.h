@@ -112,15 +112,33 @@ do { \
 // It is declared here, at the platform layer, rather than in the header of any
 // one caller: it is a contract the application owes the system, and a module
 // that needs to pump the main loop should not have to depend on an unrelated
-// module's API to say so. Present callers are i_getchar_blocking(), i_getline()
-// and v_delay_pump() in utils.c, the automation console, and app_main's own
-// idle loop -- and that list is expected to grow.
+// module's API to say so. Present callers are i_getchar_blocking() and
+// v_delay_pump() in utils.c, the automation console, and app_main's own idle
+// loop -- and that list is expected to grow.
 //
-// There is deliberately NO weak fallback. A missing definition is a link error,
-// which is a far better failure than the alternative: blocking calls that spin
-// without servicing anything, so the watchdog eventually resets a board that
-// merely looked hung.
+// The declaration is a WEAK REFERENCE with no definition anywhere. An
+// unresolved weak symbol resolves to address 0 rather than producing a link
+// error, so a module can test it and carry on. That is what keeps portable
+// modules portable: they depend on this header, which they need anyway, and
+// never on whether some application happened to supply the hook.
+//
+// Use the macro, not the bare symbol -- an unguarded call to an unresolved weak
+// symbol is a branch to address 0.
+//
+// The alternative of scattering weak stubs through every module that calls this
+// does not work the way it first appears: symbol resolution is global, so all
+// callers bind to whichever single stub the linker picked, and which one that
+// is depends on object link order. One stub would serve everyone; several are
+// redundant and quietly order-dependent.
 
-extern void v_app_polling_task(void);
+extern void v_app_polling_task(void) __attribute__((weak));
+
+#define PUMP_POLLING_TASK()                     \
+    do {                                        \
+        if (v_app_polling_task != 0)            \
+        {                                       \
+            v_app_polling_task();               \
+        }                                       \
+    } while (0)
 
 #endif // MACROS_H

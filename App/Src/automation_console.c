@@ -32,6 +32,24 @@
 #include "automation_console.h"
 
 /*============================================================================
+ * STANDALONE FALLBACK
+ *
+ * platform.h normally supplies PUMP_POLLING_TASK(). This keeps the module
+ * compiling where it is absent -- lifted into another project, or built
+ * deliberately without that dependency.
+ *
+ * The #warning is the point: compiling the pump out is a legitimate choice but
+ * a terrible accident. Without it a forgotten include silently turns the SCRIPT
+ * reader into one that services nothing while it waits, and the symptom is a
+ * board that appears to hang.
+ *==========================================================================*/
+
+#ifndef PUMP_POLLING_TASK
+#warning "platform.h not included: PUMP_POLLING_TASK() compiled out, the console will not pump the main loop"
+#define PUMP_POLLING_TASK()     do { } while (0)
+#endif
+
+/*============================================================================
  * PROTOCOL CONSTANTS
  *==========================================================================*/
 
@@ -749,7 +767,7 @@ static acon_line_t x_acon_read_script(void)
     {
         int i_ch;
 
-        v_app_polling_task();
+        PUMP_POLLING_TASK();
         i_ch = getchar();
 
         if (i_ch < 0)

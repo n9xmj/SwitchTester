@@ -10,6 +10,24 @@
 //#include <time.h>                       // For v_get_rtc_time; uses mktime()
 
 //------------------------------------------------------------------------------
+// Standalone fallback for the cooperative main-loop hook.
+//
+// platform.h normally supplies PUMP_POLLING_TASK(). This lets the module still
+// compile where platform.h is absent -- either lifted into another project, or
+// deliberately built without that dependency.
+//
+// The #warning is the point: compiling the pump out is a legitimate choice but
+// a terrible accident. Without it, a forgotten include silently turns every
+// blocking call here into one that services nothing, and the symptom is a board
+// that appears to hang. Delete the warning only if the omission is deliberate.
+//------------------------------------------------------------------------------
+
+#ifndef PUMP_POLLING_TASK
+#warning "platform.h not included: PUMP_POLLING_TASK() compiled out, blocking calls will not pump the main loop"
+#define PUMP_POLLING_TASK()     do { } while (0)
+#endif
+
+//------------------------------------------------------------------------------
 
 static const char *reset_source_str[RESET_TYPE_MAX] =
 {
@@ -39,7 +57,7 @@ int i_getchar_blocking(void)
 
     do
     {
-        v_app_polling_task();
+        PUMP_POLLING_TASK();
         i_char = getchar();
     }
     while (i_char < 0);
@@ -312,7 +330,7 @@ void v_delay_pump(uint32_t u32_ticks)
     uint32_t u32_timestamp = HAL_GetTick();
     do
     {
-        v_app_polling_task();
+        PUMP_POLLING_TASK();
     }
     while ((HAL_GetTick() - u32_timestamp) < u32_ticks);
 }
