@@ -75,7 +75,7 @@ exists.
 | **S13** | 🟢 | Switch-op responses carry state; ok/error lives in the frame header |
 | **S14** | 🟡 | Time units on the wire, and whether REPL-set params persist to NVM |
 | **S15** | 🟡 | Start/stop edge cases — already cycling, level on stop, repeat exhaustion |
-| **S16** | 🟡 | Repeat progress reporting — cycles *remaining* vs cycles *done* |
+| **S16** | 🟢 | Repeat progress — report cycles *done*; host derives remaining |
 | **I1** | 🟡 | Hook point — where the 0xDA intercept lives |
 | **I2** | 🟡 | Op-table home + registration-time collision checking |
 | **I3** | 🟡 | Build gate for release images |
@@ -688,11 +688,21 @@ explicit op the host calls deliberately, not a side effect of configuring.
 
 ---
 
-### S16 — Repeat progress reporting
+### S16 — Repeat progress reporting *(resolved)*
 
-**Status:** 🟡 · **Needs user:** yes
+**Status:** 🟢
 
-**The problem: `repeat_count == 0` means "run until stopped".** Confirmed in
+**Command 6 reports cycles _done_ (`u32_cycles_done`), not cycles remaining.**
+The host derives `remaining = repeat − done` itself, since the getter returns the
+configured repeat count in the same response. The one asymmetry the host must
+carry: **`repeat == 0` means infinite**, so there is no remaining to compute in
+that case — a host-side special case rather than a wire-format sentinel.
+
+`u32_cycles_done` is ISR-written and main-loop-read, but it is 32-bit and
+aligned, so the read is a single `LDR` on M0+ and cannot tear.
+
+**Why not remaining, as originally proposed.** `repeat_count == 0` means "run until
+stopped" — confirmed in
 `switch_out.h:63` and in the ISR at `switch_out.c:167` —
 `if (repeat_count && (cycles_done >= repeat_count))` — so a zero repeat count
 never terminates. It is also `SWITCH_CYCLE_REPEAT_DEFAULT`, which makes the
@@ -719,16 +729,9 @@ three different ways, all of which encode as `0`:
   such thing as remaining when `repeat == 0`. No sentinel, no ambiguity.
 - **Report both.** Redundant — `remaining` is derivable from the other two fields.
 
-**Leaning / recommendation:** report **`done`** alongside the initial repeat
-count. It carries strictly more information than `remaining` — after a finite run
-completes, `done` is the final tally, whereas `remaining` collapses to 0 and tells
-you nothing — and it is the only one of the two that stays meaningful for the
-default infinite run.
-
-`u32_cycles_done` is ISR-written and main-loop-read, but it is 32-bit and aligned,
-so the read is a single `LDR` on M0+ and cannot tear.
-
-**Resolution:** _pending_
+`done` also carries strictly more information: after a finite run completes it is
+the final tally, whereas `remaining` collapses to 0 and says nothing about what
+happened.
 
 ---
 
@@ -824,7 +827,7 @@ expected to follow.
 | 3 | Set cycling parameters | switch # (0–3), on-time, off-time, repeat count | level + mode + run bitmaps (**S13**) |
 | 4 | Start auto-cycling | start bitmask | level + mode + run bitmaps (**S13**) |
 | 5 | Stop auto-cycling | stop bitmask | level + mode + run bitmaps (**S13**) |
-| 6 | **Get** cycling parameters | switch # (0–3) | on-time, off-time, repeat count, progress (**S16**) + the three bitmaps |
+| 6 | **Get** cycling parameters | switch # (0–3) | on-time, off-time, repeat count, cycles **done** (**S16**) + the three bitmaps |
 
 Plus builtins from **D1**: `V` version/ping, `L`/`?` list, `Q` quit.
 
@@ -845,8 +848,8 @@ addressing, returning the configured on-time, off-time and repeat count plus
 run progress. It is what carries the per-channel data the three bitmaps of
 **I6** structurally cannot: a count is not a bit. It also lets a host verify
 what it configured without inferring it, and read the final tally after a
-finite run has completed. Whether progress is reported as *remaining* or *done*
-is **S16**. Response stays single-line, so it needs no `n=` payload (**D3**).
+finite run has completed. Progress is reported as cycles *done* (**S16**).
+Response stays single-line, so it needs no `n=` payload (**D3**).
 
 **Parameter storage is shared with the debug menu** — the REPL sets the same
 values the menu does. Whether it also *persists* them is **S14**.
@@ -1270,7 +1273,7 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 9 · 🟡 19 · 🔴 3 · 🔵 4 (35 rows) + 5 wish rows (one
+- **Plan status:** 🟢 10 · 🟡 18 · 🔴 3 · 🔵 4 (35 rows) + 5 wish rows (one
   promoted). **Nothing gates phase 1 any more** — the three remaining reds are
   **S4** (decidable without new input; leaning recorded), and **T1**/**T2**,
   which follow the code rather than precede it. The twenty yellows all carry
