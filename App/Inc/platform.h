@@ -101,4 +101,26 @@ do { \
 //#define KICK_WATCHDOG()         HAL_IWDG_Refresh(&hiwdg)
 #define KICK_WATCHDOG()
 
+//------------------------------------------------------------------------------
+// Cooperative main-loop hook
+//------------------------------------------------------------------------------
+//
+// THE APPLICATION PROVIDES THIS. Every blocking wait in the system calls it so
+// that the rest of the application keeps running while they spin -- watchdog,
+// job queue, timers, console service. See v_app_polling_task() in app_main.c.
+//
+// It is declared here, at the platform layer, rather than in the header of any
+// one caller: it is a contract the application owes the system, and a module
+// that needs to pump the main loop should not have to depend on an unrelated
+// module's API to say so. Present callers are i_getchar_blocking(), i_getline()
+// and v_delay_pump() in utils.c, the automation console, and app_main's own
+// idle loop -- and that list is expected to grow.
+//
+// There is deliberately NO weak fallback. A missing definition is a link error,
+// which is a far better failure than the alternative: blocking calls that spin
+// without servicing anything, so the watchdog eventually resets a board that
+// merely looked hung.
+
+extern void v_app_polling_task(void);
+
 #endif // MACROS_H

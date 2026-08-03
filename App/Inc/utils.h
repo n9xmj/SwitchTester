@@ -35,11 +35,9 @@ extern reset_source_t x_reset_source;       // Cause (source) of reset saved her
 
 //------------------------------------------------------------------------------
 
-// Background hook, called by every blocking wait in this API (i_getchar_blocking,
-// i_getline, v_delay_pump) so the rest of the system keeps running while they
-// spin. utils.c carries a weak do-nothing stub; the application overrides it --
-// see v_app_polling_task() in app_main.c.
-extern void v_app_polling_task(void);
+// Note: the blocking calls below (i_getchar_blocking, i_getline, v_delay_pump)
+// all pump v_app_polling_task() while they spin. That hook is the application's
+// to provide and is declared in platform.h, not here -- see the comment there.
 
 extern int i_getchar_blocking(void);                            // Get character from STDIN, blocking until char received
 // Get 1-line text entry from STDIN (blocking). Returns the entry length, -1 if

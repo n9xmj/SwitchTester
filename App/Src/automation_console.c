@@ -24,7 +24,7 @@
 #include <stdarg.h>
 
 #include "device_config.h"          /* stdint/stdio/stdlib/string, main.h, platform.h */
-#include "utils.h"                  /* v_app_polling_task, i_getline */
+#include "utils.h"                  /* i_getline (human-mode reader) */
 #include "uart_stream.h"
 #include "stdio_retarget.h"         /* h_stdio_retarget_get_stream */
 #include "switch_out.h"

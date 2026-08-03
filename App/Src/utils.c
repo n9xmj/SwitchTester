@@ -26,20 +26,6 @@ static const char *reset_source_str[RESET_TYPE_MAX] =
 reset_source_t x_reset_source;
 
 /******************************************************************************
- * void v_app_polling_task(void)
- *
- * This task is defined here as a weak stub. It is intended to be overridden
- * in user code, using it to feed background processing tasks during blocking
- * operations.
- * It is used in this API with i_getchar_blocking
- ******************************************************************************/
-
-void __attribute__((weak)) v_app_polling_task(void)
-{
-    // Does nothing, intended to be overridden
-}
-    
-/******************************************************************************
  * int i_getchar_blocking(void)
  *
  * Get a character from STDIN, blocking until something is received
