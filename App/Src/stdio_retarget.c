@@ -34,6 +34,7 @@
 #include "device_config.h"          /* DEV_CONFIG_CONSOLE_* */
 #include "stdio_retarget.h"
 #include "uart_stream.h"
+#include "automation_console.h"     /* stdout muting during a SCRIPT session */
 
 #if !defined(OS_USE_SEMIHOSTING)
 
@@ -88,6 +89,18 @@ int _write(int i_fd, char *p_c_ptr, int i_len)
 {
     if ((i_fd == STDOUT_FILENO) || (i_fd == STDERR_FILENO))
     {
+        /* While a SCRIPT-mode automation session owns the console, stdout is
+         * discarded outright rather than filtered. Jobs keep running during a
+         * session and jobs log, and an unframed log line landing between
+         * response frames would desynchronise the host. The console's own
+         * output is unaffected: it writes to uart_stream directly and never
+         * comes through here. Human mode leaves this alone -- i_getline()
+         * echoes through printf, and there is no host parser to protect. */
+        if (u8_automation_console_mutes_stdout())
+        {
+            return i_len;
+        }
+
         if (i_fd == STDOUT_FILENO)
         {
             /* Track how many chars have been printed since the last CR/LF, so

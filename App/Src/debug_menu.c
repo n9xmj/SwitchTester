@@ -22,12 +22,14 @@
 #include "rtc.h"                     /* hrtc, for post-STOP HAL_RTC_WaitForSynchro */
 #include "switch_out.h"              /* SWITCH_A..D drive control */
 #include "nvmparams.h"               /* NVM pool dump / erase diagnostics */
+#include "automation_console.h"      /* Host/script command interface */
 
 /*============================================================================
  * PRIVATE PROTOTYPES
  *==========================================================================*/
 
 static void v_debug_wakeup_sleep_test(void);
+static void v_debug_automation_console(void);
 static void v_debug_quick_test_1(void);
 static void v_debug_quick_test_2(void);
 static void v_debug_menu_exec(char c_key);
@@ -114,6 +116,22 @@ static void v_debug_wakeup_sleep_test(void)
 
     printf("Time in sleep: ~%lu mS, exit hour time:%lu\r\n",
            u32_in_sleep_time, u32_exit_sleep_hour_time);
+}
+
+/*
+ * Hand-driven entry to the automation console. HUMAN mode, because only a
+ * person picks a menu key -- the entry path carries the intent, so neither of
+ * the common cases needs a mode command at all.
+ *
+ * Ctrl-C returns here, and so does 'Q'. There is no idle timeout in this mode:
+ * that guard exists so a dead HOST cannot wedge the board, and here there is an
+ * operator sitting at the terminal instead.
+ */
+static void v_debug_automation_console(void)
+{
+    printf("Automation console - Ctrl-C or 'Q' to return, 'L' lists ops\r\n");
+    v_automation_console_run(ACON_MODE_HUMAN);
+    printf("\r\nReturned from automation console\r\n");
 }
 
 static void v_debug_quick_test_1(void)
@@ -725,6 +743,12 @@ static const menu_item_t x_debug_top_menu[] =
     },
     {
         .item_type = MENU_ITEM_FUNCTION,
+        .key = 'a',
+        .text = "Automation console (human-driven)",
+        .function = v_debug_automation_console
+    },
+    {
+        .item_type = MENU_ITEM_FUNCTION,
         .key = 'W',
         .text = "RTC wake-up timer sleep test",
         .function = v_debug_wakeup_sleep_test
@@ -792,6 +816,20 @@ void v_debug_menu_service(void)
         if (i_key < 0)
         {
             break;              /* no input pending */
+        }
+
+        /* Automation-console entry. Intercepted before the echo, so the
+         * sentinel never appears on the wire and never reaches the menu
+         * dispatcher. SCRIPT mode: only a machine sends a non-typeable 0xDA.
+         *
+         * Note this runs with u8_reentry_lock still held, which is what stops
+         * the nested v_debug_menu_service() inside v_app_polling_task() from
+         * stealing the console's input AND dispatching it as menu keys. That
+         * guarantee is load-bearing, not tidiness. */
+        if ((uint8_t) i_key == ACON_ENTER)
+        {
+            v_automation_console_run(ACON_MODE_SCRIPT);
+            continue;
         }
 
         p_c_char_to_str((char) i_key, str_key);

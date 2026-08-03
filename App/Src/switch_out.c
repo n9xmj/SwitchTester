@@ -33,6 +33,8 @@ typedef struct
     uint32_t    u32_ccif;           /* TIM_SR_CCxIF       -- compare flag     */
     uint32_t    u32_ccie;           /* TIM_DIER_CCxIE     -- compare enable   */
     volatile uint32_t *p_u32_ccr;   /* &TIM2->CCRx                            */
+    GPIO_TypeDef *p_x_gpio_port;    /* For reading the pad back through IDR   */
+    uint16_t    u16_gpio_pin;
     const char *pc_name;            /* "A".."D"                               */
     const char *pc_pin_name;        /* Where to put the scope probe           */
 }
@@ -40,10 +42,10 @@ switch_out_map_t;
 
 static const switch_out_map_t x_switch_map[SWITCH_OUT_COUNT] =
 {
-    { LL_TIM_CHANNEL_CH1, TIM_CHANNEL_1, TIM_SR_CC1IF, TIM_DIER_CC1IE, &TIM2->CCR1, "A", "PC4"  },
-    { LL_TIM_CHANNEL_CH2, TIM_CHANNEL_2, TIM_SR_CC2IF, TIM_DIER_CC2IE, &TIM2->CCR2, "B", "PC5"  },
-    { LL_TIM_CHANNEL_CH3, TIM_CHANNEL_3, TIM_SR_CC3IF, TIM_DIER_CC3IE, &TIM2->CCR3, "C", "PB10" },
-    { LL_TIM_CHANNEL_CH4, TIM_CHANNEL_4, TIM_SR_CC4IF, TIM_DIER_CC4IE, &TIM2->CCR4, "D", "PB11" }
+    { LL_TIM_CHANNEL_CH1, TIM_CHANNEL_1, TIM_SR_CC1IF, TIM_DIER_CC1IE, &TIM2->CCR1, SWITCH_A_GPIO_Port, SWITCH_A_Pin, "A", "PC4"  },
+    { LL_TIM_CHANNEL_CH2, TIM_CHANNEL_2, TIM_SR_CC2IF, TIM_DIER_CC2IE, &TIM2->CCR2, SWITCH_B_GPIO_Port, SWITCH_B_Pin, "B", "PC5"  },
+    { LL_TIM_CHANNEL_CH3, TIM_CHANNEL_3, TIM_SR_CC3IF, TIM_DIER_CC3IE, &TIM2->CCR3, SWITCH_C_GPIO_Port, SWITCH_C_Pin, "C", "PB10" },
+    { LL_TIM_CHANNEL_CH4, TIM_CHANNEL_4, TIM_SR_CC4IF, TIM_DIER_CC4IE, &TIM2->CCR4, SWITCH_D_GPIO_Port, SWITCH_D_Pin, "D", "PB11" }
 };
 
 /*============================================================================
@@ -382,6 +384,72 @@ switch_out_state_t x_switch_out_get(uint8_t u8_channel)
         return SWITCH_OUT_OFF;
     }
     return SWITCH_OUT_TIMED;
+}
+
+/*
+ * Bitmaps, bit 0 = SWITCH_A .. bit 3 = SWITCH_D. Three independent views of the
+ * same four channels, from three different sources -- see Docs/planning/
+ * automation-console-plan.md (I6).
+ *
+ * Level comes from the GPIO input register, not from OCxM: IDR captures the pad
+ * every AHB cycle regardless of the pin being owned by TIM2's alternate
+ * function, so it is valid while a channel is cycling -- which is exactly when
+ * x_switch_out_get() cannot report a level at all. It is also the more honest
+ * measurement for a tester: what the pin is doing, not what it was told to do.
+ */
+uint8_t u8_switch_out_level_bitmap(void)
+{
+    uint8_t u8_channel;
+    uint8_t u8_bitmap = 0;
+
+    for (u8_channel = 0; u8_channel < SWITCH_OUT_COUNT; u8_channel++)
+    {
+        const switch_out_map_t *p_x_map = &x_switch_map[u8_channel];
+
+        if ((p_x_map->p_x_gpio_port->IDR & p_x_map->u16_gpio_pin) != 0U)
+        {
+            u8_bitmap |= (uint8_t) (1U << u8_channel);
+        }
+    }
+    return u8_bitmap;
+}
+
+/* 1 = under timer control (cycling), 0 = manual/forced. Read from OCxM. */
+uint8_t u8_switch_out_mode_bitmap(void)
+{
+    uint8_t u8_channel;
+    uint8_t u8_bitmap = 0;
+
+    for (u8_channel = 0; u8_channel < SWITCH_OUT_COUNT; u8_channel++)
+    {
+        if (x_switch_out_get(u8_channel) == SWITCH_OUT_TIMED)
+        {
+            u8_bitmap |= (uint8_t) (1U << u8_channel);
+        }
+    }
+    return u8_bitmap;
+}
+
+/*
+ * 1 = cycling and the repeat count is not yet exhausted. Software state, so it
+ * is an independent cross-check on the OCxM-derived mode bitmap above: the two
+ * agree in normal operation because v_switch_cycle_halt() forces the output LOW
+ * and clears u8_running together. It is also how a host learns whether a start
+ * command took effect at all, since v_switch_cycle_start() fails silently.
+ */
+uint8_t u8_switch_cycle_run_bitmap(void)
+{
+    uint8_t u8_channel;
+    uint8_t u8_bitmap = 0;
+
+    for (u8_channel = 0; u8_channel < SWITCH_OUT_COUNT; u8_channel++)
+    {
+        if (g_x_switch_cycle[u8_channel].u8_running)
+        {
+            u8_bitmap |= (uint8_t) (1U << u8_channel);
+        }
+    }
+    return u8_bitmap;
 }
 
 uint32_t u32_switch_out_pulse_remaining(uint8_t u8_channel)

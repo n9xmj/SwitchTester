@@ -89,6 +89,13 @@ extern void v_switch_out_all_off(void);                             // Force eve
 
 extern switch_out_state_t x_switch_out_get(uint8_t u8_channel);     // Present drive state, read back from OCxM
 extern uint32_t u32_switch_out_pulse_remaining(uint8_t u8_channel); // Milliseconds left in a pulse, 0 if none in progress
+
+/* Bitmaps, bit 0 = SWITCH_A .. bit 3 = SWITCH_D. Three views from three
+ * independent sources; the level one is valid while cycling, which the
+ * per-channel x_switch_out_get() above is not. */
+extern uint8_t u8_switch_out_level_bitmap(void);                    // Pad level via GPIO IDR: 1 = high
+extern uint8_t u8_switch_out_mode_bitmap(void);                     // 1 = timer-driven (cycling), 0 = manual
+extern uint8_t u8_switch_cycle_run_bitmap(void);                    // 1 = cycling, repeat count not exhausted
 extern const char * pc_switch_out_name(uint8_t u8_channel);         // "A".."D", or "?" if <u8_channel> is out of range
 extern const char * pc_switch_out_pin_name(uint8_t u8_channel);     // "PC4".."PB11" -- for bench/scope reference
 

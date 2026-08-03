@@ -35,8 +35,18 @@ extern reset_source_t x_reset_source;       // Cause (source) of reset saved her
 
 //------------------------------------------------------------------------------
 
+// Background hook, called by every blocking wait in this API (i_getchar_blocking,
+// i_getline, v_delay_pump) so the rest of the system keeps running while they
+// spin. utils.c carries a weak do-nothing stub; the application overrides it --
+// see v_app_polling_task() in app_main.c.
+extern void v_app_polling_task(void);
+
 extern int i_getchar_blocking(void);                            // Get character from STDIN, blocking until char received
-extern int i_getline(char *p_c_entry, uint16_t u16_length_limit); // Get 1-line text entry from STDIN (blocking)
+// Get 1-line text entry from STDIN (blocking). Returns the entry length, -1 if
+// cancelled with ESC (prints "<Cancel>"), or -2 if abandoned with Ctrl-C (emits
+// nothing at all). Callers that only care whether the entry survived should
+// test for < 0, so a future exit state cannot break them.
+extern int i_getline(char *p_c_entry, uint16_t u16_length_limit);
 extern void v_newline(void);                                    // Send CR/LF sequence to STDOUT
 extern void v_conditional_newline(void);                        // Send CR/LF if not at end of line
 extern void v_repeat_char(char c_char, int16_t i16_repeat);     // Output <c_char> for <i16_repeat> times, CR/LF at end if <i16_repeat> negative

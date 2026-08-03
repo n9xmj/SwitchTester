@@ -70,6 +70,7 @@ enum
     GETLINE_IN_PROGRESS,
     GETLINE_NORMAL_EXIT,
     GETLINE_ESCAPE_EXIT,
+    GETLINE_CANCEL_EXIT,        /* Ctrl-C: silent abandon, returns -2 */
 };
 
 int i_getline(char *p_c_entry, uint16_t u16_length_limit)
@@ -109,6 +110,16 @@ int i_getline(char *p_c_entry, uint16_t u16_length_limit)
             u8_clear_line = 1;
         }
 
+        else if (i_key == ('C' - 0x40)) // Ctrl-C (silent abandon)
+        {
+            /* Deliberately emits nothing -- no <Cancel>, no CRLF, no erase.
+             * The automation console uses this as its exit from human mode and
+             * any unframed output there would be noise on a machine-readable
+             * stream. Callers that only distinguish "cancelled" see the same
+             * negative return as ESC. */
+            u8_done = GETLINE_CANCEL_EXIT;
+        }
+
         else if (i_key >= 0x20)         // Normal character
         {
             if (i_len < u16_length_limit)
@@ -137,7 +148,15 @@ int i_getline(char *p_c_entry, uint16_t u16_length_limit)
 
     p_c_entry[i_len] = 0;
 
-    return (u8_done == GETLINE_ESCAPE_EXIT) ? -1 : i_len;
+    if (u8_done == GETLINE_ESCAPE_EXIT)
+    {
+        return -1;
+    }
+    if (u8_done == GETLINE_CANCEL_EXIT)
+    {
+        return -2;
+    }
+    return i_len;
 }
 
 /******************************************************************************

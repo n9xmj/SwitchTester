@@ -51,6 +51,42 @@
 #define DEV_CONFIG_CONSOLE_RX_BUF_SIZE                                       256
 
 //------------------------------------------------------------------------------
+// Automation console
+//------------------------------------------------------------------------------
+//
+// Minimum cycle period accepted from the automation console: on + off must be
+// at least this. It applies ONLY to host-commanded cycling. The debug menu is
+// deliberately exempt and keeps switch_out.h's much lower floors, because
+// feeding it absurd values to find where the system breaks is a wanted
+// experiment on a bench instrument. See automation-console-plan.md (S10).
+
+#define ACON_MIN_CYCLE_PERIOD_US                                           50000
+
+// Host command line, bytes. Sized well above today's commands so that a future
+// bulk push -- an edge-time sequence for a DMA-driven waveform, say -- is a
+// constant change rather than a redesign. RAM is not tight here.
+
+#define ACON_LINE_MAX                                                        256
+
+// Response frame assembly buffer, bytes. Responses are bounded by the frame
+// grammar rather than by input size; the longest is the parameter getter with
+// every field at full hex width, at 53 bytes.
+
+#define ACON_EMIT_MAX                                                        128
+
+// Idle timeout. Applies in SCRIPT mode only -- human mode has an operator at
+// the terminal rather than a host that can die. Reset by ANY received byte, so
+// a keep-alive works even mid-line.
+
+#define ACON_IDLE_TIMEOUT_MS                                               15000
+
+// Deadline for pushing one frame into the TX ring. Mirrors the stdio path's
+// figure and is sized well above the ~11 ms to drain a full 1 kB ring at
+// 921600 baud; a 53-byte frame into that ring never blocks in practice.
+
+#define ACON_TX_TIMEOUT_MS                                                   100
+
+//------------------------------------------------------------------------------
 // Misc
 //------------------------------------------------------------------------------
 
