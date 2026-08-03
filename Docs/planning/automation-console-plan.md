@@ -386,13 +386,47 @@ Prefixing it makes stray output harmless instead of fatal.
 #<text>                          not protocol; host ignores the line
 ```
 
-`<op>` is the single command character, echoed back so a desynchronised host
-notices immediately. A `<tok>` is **one uppercase key letter immediately followed
+`<op>` is the command character, echoed back so a desynchronised host notices
+immediately. A `<tok>` is **one uppercase key letter immediately followed
 by a hex value** — no `=`, no `0x`, no separator inside the token. **Tokens are
 comma-separated**, so a host splits on `,` and reads each field as
 `key = tok[0], value = int(tok[1:], 16)`. The comma is exact where a space is
 not: nothing accidentally emits a double comma, and no field can be lost to
 whitespace trimming.
+
+**Control-character opcodes are echoed in caret notation**, so that a response
+frame is *always* printable ASCII end to end:
+
+| Opcode | Echoed as | |
+|---|---|---|
+| `0x01..0x1F` | `^` + (opcode + `0x40`) | → `0x41..0x5F`, i.e. `^A`..`^_` |
+| `0x7F` | `^?` | the conventional spelling; `0x7F + 0x40` is not printable |
+| `0x20..0x7E` | itself | unchanged |
+
+So a command sent as byte `0x03` answers `=^C,...`. **`^` (0x5E) is therefore
+reserved** (**D2**, **I2**) — a domain op may not claim it, which is simpler than
+escaping it as `^^`.
+
+**This applies to the response direction only.** The host still sends the raw
+control byte; it writes bytes deliberately and has no parsing problem. Making the
+command direction accept `^C` as two characters would mean the reader could not
+tell an opcode from a caret-escaped one without lookahead, for no gain.
+
+**Why, precisely — because the obvious reason is not the real one.** A raw control
+byte in a response cannot in fact break the host's end-of-line detection: CR and LF
+are reserved out of the opcode space entirely (**D2**), CR being the terminator and
+LF discarded, so neither can ever reach the echo field. The reasons that do hold:
+
+- **ESC (`0x1B`) echoed to a terminal starts an ANSI escape sequence.** `=`, ESC,
+  `,`, `L9`… is not merely unreadable — the terminal *consumes* following
+  characters as an escape sequence, corrupting the display of a session that
+  **D8** chose ASCII specifically to keep watchable. `0x07` BEL, `0x08` BS and
+  `0x0C` FF misbehave similarly.
+- **It makes "responses are printable" a structural invariant** rather than a
+  consequence of today's reservation list. A future change to what is reserved
+  cannot silently put a raw control byte on the wire.
+- **Caret notation is self-documenting** — `^C` is instantly recognisable, where a
+  bare `0x03` in a log is a mystery.
 
 | Key | Meaning | | Key | Meaning |
 |:---:|---------|-|:---:|---------|
@@ -1001,13 +1035,16 @@ registration, so a domain op cannot claim one):
 | `0x0A` LF | ignored everywhere by the line reader (**D4**) |
 | `0x0D` CR | line terminator; a bare CR is the no-op (**D5**) |
 | `0x20` space | no-op alias (**D5**) |
+| `0x5E` `^` | caret-notation introducer for control-char echoes (**D3**) |
 | `V` `L` `?` `Q` `Z` | builtins — **both cases** reserved |
 | `~` | protocol/session frames (**D3**) |
 
 **Guidance, not restriction: prefer printable opcodes for ordinary commands.**
 A printable opcode can be typed at a terminal while debugging; a control-character
-one cannot. The control range is there for commands that *should* be hard to send
-by accident, not as the default place to put the next feature.
+one cannot — and its response comes back in caret notation (**D3**) rather than as
+the byte itself, so the two directions no longer look alike in a log. The control
+range is there for commands that *should* be hard to send by accident, not as the
+default place to put the next feature.
 
 **I2's collision check reserves both cases of every builtin letter**, so `v` and
 `q` cannot be claimed by a domain op even though they are technically free. A host
