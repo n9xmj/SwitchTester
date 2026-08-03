@@ -53,7 +53,7 @@ exists.
 | **Q1** | 🟢 | **What the host runner must do** — command/response *and* async events, both v1 |
 | **D1** | 🟢 | Entry / exit protocol — 0xDA in, 0xA5 / `Q` / idle timeout out |
 | **D2** | 🟡 | Command namespace — full `0x20..0x7E`, case-sensitive (drop `toupper()`) |
-| **D3** | 🟡 | Frame identity — how the host tells a response from an async event |
+| **D3** | 🟡 | Frame identity and grammar — sigils, status in the header, `n=` payload counts |
 | **D4** | 🟡 | Host→device grammar — freeform opcode+args vs fixed packet with length/CRC |
 | **D5** | 🟡 | Prompt / echo policy while in harness mode |
 | **D6** | 🟢 | Phase-1 op set — five commands, mask-addressed where simultaneity matters |
@@ -80,7 +80,7 @@ exists.
 | **I3** | 🟡 | Build gate for release images |
 | **I4** | 🟡 | Line-buffer sizing and static (not stack) allocation |
 | **I5** | 🟡 | **Async-readiness contract — what phase 1 must do so phase 2 is a drop-in** |
-| **I6** | 🟡 | State readback source — GPIO `IDR` for level, `OCxM` for mode |
+| **I6** | 🟢 | State readback — three bitmaps: level (`IDR`), mode (`OCxM`), cycling-active |
 | **T1** | 🔴 | Host-side Python runner |
 | **T2** | 🔴 | Sync decisions back into `SwitchTester-Design.md` |
 | **T3** | 🔵 | Promote the REPL to `G0B1_Skeleton` alongside `uart_stream` |
@@ -131,10 +131,28 @@ Established; do not re-litigate unless explicitly reopened.
   guarded; human-initiated ones get relaxed or no guards.** Being able to feed the
   menu deliberately insane values to see where the system breaks is a *wanted*
   capability, not an oversight. **S10** is the first instance of this rule.
-- **A hardware floor already exists.** `SWITCH_CYCLE_MIN_LEAD_US` is **4 µs**
-  (`switch_out.c:69`) — the missed-compare guard clamps any schedule closer than
-  that to `CNT + 4 µs`. It is a correctness guard, not a policy one, and it is the
-  true bottom of the range no matter what any higher-level limit says.
+- **Two floors already exist, at different layers** (verified 2026-08-02):
+  `SWITCH_CYCLE_MIN_LEAD_US` is **4 µs** (`switch_out.c:69`) — the missed-compare
+  guard, which clamps any schedule closer than that to `CNT + 4 µs`. Above it,
+  `v_switch_cycle_start()` validates the stored parameters against
+  `SWITCH_CYCLE_TIME_MIN_US` = **10 µs** and `SWITCH_CYCLE_TIME_MAX_US` =
+  **1000 s** (`switch_out.h:45-46`). Both are correctness guards, not policy;
+  **S10**'s 50 ms REPL floor sits on top of them.
+- **`v_switch_cycle_start()` fails silently.** It returns without any indication
+  if the channel is already running, or if the stored times are out of range.
+  Nothing in the current API reports which happened — which is precisely why
+  **I6** carries the `run` bitmap and **S13** returns post-state.
+- **Repeat exhaustion already routes ISR → main loop through the job runner.**
+  `v_switch_cycle_isr()` calls `v_switch_cycle_halt()` and then
+  `v_job_add_with_params(NULL, JOB_CYCLE_COMPLETE, u8_channel, 0)`. The
+  "record in the ISR, format in the main loop" discipline **S6** and **S12**
+  need is therefore already established in this codebase, and the phase-2
+  cycle-complete async event should hook this existing job rather than invent a
+  parallel path.
+- **While cycling, `OCxM` is `ACTIVE`/`INACTIVE`, never a *forced* value** — which
+  is exactly what lets **I6**'s mode bitmap distinguish timer-driven from manual.
+  `v_switch_cycle_halt()` forces LOW and clears `u8_running` together, so mode and
+  run agree in normal operation.
 - **Intended rate profile (2026-08-02).** A typical full switch cycle is around
   **1 second**, possibly longer. Edge timing and on/off time *resolution* need to
   be **better than 1 ms**; the cycle *period* is never in the milliseconds, let
@@ -365,8 +383,8 @@ cannot.
 **Worked examples:**
 
 ```
-=OK cmd=S mode=0x4 level=0x9
-!ERR cmd=W code=RANGE arg=on_us val=1000 min=50000 mode=0x4 level=0x9
+=OK cmd=S level=0x9 mode=0x4 run=0x4
+!ERR cmd=W code=RANGE arg=on_us val=1000 min=50000 level=0x9 mode=0x4 run=0x4
 =OK cmd=L n=8
 =V  version / ping
 ...
@@ -611,7 +629,7 @@ assembles a mask by hand under any encoding.
 **Status:** 🟢
 
 **Every switch-oriented command — success or failure — returns the resulting
-state**, as the mode bitmap plus the level bitmap read from `IDR` (**I6**). There
+state**, as the three bitmaps of **I6** — level from `IDR`, mode from `OCxM`, run from the cycle engine. There
 is no bare-acknowledgement response.
 
 The ok/error status is *not* part of that payload; it lives in the frame header
@@ -630,7 +648,7 @@ ask.
 host still learns what the hardware is doing without a follow-up read — and the
 value it wanted to check is usually exactly the one it was trying to set.
 
-**Implementation:** one formatter emitting `mode=0x<n> level=0x<n>`, shared by
+**Implementation:** one formatter emitting `level=0x<n> mode=0x<n> run=0x<n>`, shared by
 the read command and all four mutating commands. One parser on the host side, one
 thing to document.
 
@@ -676,11 +694,12 @@ explicit op the host calls deliberately, not a side effect of configuring.
 Three cases the command set does not yet define, each of which will otherwise be
 defined by whatever the code happens to do:
 
-- **Start on a channel already cycling.** Ignore it, reject the whole command, or
-  restart the channel from its ON phase? *Leaning: restart from ON.* A host that
-  says "start" wants a known phase to measure against; silently ignoring leaves
-  the channel at an arbitrary point in its cycle and every subsequent timing
-  measurement inherits that unknown.
+- **Start on a channel already cycling.** Today `v_switch_cycle_start()` returns
+  silently — confirmed at `switch_out.c:485`. *Leaning: restart from ON.* A host
+  that says "start" wants a known phase to measure against; silently ignoring
+  leaves the channel at an arbitrary point in its cycle and every subsequent
+  timing measurement inherits that unknown. Whichever way this goes, **I6**'s
+  `run` bitmap in the **S13** response means the host is never left guessing.
 - **Level after stop.** `v_switch_cycle_stop()` currently leaves the output
   forced LOW. For a race hunt, "stop and hold wherever you are" is also a
   plausible want. *Leaning: keep forced-LOW as the default* — it is the existing
@@ -697,38 +716,53 @@ defined by whatever the code happens to do:
 
 ---
 
-### I6 — State readback source
+### I6 — State readback *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
-The proposal reads **GPIO `IDR`** for the level rather than reporting a shadow or
-the compare-mode setting. That is right, and it is more than a stylistic
-preference.
-
-`x_switch_out_get()` today reads `OCxM` and returns `SWITCH_OUT_ON` /
-`SWITCH_OUT_OFF` / `SWITCH_OUT_TIMED` — it deliberately reads hardware rather
-than a shadow, but it **cannot report a level for a cycling channel at all**,
-because while cycling the mode field matches neither forced value. `IDR` can: it
-captures the actual pad state every AHB cycle regardless of the pin being under
-TIM2's alternate function, so it reports the real driven level whether the
-channel is manual or cycling.
-
-The two sources are therefore complementary rather than competing, which is
-exactly the two-bitmap response the proposal describes:
+**Three 4-bit bitmaps**, from three independent sources:
 
 | Bitmap | Source | Meaning |
 |--------|--------|---------|
-| Mode | `OCxM` via `LL_TIM_OC_GetMode()` | 0 = manual/forced, 1 = TIM cycling |
-| Level | `GPIOx->IDR` | 0 = low, 1 = high, **valid in both modes** |
+| `level` | `GPIOx->IDR` | 0 = low, 1 = high — **valid in both modes** |
+| `mode` | `OCxM` via `LL_TIM_OC_GetMode()` | 0 = manual/forced, 1 = under TIM control |
+| `run` | `switch_cycle_t.u8_running` | 1 = cycling *and* repeat count not exhausted |
 
-For a *tester*, reading the pad is also the more honest measurement: it reports
-what the pin is doing, not what the peripheral was told to do.
+**Why `IDR` and not a shadow.** `x_switch_out_get()` reads `OCxM` and returns
+`SWITCH_OUT_ON`/`OFF`/`TIMED` — deliberately hardware rather than a shadow, but
+it **cannot report a level for a cycling channel at all**, because while cycling
+`OCxM` holds `ACTIVE`/`INACTIVE` (act-on-match), never either *forced* value.
+`IDR` captures the pad every AHB cycle regardless of TIM2 owning the pin through
+its alternate function, so it reports the real driven level in either mode. For a
+*tester*, reading the pad is also the more honest measurement — what the pin is
+doing, not what the peripheral was told to do.
 
-**Leaning:** adopt as described; add a small `u8_switch_out_level_bitmap()` and
-`u8_switch_out_mode_bitmap()` to `switch_out.c` so the REPL, the menu and any
-later logging share one implementation.
+**Why `run` as well as `mode`, given they agree in normal operation.** Both go to
+1 together at start and both go to 0 together on exhaustion, since
+`v_switch_cycle_halt()` forces the output LOW *and* clears `u8_running` in one
+place. So `run` is functionally redundant while everything works — and that is not
+the reason to carry it:
 
-**Resolution:** _pending_
+- **It detects a silently refused start.** `v_switch_cycle_start()` returns
+  without any indication if the channel is already running, or if the stored
+  on/off times fall outside `SWITCH_CYCLE_TIME_MIN_US`/`MAX_US`. With **S13**'s
+  post-state response, a host issuing "start" and reading back `run` learns
+  immediately whether the command took effect — no separate query, no ambiguity.
+- **It is a genuine cross-check.** `mode` is read from the timer, `run` from
+  software state. The existing code comments already describe the `OCxM` read as
+  "an independent cross-check on `switch_cycle_t.u8_running`". Disagreement means
+  a bug, and on an instrument the ability to see that is worth four bits.
+
+**What three bitmaps still cannot express: repeat progress.** "How many cycles
+have completed" is a per-channel *count* (`u32_cycles_done` against the repeat
+target), not a boolean, and a soak campaign will want it. That is per-channel data
+and does not belong in a bitmap — it wants either its own command later or the
+multi-line `n=<count>` response form (**D3**). Deliberately not added to the read
+command now; noted so it is a decision rather than an oversight.
+
+**Implementation:** `u8_switch_out_level_bitmap()`, `u8_switch_out_mode_bitmap()`
+and `u8_switch_cycle_run_bitmap()` in `switch_out.c`, so the REPL, the menu and
+any later logging share one implementation.
 
 ---
 
@@ -741,11 +775,11 @@ expected to follow.
 
 | # | Command | Inputs | Returns |
 |---|---------|--------|---------|
-| 1 | Set switch output levels (manual mode) | `Select`, `Set`, `Clear` masks (**D9**) | applied level bitmap |
-| 2 | Read switch state | none | mode bitmap + level bitmap (**I6**) |
-| 3 | Set cycling parameters | switch # (0–3), on-time, off-time, repeat count | mode + level bitmaps (**S13**) |
-| 4 | Start auto-cycling | start bitmask | mode + level bitmaps (**S13**) |
-| 5 | Stop auto-cycling | stop bitmask | mode + level bitmaps (**S13**) |
+| 1 | Set switch output levels (manual mode) | `Select`, `Set`, `Clear` masks (**D9**) | level + mode + run bitmaps (**I6**) |
+| 2 | Read switch state | none | level + mode + run bitmaps (**I6**) |
+| 3 | Set cycling parameters | switch # (0–3), on-time, off-time, repeat count | level + mode + run bitmaps (**S13**) |
+| 4 | Start auto-cycling | start bitmask | level + mode + run bitmaps (**S13**) |
+| 5 | Stop auto-cycling | stop bitmask | level + mode + run bitmaps (**S13**) |
 
 Plus builtins from **D1**: `V` version/ping, `L`/`?` list, `Q` quit.
 
@@ -1183,7 +1217,7 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 8 · 🟡 19 · 🔴 3 · 🔵 4 (34 rows) + 5 wish rows (one
+- **Plan status:** 🟢 9 · 🟡 18 · 🔴 3 · 🔵 4 (34 rows) + 5 wish rows (one
   promoted). **Nothing gates phase 1 any more** — the three remaining reds are
   **S4** (decidable without new input; leaning recorded), and **T1**/**T2**,
   which follow the code rather than precede it. The twenty yellows all carry
