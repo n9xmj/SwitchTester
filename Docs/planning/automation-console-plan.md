@@ -86,6 +86,7 @@ exists.
 | **I5** | 🟡 | **Async-readiness contract — what phase 1 must do so phase 2 is a drop-in** |
 | **I6** | 🟢 | State readback — three bitmaps: level (`IDR`), mode (`OCxM`), cycling-active |
 | **I7** | 🟡 | Sigil-prefix stray output at `_write()` so logs cannot desync the host |
+| **I8** | 🟡 | `v_acon_emit()` — the frame emitter; sigil is an argument, not a convention |
 | **T1** | 🔴 | Host-side Python runner |
 | **T2** | 🔴 | Sync decisions back into `SwitchTester-Design.md` |
 | **T3** | 🔵 | Promote the REPL to `G0B1_Skeleton` alongside `uart_stream` |
@@ -1242,6 +1243,85 @@ go direct to `uart_stream`.
 
 ---
 
+### I8 — The frame emitter
+
+**Status:** 🟡 · **Needs user:** no
+
+**Yes — `printf` is unavailable to the console, by construction.** **I7** routes
+everything that goes through `_write()` into the `#` filter, so the console's own
+frames must reach the wire another way or they would be prefixed as noise. That
+means `vsnprintf()` into a buffer, then a multibyte `uart_stream` write. Rather
+than open-code that at a dozen call sites, it is one varargs function.
+
+```c
+typedef enum
+{
+    ACON_SIG_OK      = '=',     /* command response, success   */
+    ACON_SIG_ERR     = '!',     /* command response, failure   */
+    ACON_SIG_PAYLOAD = '+',     /* payload continuation line   */
+    ACON_SIG_EVENT   = '*'      /* async event -- phase 2      */
+}
+acon_sigil_t;
+
+static void v_acon_emit(acon_sigil_t x_sigil, const char *p_c_format, ...);
+```
+
+Call sites then read:
+
+```c
+v_acon_emit(ACON_SIG_OK,  "S,L%X,M%X,R%X", u8_level, u8_mode, u8_run);
+v_acon_emit(ACON_SIG_ERR, "P,BUSY,R%X", u8_run);
+```
+
+**Why the sigil is a separate typed argument rather than part of the format
+string.** It makes **I5** obligation 1 — *every device→host line carries a sigil* —
+a property of the function signature instead of a convention every call site has
+to remember. A call site cannot omit it, cannot typo it, and cannot invent one.
+That obligation is the single most expensive thing to retrofit in this whole
+design, so it is worth making structurally impossible to violate.
+
+**The emitter appends `
+` itself.** Every frame is exactly one line, so no call
+site should be able to forget the terminator — forgetting it would run two frames
+together and desync the host in a way that looks like a protocol bug rather than a
+missing `
+`. It follows that **format strings never contain a newline**, which is
+a clean invariant to state and to assert on in debug builds.
+
+**Truncation must be detected, and must not be emitted.** `vsnprintf()` returns the
+length it *would* have written; if that meets or exceeds the buffer, the formatted
+frame is short. Emitting it anyway is the dangerous case, because a truncated frame
+is still a *well-formed shorter frame* to the host — `=G,L9,M4,R4,N7A1` parses
+cleanly and is wrong. That is precisely the failure mode **S1** exists to prevent,
+so on truncation the emitter discards the partial line and sends
+`!<op>,OVF` instead.
+
+**Sizing.** The longest phase-1 frame is the getter with every field at its maximum
+hex width — `=G,LF,MF,RF,NFFFFFFFF,FFFFFFFF,CFFFFFFFF,DFFFFFFFF` — 53 bytes with
+the terminator. `128` leaves comfortable room for `L` payload help strings.
+
+**Buffer is static, not stack** — same reasoning as **I4**: the console runs on an
+already-nested main-loop stack. Safe as a single shared buffer because
+`v_acon_emit()` is main-loop-only and never reentrant; it must **never** be called
+from an ISR, which is the same rule **S6** enforces for events.
+
+**No new plumbing needed.** `u16_uart_stream_tx_multi_blocking()` is the write
+call, and the console handle is already reachable through the existing
+`h_stdio_retarget_get_stream()` accessor — the console does not need its own
+binding. Timeout mirrors `STDIO_TX_TIMEOUT_MS` (100 ms), which `stdio_retarget.c`
+already sizes well above the ~11 ms it takes to drain a full 1024-byte ring at
+921600 baud. In practice a 53-byte frame into a 1 kB ring never blocks at all.
+
+**Keep the format specifiers integer and string only.** No `%f` anywhere — the
+cycling design is already integer-microseconds with no floating point, and keeping
+it that way avoids linking newlib's float formatter into an M0+ image.
+
+**Leaning:** as described.
+
+**Resolution:** _pending_
+
+---
+
 ### I1 — Hook point
 
 **Status:** 🟡 · **Needs user:** no
@@ -1457,8 +1537,9 @@ a whole run with nobody noticing.
   bench-testing happen in the same session, a failure is ambiguous — prefer
   proving the cycler by hand at the menu first.
 - **Phase 1 — command/response** — **unblocked; every gating row is green:**
-  1. `automation_console.{c,h}` — executive, line reader, builtins, frame emit
-     (**D3**), honouring all four **I5** obligations from the first commit
+  1. `automation_console.{c,h}` — executive, line reader, builtins, and
+     `v_acon_emit()` (**I8**), honouring all four **I5** obligations from the
+     first commit
   2. `debug_menu.c` intercept (**I1**) + `debug_config.h` gate (**I3**) +
      `_write()` sigil filter (**I7**)
   3. Op table + collision scan (**I2**), the seven **D6** commands in order
@@ -1481,7 +1562,7 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 18 · 🟡 12 · 🔴 2 · 🔵 4 (36 rows) + 5 wish rows (one
+- **Plan status:** 🟢 18 · 🟡 13 · 🔴 2 · 🔵 4 (37 rows) + 5 wish rows (one
   promoted). **Every design row is settled.** The two remaining reds are
   **T1**/**T2**, which follow the code rather than precede it; the twelve yellows
   all carry leanings and read as implementation guidance, not open questions.
