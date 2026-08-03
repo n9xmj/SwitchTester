@@ -61,7 +61,7 @@ exists.
 | **D5** | 🟢 | No prompt, no echo; everything answers; no-op is `Z` / `' '` / bare CR |
 | **D6** | 🟢 | Phase-1 op set — six commands, mask-addressed where simultaneity matters |
 | **D9** | 🟢 | Level-command encoding — Select + Set + Clear, BSRR-style, both = toggle |
-| **D10** | 🟡 | Human mode — `^E` swaps in `i_getline()`; SCRIPT is the default |
+| **D10** | 🟡 | Human mode — mode is an entry parameter; in-band switch is **I9** |
 | **D7** | 🟢 | Module name — `automation_console.{c,h}`, not a "test harness" |
 | **D8** | 🟢 | Wire encoding — ASCII lines, hex for binary data, both directions |
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
@@ -88,6 +88,7 @@ exists.
 | **I6** | 🟢 | State readback — three bitmaps: level (`IDR`), mode (`OCxM`), cycling-active |
 | **I7** | 🟡 | `#`-prefix stray output at `_write()`, at column 0 — stdio is unbuffered |
 | **I8** | 🟢 | `v_acon_emit()` — the frame emitter; sigil is an argument, not a convention |
+| **I9** | 🟡 | How human mode returns control — ESC is `i_getline()`'s only exit code |
 | **T1** | 🔴 | Host-side Python runner |
 | **T2** | 🔴 | Sync decisions back into `SwitchTester-Design.md` |
 | **T3** | 🔵 | Promote the REPL to `G0B1_Skeleton` alongside `uart_stream` |
@@ -937,7 +938,7 @@ caught by **I2**'s registration scan at startup:
 | `S` | set switch levels (**D9**) | | `V` | version / identity ping |
 | `R` | read switch state | | `L` `?` | list ops |
 | `W` | write cycling parameters | | `Z` `' '` CR | no-op (**D5**) |
-| `^E` | human/script mode switch (**D10**) |
+| *tbd* | mode switch — **I9** |
 | `G` | get cycling parameters | | `Q` | quit |
 | `C` | start cycling | | `~` | *reserved* — session frames (**D3**) |
 | `X` | stop cycling | | | |
@@ -1046,7 +1047,7 @@ registration, so a domain op cannot claim one):
 | `0x0D` CR | line terminator; a bare CR is the no-op (**D5**) |
 | `0x20` space | no-op alias (**D5**) |
 | `0x5E` `^` | caret-notation introducer for control-char echoes (**D3**) |
-| `0x05` `^E` | human/script mode switch (**D10**) |
+| `0x18` / `0x1B` | candidate mode-switch keys — **I9** |
 | `V` `L` `?` `Q` `Z` | builtins — **both cases** reserved |
 | `~` | protocol/session frames (**D3**) |
 
@@ -1348,12 +1349,12 @@ the console.
 
 ---
 
-### D10 — Human mode (`^E`)
+### D10 — Human mode
 
 **Status:** 🟡 · **Needs user:** yes — on the caret-input point below
 
-**`^E` (0x05) switches input *mode*, not merely echo.** Two readers, one
-dispatcher:
+**The mode is chosen at entry, by the caller**, and switched in-band with `^X`
+(0x18, CAN). Two readers, one dispatcher:
 
 | | **SCRIPT** (default) | **HUMAN** |
 |---|---|---|
@@ -1369,8 +1370,35 @@ dispatcher:
 command tried by hand must behave exactly as it will from a script, or the mode
 is a liar. Only the *reader* differs.
 
-`Ctrl-E` is what a terminal sends for 0x05, so the caret spelling is also the
-keystroke — the opcode is discoverable rather than arbitrary.
+**Entry mode is a parameter, because the entry path already encodes the intent:**
+
+```c
+void v_automation_console_run(acon_mode_t x_mode);
+```
+
+| Called from | Mode | Why |
+|---|---|---|
+| `v_debug_menu_service()` on the `ACON_ENTER` sentinel (**I1**) | `ACON_MODE_SCRIPT` | only a machine sends a non-typeable 0xDA |
+| a debug-menu entry | `ACON_MODE_HUMAN` | only a person picks a menu key |
+
+This is better than a flag defaulted at entry, and it subsumes the earlier
+"default off, reset on entry" rule rather than merely satisfying it: there is no
+persistent mode state to leak between sessions, because the mode *is* the
+argument. The common cases also need no mode command at all — a script never asks
+for script mode, and a human never asks for human mode.
+
+It also gives hand-driving a **discoverable** entry point. Sending 0xDA from a
+terminal is awkward; picking a menu key is not.
+
+**An in-band switch is wanted too**, for the cases the entry path does not cover —
+a human wanting to watch raw byte-at-a-time behaviour, or a script session being
+taken over by hand. Script→human is trivial (the raw reader sees any byte we
+choose); **human→script is constrained by what `i_getline()` can report, and that
+is open as I9** — the candidate keys are `^X` and ESC, and which one is reachable
+depends on whether the shared reader is extended.
+
+**`^E` is dropped** either way. With the mode set at entry and one in-band switch,
+a second mechanism earns nothing; 0x05 goes back to the free pool.
 
 **`i_getline()` is the right reader, and the pumping concern does not apply.** It
 blocks through `i_getchar_blocking()`, which loops `v_app_polling_task()` +
@@ -1388,10 +1416,12 @@ reader** rather than needing its own implementation.
 **Three real limitations, recorded rather than discovered:**
 
 1. **`i_getline()` ignores every byte below 0x20** (`else if (i_key >= 0x20)`), so
-   a control-character opcode cannot be typed in human mode — **including `^E`
-   itself.** The mode toggle would be unreachable from inside the mode it enables.
-   `Q` and the exit sentinel still work, so it is a wart rather than a lockout, but
-   it wants fixing — see the open point below.
+   a control-character opcode cannot be typed in human mode. **Accepted, not
+   worked around:** the control range is semi-reserved for operations only an
+   automation interface needs to drive (**D2**), so a human has no reason to send
+   one. Both candidate switch keys are unaffected — `i_getline()` tests for `^X`
+   and ESC *before* the printable check, so whichever **I9** picks stays
+   reachable.
 2. **No idle timeout.** `i_getchar_blocking()` has no deadline, so **S3** cannot
    fire while a line is being entered. This is acceptable *because the rationale
    does not transfer*: **S3** exists so a dead **host** cannot wedge the board, and
@@ -1404,33 +1434,27 @@ reader** rather than needing its own implementation.
    would fix it for the menu too, but it edits a shared utility, so it is noted
    here rather than folded in silently.
 
-**Open point — accept caret notation on *input* in human mode?** Letting a human
-type the two printable characters `^` `E` to mean opcode 0x05 fixes limitation 1
-and makes every control opcode typeable by hand, which is exactly the
-hand-drivability goal.
+**Caret notation on *input* is no longer needed** and is dropped. It existed to
+solve limitation 1 — a trap that only existed while `^E` was the switch and was
+itself filtered. With `^X` handled ahead of the printable check, the switch is
+reachable, and the control range is script-only by design rather than by accident.
+Should hand-typed control opcodes ever be wanted, the reasoning is preserved here:
+human mode has the whole line before dispatch, so resolving a leading `^X` needs no
+lookahead, and **D3**'s objection to caret-on-input applies only to script mode's
+byte-at-a-time reader.
 
-The earlier objection to caret-on-input (**D3**) was that the reader could not tell
-an opcode from an escaped one without lookahead — but that objection was about
-**script mode**, which reads byte-at-a-time. Human mode has the *whole line* before
-dispatch, so resolving a leading `^X` is trivial and needs no lookahead at all. The
-asymmetry is justified rather than inconsistent: raw bytes from scripts, caret
-spelling from keyboards, same opcodes underneath.
+**There is no persistent mode state to leak between sessions** — the mode is set
+from the entry argument every time, so **S6**'s reset-at-entry discipline is
+satisfied structurally rather than by remembering to clear a flag.
 
-**Leaning:** take it. Without it the mode traps its own switch, and control opcodes
-become script-only in a console whose stated goal is being drivable by hand.
+**The switch is a plain toggle, with no explicit-set form.** A toggle would
+normally be awkward for a script — it has to know the current state — but no
+script needs one here: it *enters* in `ACON_MODE_SCRIPT` by construction and has
+no reason to leave it. The switch exists for the operator taking over a session or
+stepping down to watch raw bytes, and a person can see which mode they are in.
 
-**SCRIPT mode by default, and reset to SCRIPT on every session entry.** A script
-must never receive echo, and a mode left set by a previous hand-driven session
-must not leak into the next scripted one. Same argument as **S6**'s queue reset:
-session state is reset at entry, never inherited.
-
-**Toggle *and* explicit set**, because those serve different callers:
-
-| Command | Effect |
-|---|---|
-| `^E` | toggle — what a human wants |
-| `^E,0` / `^E,1` | set explicitly — what a script wants, since a toggle requires knowing the current state |
-| response | `=^E,E1` / `=^E,E0` — always reports the resulting state |
+The response reports the mode arrived at, so it is never ambiguous — `M0` for
+SCRIPT, `M1` for HUMAN.
 
 **Echoed control characters use caret notation** (**D3**), for exactly the reason
 that rule exists: echoing a raw ESC back to the terminal would start an ANSI
@@ -1449,6 +1473,75 @@ the whole point of the command, but it needs stating rather than discovering.
 that argument — `i_getline()` does not print one either, so both modes stay
 consistent with each other and with the row above. If hand-driving turns out to
 want one, it belongs on this row later.
+
+**Resolution:** _pending_
+
+---
+
+### I9 — How human mode returns control
+
+**Status:** 🟡 · **Needs user:** yes — options below, nothing chosen
+
+**Facts first** (`utils.c`, verified 2026-08-02). `i_getline()` has exactly **two**
+exits:
+
+| Key | Handling | Return |
+|---|---|---|
+| **CR** `0x0D` | `GETLINE_NORMAL_EXIT` | `i_len` (0…limit) |
+| **ESC** `0x1B` | `GETLINE_ESCAPE_EXIT`, clears line, prints `<Cancel>` | **−1** |
+
+Consumed without exiting: **BS** `0x08` (destructive backspace), **^X** `0x18`
+(clears the whole line, keeps reading), every other byte `< 0x20` including
+**^C** `0x03` (silently discarded), and `≥ 0x20` (appended, echoed).
+
+So **ESC is the only special-case return**. `^X` is recognised but does not exit;
+`^C` is not recognised at all.
+
+**Consumers:** exactly one outside `utils.c` — `u8_debug_entry_u32()` at
+`debug_menu.c:163`, which treats *any* negative as "Cancelled - unchanged".
+
+**Options.**
+
+- **A — use ESC, change nothing.** ESC already returns −1 distinguishably, so
+  human→script needs no edit to shared code at all. `^X` keeps its present job
+  (clear the line, stay in the mode), which is a tidy split: `^X` cancels a line,
+  ESC leaves the mode. Symmetric too — 0x1B switches script→human, ESC switches
+  back.
+  *Cost:* ESC is the lead byte of every ANSI sequence a terminal sends. An arrow
+  key becomes ESC `[` `A` → mode switch, then `[` and `A` dispatch as commands.
+  The debug menu already has the milder form of this (an arrow key cancels an
+  entry), so it is a known wart — but here it also changes mode and emits two
+  spurious frames.
+- **B — no in-band switch at all.** Mode comes only from the entry argument
+  (**D10**); to change it, leave the console and re-enter. Zero code, zero risk,
+  no symmetry.
+- **C — `i_getline_ex(buf, limit, flags)`, `i_getline()` becomes a `flags = 0`
+  wrapper.** With `GETLINE_RETURN_ON_CANCEL`, `^X` becomes a third exit returning
+  −2. The existing caller is **not touched and not refactored** — it keeps
+  clear-and-retype byte-for-byte, because its call compiles to the same wrapper.
+  ESC keeps meaning "cancel this line", so arrow keys stay annoying rather than
+  becoming mode changes. Cost: one enumerator, one branch, one wrapper in a shared
+  file.
+- **D — private line reader in `automation_console.c`.** Total independence, and
+  freedom to handle `0x7F`, control opcodes and ANSI sequences properly. Cost:
+  ~40 duplicated lines that will drift from the menu's editing feel.
+
+**Note on modifying `i_getline()` in place:** it must not simply be changed to
+return on `^X`. The one existing caller reads any negative as cancel, so that
+would silently convert the menu's clear-and-retype into abandon-entry — a
+regression in a path nobody asked to change. Options C and D both avoid this; A
+avoids it by not touching anything.
+
+**Leaning:** **C**. It gets the behaviour right — ESC stays "cancel line", so an
+arrow key cannot silently change mode — and the wrapper means no existing consumer
+is broken or refactored, which was the constraint. **A** is genuinely tempting for
+its zero-change property, and if the arrow-key case is judged unimportant it is the
+cheapest thing that works.
+
+**Separate, optional:** `i_getline()` handles `\b` but not `0x7F` (DEL), and
+terminals disagree on which Backspace sends. Widening it would fix the debug menu
+too, but it *does* change existing behaviour, so it is listed apart from the
+options above rather than folded into any of them.
 
 **Resolution:** _pending_
 
@@ -1807,8 +1900,9 @@ a whole run with nobody noticing.
   1. `automation_console.{c,h}` — executive, line reader, builtins, and
      `v_acon_emit()` (**I8**), honouring all four **I5** obligations from the
      first commit
-  2. `debug_menu.c` intercept (**I1**) + `debug_config.h` gate (**I3**) +
-     `_write()` sigil filter (**I7**)
+  2. `debug_menu.c` intercept (**I1**, SCRIPT) + a menu entry (HUMAN, **D10**) +
+     `debug_config.h` gate (**I3**) + `_write()` sigil filter (**I7**) +
+     `i_getline_ex()` (**I9**)
   3. Op table + collision scan (**I2**), the seven **D6** commands in order
   4. Shared state-bitmap helpers (**I6**) + cycle-period floor (**S10**) at the
      REPL parameter setter only
@@ -1829,7 +1923,7 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 20 · 🟡 12 · 🔴 2 · 🔵 4 (38 rows) + 5 wish rows (one
+- **Plan status:** 🟢 20 · 🟡 13 · 🔴 2 · 🔵 4 (39 rows) + 5 wish rows (one
   promoted). **Every design row is settled.** The two remaining reds are
   **T1**/**T2**, which follow the code rather than precede it; the twelve yellows
   all carry leanings and read as implementation guidance, not open questions.
