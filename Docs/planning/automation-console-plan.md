@@ -66,7 +66,7 @@ exists.
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
 | **S2** | 🟡 | Cooperative pumping and re-entrancy vs `v_debug_menu_service()`'s lock |
 | **S3** | 🟡 | Idle-timeout value and what state the tester is left in |
-| **S4** | 🔴 | Behaviour while channels are cycling — entry, NVM commit deferral, exit |
+| **S4** | 🟢 | Cycling: entry/exit non-disturbing, commits deferred, `P` forces one |
 | **S5** | 🟡 | Transport error counters as an assertable builtin |
 | **S6** | 🔵 | Async event queue — ISR-safe fixed records, formatted at dequeue *(phase 2)* |
 | **S7** | 🔵 | Deferral rule and queue-overflow policy (drop + dropped-count) *(phase 2)* |
@@ -76,7 +76,7 @@ exists.
 | **S11** | 🟡 | Host receive contract — dispatch by sigil, never by position |
 | **S12** | 🟡 | Menu-mode human log — separate gate flag, emitted from the job runner |
 | **S13** | 🟢 | Switch-op responses carry state; ok/error lives in the frame header |
-| **S14** | 🟡 | Time units on the wire, and whether REPL-set params persist to NVM |
+| **S14** | 🟢 | µs on the wire; no auto-persist — commit is the explicit `P` command |
 | **S15** | 🟡 | Start/stop edge cases — already cycling, level on stop, repeat exhaustion |
 | **S16** | 🟢 | Repeat progress — report cycles *done*; host derives remaining |
 | **I1** | 🟡 | Hook point — where the 0xDA intercept lives |
@@ -694,11 +694,12 @@ thing to document.
 
 ---
 
-### S14 — Time units and NVM persistence
+### S14 — Time units and NVM persistence *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢 — the persistence half is **entailed** by **S4**'s `P` command;
+say so if the setter should auto-persist after all and this reopens.
 
-Two ambiguities in the cycle-parameter command that will otherwise be settled by
+Two ambiguities in the cycle-parameter command that would otherwise be settled by
 accident at implementation time.
 
 **Units.** The NVM parameters and the cycle engine are already in **microseconds**
@@ -706,7 +707,8 @@ accident at implementation time.
 (**S8**). Milliseconds on the wire would mean a conversion at exactly one place
 and a mismatch everywhere else.
 
-**Leaning:** microseconds on the wire, and rename **S10**'s constant to
+**Resolved:** microseconds on the wire, hex-encoded like every other numeric
+(**D3**), and **S10**'s constant is named
 `ACON_MIN_CYCLE_PERIOD_US = 50000` so the floor is expressed in the same unit it
 is checked in. A 32-bit µs field spans about 71 minutes per phase, which is far
 past any plausible cycle.
@@ -715,7 +717,9 @@ past any plausible cycle.
 shares the same parameter storage, so "does the REPL setter persist too?" has to
 be answered.
 
-**Leaning: no auto-persist from the REPL.** Two reasons, both concrete. A script
+**Resolved: no auto-persist from the automation console.** An explicit commit
+command (`P`, **S4**) only makes sense if configuring does not already commit —
+the two decisions are one decision. Two reasons, both concrete. A script
 that configures before each of a thousand iterations would commit a thousand
 flash writes for values it re-sends anyway — gratuitous wear on a part with no
 wear levelling (`switch-cycling-plan.md` **W6**). And a run that silently mutates
@@ -856,8 +860,8 @@ any later logging share one implementation.
 
 **Status:** 🟢
 
-Six commands, plus the executive builtins. Deliberately a starting set; more are
-expected to follow.
+Seven commands, plus the executive builtins. Deliberately a starting set; more
+are expected to follow.
 
 | # | Command | Inputs | Returns |
 |---|---------|--------|---------|
@@ -867,9 +871,20 @@ expected to follow.
 | 4 | Start auto-cycling | start bitmask | level + mode + run bitmaps (**S13**) |
 | 5 | Stop auto-cycling | stop bitmask | level + mode + run bitmaps (**S13**) |
 | 6 | **Get** cycling parameters | switch # (0–3) | on-time, off-time, repeat count, cycles **done** (**S16**) + the three bitmaps |
+| 7 | Commit parameters to NVM now | none | written / no-change, or refused while cycling (**S4**) |
 
-Plus the executive builtins: `V` version/ping, `L`/`?` list, `Q` quit (**D1**),
-and `Z` no-op (**D5**).
+**Opcode assignment** — fixed here so collisions are designed out rather than
+caught by **I2**'s registration scan at startup:
+
+| Op | Command | | Op | Builtin |
+|:--:|---------|-|:--:|---------|
+| `S` | set switch levels (**D9**) | | `V` | version / identity ping |
+| `R` | read switch state | | `L` `?` | list ops |
+| `W` | write cycling parameters | | `Z` | no-op (**D5**) |
+| `G` | get cycling parameters | | `Q` | quit |
+| `C` | start cycling | | `~` | *reserved* — session frames (**D3**) |
+| `X` | stop cycling | | | |
+| `P` | persist to NVM (**S4**) | | | |
 
 **Addressing is by mask where simultaneity matters, per-channel where it does
 not.** Commands 1, 4 and 5 take bitmasks so that several channels change together
@@ -901,27 +916,49 @@ above (all-off is a level command with every channel selected).
 
 ---
 
-### S4 — Behaviour while channels are cycling
+### S4 — Behaviour while channels are cycling *(resolved)*
 
-**Status:** 🔴 · **Needs user:** no (leaning is straightforward, but it needs to
-be written down before it becomes accidental behaviour)
+**Status:** 🟢
 
-**Question:** Three interactions need a stated rule:
+**1. Entry and exit are non-disturbing.** The host may enter and leave the
+automation console freely while channels are cycling — a soak driver attaching to
+query status is the main use case. Neither the sentinel, `Q`, nor an idle timeout
+touches drive state. Explicit `X` is the only thing that stops a run, so a
+timeout firing mid-soak cannot silently kill it.
 
-1. Can the host enter the REPL while channels are cycling? (Yes — a soak driver
-   entering to query status is the main use case.)
-2. `JOB_NVM_COMMIT` is already deferred while any channel cycles. A host that
-   writes cycle parameters (`W`) and immediately power-cycles the board would
-   lose them silently. Does `W` report "queued, not yet committed"?
-3. On exit — sentinel, `Q`, or timeout — does the REPL stop cycling? An idle
-   timeout firing mid-soak and killing the run would be a nasty surprise.
+**2. NVM commits stay deferred while any channel cycles.** Existing behaviour,
+kept: `app_main.c` holds the commit off and zeroes `u16_commit_timer` so the
+auto-commit countdown re-arms, and the parameters reach flash once the run ends.
+A commit erases and rewrites a flash page — tens of milliseconds against phase
+times that can be as short as 10 µs — so letting it run mid-cycle would stall the
+compare ISR.
 
-**Leaning / recommendation:** entry and exit are both non-disturbing — the REPL
-never changes drive state on its own. `W` returns the commit state explicitly so
-the host can poll for durability rather than assume it. Explicit `X` is the only
-thing that stops a run.
+**3. A new command requests an immediate commit** rather than waiting for the
+auto-commit timer: `P` (persist), **D6** command 7. It **refuses while cycling**,
+which is what keeps rule 2 intact — the deferral is not something the host can
+override, only something it can pre-empt when the bench is idle.
 
-**Resolution:** _pending_
+`P` calls `x_nvm_commit()` **synchronously** rather than posting `JOB_NVM_COMMIT`,
+so the response carries the real outcome instead of an acknowledgement that a job
+was queued. The distinction matters: `x_nvm_commit()` returns `NVM_ERROR_NONE`
+(a page was actually written), `NVM_ERROR_NO_CHANGE` (pool already clean, no
+erase/write spent), or a genuine failure — and a host that just configured a soak
+run wants to know which of those happened before it walks away.
+
+| Response | Meaning |
+|---|---|
+| `=P,W1` | written — a flash page was erased and rewritten |
+| `=P,W0` | no change — pool was already clean (`NVM_ERROR_NO_CHANGE`) |
+| `!P,BUSY,R<n>` | refused, cycling active; `R` is the run bitmap |
+| `!P,NVM,E<n>` | commit failed; `E` is the `nvm_error_t` |
+
+The `R` bitmap on the BUSY refusal is deliberate — it tells the host *which*
+channels it needs to stop, rather than making it issue a separate read to find
+out.
+
+**Note on the opcode.** The suggestion was to reuse `W`, but `W` is already the
+cycle-parameter *writer* (**D6** command 3). `P` avoids a collision that **I2**'s
+registration scan would have caught at startup anyway — better to not build it in.
 
 ---
 
@@ -1349,7 +1386,7 @@ a whole run with nobody noticing.
   1. `automation_console.{c,h}` — executive, line reader, builtins, frame emit
      (**D3**), honouring all four **I5** obligations from the first commit
   2. `debug_menu.c` intercept (**I1**) + `debug_config.h` gate (**I3**)
-  3. Op table + collision scan (**I2**), the six **D6** commands in order
+  3. Op table + collision scan (**I2**), the seven **D6** commands in order
   4. Shared state-bitmap helpers (**I6**) + cycle-period floor (**S10**) at the
      REPL parameter setter only
   5. Bench: enter, `V`, `L`, one op of each shape, exit by all three routes
@@ -1369,10 +1406,9 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 15 · 🟡 13 · 🔴 3 · 🔵 4 (35 rows) + 5 wish rows (one
-  promoted). **Nothing gates phase 1 any more** — the three remaining reds are
-  **S4** (decidable without new input; leaning recorded), and **T1**/**T2**,
-  which follow the code rather than precede it. The twenty yellows all carry
-  leanings; they are implementation guidance, not open questions.
+- **Plan status:** 🟢 17 · 🟡 12 · 🔴 2 · 🔵 4 (35 rows) + 5 wish rows (one
+  promoted). **Every design row is settled.** The two remaining reds are
+  **T1**/**T2**, which follow the code rather than precede it; the twelve yellows
+  all carry leanings and read as implementation guidance, not open questions.
 
 **End of automation-console-plan.md**
