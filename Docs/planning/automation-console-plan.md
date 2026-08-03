@@ -85,7 +85,7 @@ exists.
 | **I4** | 🟡 | Line-buffer sizing and static (not stack) allocation |
 | **I5** | 🟡 | **Async-readiness contract — what phase 1 must do so phase 2 is a drop-in** |
 | **I6** | 🟢 | State readback — three bitmaps: level (`IDR`), mode (`OCxM`), cycling-active |
-| **I7** | 🟡 | Sigil-prefix stray output at `_write()` so logs cannot desync the host |
+| **I7** | 🟡 | `#`-prefix stray output at `_write()`, at column 0 — stdio is unbuffered |
 | **I8** | 🟢 | `v_acon_emit()` — the frame emitter; sigil is an argument, not a convention |
 | **T1** | 🔴 | Host-side Python runner |
 | **T2** | 🔴 | Sync decisions back into `SwitchTester-Design.md` |
@@ -170,6 +170,21 @@ Established; do not re-litigate unless explicitly reopened.
   device transmitting does not impede reception, and vice versa. Verified in
   `uart_stream.c` (the RX drain loop and the TX fill loop are independent). This
   is what makes **S11** a host-parser question rather than a wire problem.
+- **stdio is raw, unbuffered, and does no EOL translation** (verified
+  2026-08-02). `v_stdio_retarget()` sets `_IONBF` on `stdout`, `stdin` *and*
+  `stderr` (`stdio_retarget.c:72-74` — not `Core/`), and `_write()` hands the
+  buffer straight to `u16_uart_stream_tx_multi_blocking()` with no `
+` → `
+`
+  expansion. `_read()` is non-blocking and equally untranslated.
+  Three consequences this design depends on: **(a)** the console's line reader
+  sees `` and `
+` exactly as the host sent them, so the CRLF reasoning in
+  **D5**/**S3** rests on real behaviour rather than an assumption; **(b)**
+  `v_acon_emit()`'s explicit `
+` reaches the wire verbatim (**I8**); **(c)**
+  unbuffered output means one log entry arrives as *several* `_write()` calls,
+  which is what shapes **I7**.
 - **Async event sources will be ISR context.** Cycling transitions come from the
   TIM2 compare ISR (priority 0); sense comparator edges will come from EXTI
   (priority 3). Neither can call `printf`, so **S6** is not optional.
@@ -1081,14 +1096,16 @@ product, platform, firmware and build config — but it is not a no-op, and usin
 error response as a liveness probe would be worse than either.
 
 **Keep-alives.** A host that must block on some external process holds the session
-open by sending a no-op inside the **S3** window: `" "`, two bytes. The idle
+open by sending a no-op inside the **S3** window: `" 
+"`, two bytes. The idle
 timer resets on *any* received byte, so a keep-alive works even if it lands
 mid-line.
 
 **Why 0x0A is *not* a no-op alias.** (Also worth noting the code: 0x0A is LF; CR
 is 0x0D.) Neither can be the no-op, and it is the same reason empty lines stay
 silent above — this is that decision seen from the other side. A bare `
-` or ``
+` or `
+`
 does not *reach* dispatch as a command character: the line reader consumes it as a
 **terminator**, so what dispatch would see is an empty line. Making an empty line
 answer is precisely the thing that puts a CRLF host permanently one frame out of
@@ -1097,13 +1114,15 @@ step, because every `...
 no-op frame.
 
 The alternative — swallowing an `
-` that immediately follows a `` — works for
+` that immediately follows a `
+` — works for
 back-to-back CRLF but then silently eats a legitimate standalone `
 ` keep-alive
 that happens to follow a command, and needs a time bound to distinguish the cases.
 That is a lot of fragility to save one byte.
 
-`' '` has none of that trouble: it is a *printable* character, so `" "` is a
+`' '` has none of that trouble: it is a *printable* character, so `" 
+"` is a
 genuine non-empty line whose first character is the no-op opcode, dispatched by
 exactly the same path as every other command. No special case anywhere.
 
@@ -1270,9 +1289,23 @@ there, so a line-oriented filter applied at that one place catches log output,
 stray `printf`, and anything a future job adds, without those call sites knowing
 the console exists:
 
-- While a session is active, `_write()` emits `#` at the start of the buffer and
-  after every `
-` it passes through.
+- **The filter must be stateful — "prefix the start of each buffer" is wrong.**
+  stdio is unbuffered (`_IONBF`), so a single log entry arrives as *several*
+  `_write()` calls: `v_logc_printf_time_tag()` alone does `v_print_color()` →
+  `v_print_timestamp()` → `printf("[%s] ")` → `vprintf(fmt)`. Prefixing each call
+  would produce `#(1.234) #[SYS] #NVM commit: ...`. The `#` must go in only at
+  **column 0**.
+- So: keep an at-line-start flag, set at session entry and whenever a `` or `
+`
+  is passed through. When the flag is set and the next byte is not itself a
+  newline, inject `#` and clear it. `_write()` then emits in segments rather than
+  one block, which costs a short scan per call and only while a session is active.
+- **Do not repurpose `ui_stdout_after_crlf_char_count` for this.** It is nearly the
+  right state and is tempting, but it resets on `` only and ignores `
+`, and
+  `utils.c` reads it through `ui_stdout_chars_after_crlf()` for output formatting.
+  Widening its reset condition to fix this filter would change behaviour for an
+  unrelated caller. A private flag is two bytes.
 - **The console's own frames bypass `_write()` entirely** — `v_acon_emit()` writes
   to `uart_stream` directly, so it carries its own sigils and is unaffected. This
   falls out of **I5** obligation 2 rather than being an extra rule.
@@ -1280,15 +1313,21 @@ the console exists:
 The result is that *nothing* can desync the host, including output from code
 written years from now by someone who never read this document.
 
-**Known constraint:** a log format string containing an embedded `
-` produces a
-correctly-prefixed second line, so multi-line entries are fine — but a format
-string that emits a *partial* line and returns (no trailing newline) will have the
-next entry's `#` appear mid-line. Existing logging always terminates its entries,
-so this is a note for future call sites rather than a present defect.
+**With the flag approach, embedded newlines are handled correctly by
+construction** — a multi-line log entry gets a `#` on each of its lines, and a
+call site that emits a partial line simply continues that line on the next call,
+which is the right answer rather than a hazard. This is strictly more robust than
+the per-buffer scheme it replaces.
 
-**Leaning:** filter in `_write()`, gated on a session-active flag; console frames
-go direct to `uart_stream`.
+**Note on line endings:** `logging.c`'s `v_newline()` emits `` *then* `
+`
+(`logging.c:17-21`), so log lines are CRLF-terminated on the wire. The flag resets
+on either character, so a bare `
+` from anywhere else is handled too.
+
+**Leaning:** filter in `_write()`, gated on a session-active flag, with a private
+at-line-start flag driving `#` injection; console frames go direct to
+`uart_stream`.
 
 **Resolution:** _pending_
 
