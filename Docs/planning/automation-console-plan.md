@@ -61,6 +61,7 @@ exists.
 | **D5** | 🟢 | No prompt, no echo; everything answers; no-op is `Z` / `' '` / bare CR |
 | **D6** | 🟢 | Phase-1 op set — six commands, mask-addressed where simultaneity matters |
 | **D9** | 🟢 | Level-command encoding — Select + Set + Clear, BSRR-style, both = toggle |
+| **D10** | 🟡 | Commanded input echo — `^E` toggle for hand-driving; off by default |
 | **D7** | 🟢 | Module name — `automation_console.{c,h}`, not a "test harness" |
 | **D8** | 🟢 | Wire encoding — ASCII lines, hex for binary data, both directions |
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
@@ -181,6 +182,14 @@ Established; do not re-litigate unless explicitly reopened.
   `v_acon_emit()`'s explicit `\r\n` reaches the wire verbatim (**I8**); **(c)**
   unbuffered output means one log entry arrives as *several* `_write()` calls,
   which is what shapes **I7**.
+- **Hand-drivability is a design goal, not a side effect (stated 2026-08-02).**
+  The console is meant to be usable *directly from a terminal* — to try a command
+  by hand before committing it to a script, and to diagnose the instrument with
+  nothing but Tera Term. That is why every device→host byte stays in printable
+  ASCII (**D8**, and **D3**'s caret notation), why a bare CR answers (**D5**), and
+  why **D10** exists. A protocol decision that would make the stream unreadable to
+  a human needs to justify itself against this, not only against machine
+  parseability.
 - **Async event sources will be ISR context.** Cycling transitions come from the
   TIM2 compare ISR (priority 0); sense comparator edges will come from EXTI
   (priority 3). Neither can call `printf`, so **S6** is not optional.
@@ -928,6 +937,7 @@ caught by **I2**'s registration scan at startup:
 | `S` | set switch levels (**D9**) | | `V` | version / identity ping |
 | `R` | read switch state | | `L` `?` | list ops |
 | `W` | write cycling parameters | | `Z` `' '` CR | no-op (**D5**) |
+| `^E` | echo toggle (**D10**) |
 | `G` | get cycling parameters | | `Q` | quit |
 | `C` | start cycling | | `~` | *reserved* — session frames (**D3**) |
 | `X` | stop cycling | | | |
@@ -1036,6 +1046,7 @@ registration, so a domain op cannot claim one):
 | `0x0D` CR | line terminator; a bare CR is the no-op (**D5**) |
 | `0x20` space | no-op alias (**D5**) |
 | `0x5E` `^` | caret-notation introducer for control-char echoes (**D3**) |
+| `0x05` `^E` | input-echo toggle (**D10**) |
 | `V` `L` `?` `Q` `Z` | builtins — **both cases** reserved |
 | `~` | protocol/session frames (**D3**) |
 
@@ -1332,6 +1343,56 @@ exists.
 zero it at the start of a run. Once the loopback rig (**T3** in the transport
 plan) is up, the same op should be able to report *any* bound instance, not just
 the console.
+
+**Resolution:** _pending_
+
+---
+
+### D10 — Commanded input echo
+
+**Status:** 🟡 · **Needs user:** yes — on the editing sub-point below
+
+**`^E` (0x05) toggles input echo**, for driving the console by hand from a
+terminal. `Ctrl-E` is what a terminal sends for 0x05, so the caret spelling is
+also the keystroke — the opcode is discoverable rather than arbitrary.
+
+**Off by default, and reset to off on every session entry.** A script must never
+receive echo, and echo state left on by a previous hand-driven session must not
+leak into the next scripted one. Same argument as **S6**'s queue reset: session
+state is reset at entry, never inherited.
+
+**Toggle *and* explicit set**, because those serve different callers:
+
+| Command | Effect |
+|---|---|
+| `^E` | toggle — what a human wants |
+| `^E,0` / `^E,1` | set explicitly — what a script wants, since a toggle requires knowing the current state |
+| response | `=^E,E1` / `=^E,E0` — always reports the resulting state |
+
+**Echoed control characters use caret notation** (**D3**), for exactly the reason
+that rule exists: echoing a raw ESC back to the terminal would start an ANSI
+escape sequence and corrupt the display.
+
+**Turning echo on forfeits machine-parseability, and that is the honest trade.**
+Echo is per-character, so it cannot be sigil-framed — there is no line to frame.
+Prefixing every echoed character with `#` would technically preserve the invariant
+and would be intolerable to type against. So: **echo output is not part of the
+protocol**, and a session with echo on is a human session by definition. That is
+the whole point of the command, but it needs stating rather than discovering.
+
+**Open sub-point — does echo also enable destructive backspace?** Echo without it
+is half a feature: a human who typos sees the character echoed, presses backspace,
+and the line buffer silently keeps both the typo and the `0x08`, so the command
+fails for a reason the screen does not show. Minimal handling is a few lines —
+`0x08`/`0x7F` removes the last character from the buffer and echoes
+`BS`-space-`BS` — and it only runs while echo is on, so the scripted path is
+untouched.
+
+**Leaning:** include it. The alternative is a hand-driving mode that punishes the
+first typo, and the guard is already there in the shape of the echo flag.
+
+**Not included:** a prompt. **D5** rules one out and echo does not change that
+argument; if hand-driving turns out to want one, it belongs on this row later.
 
 **Resolution:** _pending_
 
@@ -1712,7 +1773,7 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 20 · 🟡 11 · 🔴 2 · 🔵 4 (37 rows) + 5 wish rows (one
+- **Plan status:** 🟢 20 · 🟡 12 · 🔴 2 · 🔵 4 (38 rows) + 5 wish rows (one
   promoted). **Every design row is settled.** The two remaining reds are
   **T1**/**T2**, which follow the code rather than precede it; the twelve yellows
   all carry leanings and read as implementation guidance, not open questions.
