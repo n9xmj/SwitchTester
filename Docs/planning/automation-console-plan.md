@@ -61,7 +61,7 @@ exists.
 | **D5** | 🟢 | No prompt, no echo; everything answers; no-op is `Z` / `' '` / bare CR |
 | **D6** | 🟢 | Phase-1 op set — six commands, mask-addressed where simultaneity matters |
 | **D9** | 🟢 | Level-command encoding — Select + Set + Clear, BSRR-style, both = toggle |
-| **D10** | 🟡 | Commanded input echo — `^E` toggle for hand-driving; off by default |
+| **D10** | 🟡 | Human mode — `^E` swaps in `i_getline()`; SCRIPT is the default |
 | **D7** | 🟢 | Module name — `automation_console.{c,h}`, not a "test harness" |
 | **D8** | 🟢 | Wire encoding — ASCII lines, hex for binary data, both directions |
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
@@ -937,7 +937,7 @@ caught by **I2**'s registration scan at startup:
 | `S` | set switch levels (**D9**) | | `V` | version / identity ping |
 | `R` | read switch state | | `L` `?` | list ops |
 | `W` | write cycling parameters | | `Z` `' '` CR | no-op (**D5**) |
-| `^E` | echo toggle (**D10**) |
+| `^E` | human/script mode switch (**D10**) |
 | `G` | get cycling parameters | | `Q` | quit |
 | `C` | start cycling | | `~` | *reserved* — session frames (**D3**) |
 | `X` | stop cycling | | | |
@@ -1046,7 +1046,7 @@ registration, so a domain op cannot claim one):
 | `0x0D` CR | line terminator; a bare CR is the no-op (**D5**) |
 | `0x20` space | no-op alias (**D5**) |
 | `0x5E` `^` | caret-notation introducer for control-char echoes (**D3**) |
-| `0x05` `^E` | input-echo toggle (**D10**) |
+| `0x05` `^E` | human/script mode switch (**D10**) |
 | `V` `L` `?` `Q` `Z` | builtins — **both cases** reserved |
 | `~` | protocol/session frames (**D3**) |
 
@@ -1348,18 +1348,81 @@ the console.
 
 ---
 
-### D10 — Commanded input echo
+### D10 — Human mode (`^E`)
 
-**Status:** 🟡 · **Needs user:** yes — on the editing sub-point below
+**Status:** 🟡 · **Needs user:** yes — on the caret-input point below
 
-**`^E` (0x05) toggles input echo**, for driving the console by hand from a
-terminal. `Ctrl-E` is what a terminal sends for 0x05, so the caret spelling is
-also the keystroke — the opcode is discoverable rather than arbitrary.
+**`^E` (0x05) switches input *mode*, not merely echo.** Two readers, one
+dispatcher:
 
-**Off by default, and reset to off on every session entry.** A script must never
-receive echo, and echo state left on by a previous hand-driven session must not
-leak into the next scripted one. Same argument as **S6**'s queue reset: session
-state is reset at entry, never inherited.
+| | **SCRIPT** (default) | **HUMAN** |
+|---|---|---|
+| Reader | raw, byte-at-a-time | `i_getline()` |
+| Echo | none | per character |
+| Editing | none | backspace, `Ctrl-X` clear, `ESC` cancel |
+| **S3** idle timeout | applies | does not (see below) |
+| **I7** `#` filter | on | off |
+| Dispatcher | *identical* | *identical* |
+| Response frames | *identical* | *identical* |
+
+**The dispatcher and `v_acon_emit()` are shared, and that is the point.** A
+command tried by hand must behave exactly as it will from a script, or the mode
+is a liar. Only the *reader* differs.
+
+`Ctrl-E` is what a terminal sends for 0x05, so the caret spelling is also the
+keystroke — the opcode is discoverable rather than arbitrary.
+
+**`i_getline()` is the right reader, and the pumping concern does not apply.** It
+blocks through `i_getchar_blocking()`, which loops `v_app_polling_task()` +
+`getchar()` — the *same* call the console loop already makes, reached through the
+same held re-entry lock (**S2**). No new hazard: the lock is what makes the pump
+safe, and it is held for the console's entire lifetime regardless of which reader
+is running.
+
+What it brings for free, already written and already familiar from the debug menu:
+per-character echo, destructive backspace (`\b \b`), `ESC` to cancel a line with a
+`<Cancel>` notice, `Ctrl-X` to clear and re-enter, and length limiting. That
+settles the previous open sub-point on this row — **backspace comes with the
+reader** rather than needing its own implementation.
+
+**Three real limitations, recorded rather than discovered:**
+
+1. **`i_getline()` ignores every byte below 0x20** (`else if (i_key >= 0x20)`), so
+   a control-character opcode cannot be typed in human mode — **including `^E`
+   itself.** The mode toggle would be unreachable from inside the mode it enables.
+   `Q` and the exit sentinel still work, so it is a wart rather than a lockout, but
+   it wants fixing — see the open point below.
+2. **No idle timeout.** `i_getchar_blocking()` has no deadline, so **S3** cannot
+   fire while a line is being entered. This is acceptable *because the rationale
+   does not transfer*: **S3** exists so a dead **host** cannot wedge the board, and
+   human mode has no host — it has an operator sitting at the terminal. It also
+   matches how every other line entry in this application already behaves. Worth
+   naming as the reason a script must never enable human mode: it would silently
+   forfeit its anti-wedge guarantee.
+3. **`i_getline()` handles `\b` (0x08) but not `0x7F` (DEL)**, and terminals differ
+   on which one Backspace sends. Tera Term is configurable. A one-line widening
+   would fix it for the menu too, but it edits a shared utility, so it is noted
+   here rather than folded in silently.
+
+**Open point — accept caret notation on *input* in human mode?** Letting a human
+type the two printable characters `^` `E` to mean opcode 0x05 fixes limitation 1
+and makes every control opcode typeable by hand, which is exactly the
+hand-drivability goal.
+
+The earlier objection to caret-on-input (**D3**) was that the reader could not tell
+an opcode from an escaped one without lookahead — but that objection was about
+**script mode**, which reads byte-at-a-time. Human mode has the *whole line* before
+dispatch, so resolving a leading `^X` is trivial and needs no lookahead at all. The
+asymmetry is justified rather than inconsistent: raw bytes from scripts, caret
+spelling from keyboards, same opcodes underneath.
+
+**Leaning:** take it. Without it the mode traps its own switch, and control opcodes
+become script-only in a console whose stated goal is being drivable by hand.
+
+**SCRIPT mode by default, and reset to SCRIPT on every session entry.** A script
+must never receive echo, and a mode left set by a previous hand-driven session
+must not leak into the next scripted one. Same argument as **S6**'s queue reset:
+session state is reset at entry, never inherited.
 
 **Toggle *and* explicit set**, because those serve different callers:
 
@@ -1371,28 +1434,21 @@ state is reset at entry, never inherited.
 
 **Echoed control characters use caret notation** (**D3**), for exactly the reason
 that rule exists: echoing a raw ESC back to the terminal would start an ANSI
-escape sequence and corrupt the display.
+escape sequence and corrupt the display. In practice `i_getline()` discards them
+before echo anyway (limitation 1), so this matters mainly if that filter is ever
+widened.
 
-**Turning echo on forfeits machine-parseability, and that is the honest trade.**
+**Human mode forfeits machine-parseability, and that is the honest trade.**
 Echo is per-character, so it cannot be sigil-framed — there is no line to frame.
 Prefixing every echoed character with `#` would technically preserve the invariant
 and would be intolerable to type against. So: **echo output is not part of the
 protocol**, and a session with echo on is a human session by definition. That is
 the whole point of the command, but it needs stating rather than discovering.
 
-**Open sub-point — does echo also enable destructive backspace?** Echo without it
-is half a feature: a human who typos sees the character echoed, presses backspace,
-and the line buffer silently keeps both the typo and the `0x08`, so the command
-fails for a reason the screen does not show. Minimal handling is a few lines —
-`0x08`/`0x7F` removes the last character from the buffer and echoes
-`BS`-space-`BS` — and it only runs while echo is on, so the scripted path is
-untouched.
-
-**Leaning:** include it. The alternative is a hand-driving mode that punishes the
-first typo, and the guard is already there in the shape of the echo flag.
-
-**Not included:** a prompt. **D5** rules one out and echo does not change that
-argument; if hand-driving turns out to want one, it belongs on this row later.
+**Not included:** a prompt. **D5** rules one out, and human mode does not change
+that argument — `i_getline()` does not print one either, so both modes stay
+consistent with each other and with the row above. If hand-driving turns out to
+want one, it belongs on this row later.
 
 **Resolution:** _pending_
 
