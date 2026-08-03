@@ -53,7 +53,7 @@ exists.
 | **Q1** | 🟢 | **What the host runner must do** — command/response *and* async events, both v1 |
 | **D1** | 🟢 | Entry / exit protocol — 0xDA in, 0xA5 / `Q` / idle timeout out |
 | **D2** | 🟡 | Command namespace — full `0x20..0x7E`, case-sensitive (drop `toupper()`) |
-| **D3** | 🟡 | Frame identity and grammar — sigils, status in the header, `n=` payload counts |
+| **D3** | 🟢 | Frame identity and grammar — sigils carry status; 1-char keys, hex values |
 | **D4** | 🟡 | Host→device grammar — freeform opcode+args vs fixed packet with length/CRC |
 | **D5** | 🟡 | Prompt / echo policy while in harness mode |
 | **D6** | 🟢 | Phase-1 op set — six commands, mask-addressed where simultaneity matters |
@@ -191,7 +191,7 @@ phase 1; all four are expensive to retrofit.
    `=`, `!` or `#` (**D3**) even though `*` is unused in phase 1, and the phase-1
    host runner (**T1**) must already skip lines whose sigil it does not
    recognise. This is the one that actually matters: if phase 1 emits bare lines,
-   every host script written against it breaks the day the first `*EVT` appears.
+   every host script written against it breaks the day the first `*` frame appears.
 2. **Ops never `printf` directly.** They emit through a framing helper —
    `v_repl_emit(...)` — so that phase 2 can add the "not inside a response frame"
    interlock in exactly one place. Ops that write to stdout freely cannot be
@@ -200,9 +200,10 @@ phase 1; all four are expensive to retrofit.
    the top of the wait-for-command state and is an empty function. Zero cost, and
    it fixes the one architectural point — *where* async is allowed to happen —
    while the loop is still small enough to see whole.
-4. **Response frames are terminated in phase 1** (`=END`). Emitting async
-   "between frames" is only well defined if a frame has an end. A phase-1
-   response that just trails off gives phase 2 nowhere safe to insert.
+4. **Response frames are bounded in phase 1.** Every response is one line, or
+   declares its `K<n>` payload count up front (**D3**). Emitting async "between
+   frames" is only well defined if a frame has a knowable end; a response that
+   just trails off gives phase 2 nowhere safe to insert.
 
 Explicitly *not* required in phase 1: the event record struct, the ring, the
 overflow counter, the subscription mask. Those are additive once the four above
@@ -221,7 +222,7 @@ function.
 
 **The identified window is real, and it is harmless.** The host commits to
 sending a command; in the same one-or-two-byte-time window the device dequeues an
-event and emits it. The host then reads `*EVT …` where it might have expected its
+event and emits it. The host then reads a `*` frame where it might have expected its
 response.
 
 Nothing is corrupted. The link is full duplex — two rings, two directions, no
@@ -243,7 +244,8 @@ line is the answer".
   can disagree between the ends, and while events are suppressed the device is
   queueing them anyway — so the deferral has moved, not disappeared.
 - **Sigil dispatch as a contract.** The host reads lines and routes by first
-  character: `*` and `#` go to handlers, and the first `=OK` / `!ERR` line is the
+  character: `*` and `#` go to handlers, `+` is payload, and the first `=` / `!`
+  line is the
   response to the outstanding command. The window becomes a non-event because no
   code anywhere assumes positional ordering.
 
@@ -324,9 +326,9 @@ no menu floor at all the cycler bottoms out at the 4 µs hardware guard, but the
 
 ---
 
-### D3 — Frame identity and grammar
+### D3 — Frame identity and grammar *(resolved)*
 
-**Status:** 🟡 · **Needs user:** yes — the concrete grammar below wants a nod
+**Status:** 🟢
 
 **Question:** How does the host distinguish a command response from an async
 event, how does it know a frame is complete, and **where does the ok/error status
@@ -346,8 +348,9 @@ it can tell success from failure.
 
 | Sigil | Frame kind |
 |-------|------------|
-| `=` | command response, success |
+| `=` | command response, success — no `OK` token needed, the sigil *is* the status |
 | `!` | command response, failure |
+| `+` | payload continuation line of a multi-line response |
 | `*` | async event (phase 2) |
 | `#` | human/log noise — not part of the protocol; host ignores the line |
 
@@ -356,42 +359,66 @@ The `#` row is easy to forget and expensive to omit: something will eventually
 without a "not for you" sigil that line desynchronises the host mid-frame.
 Prefixing it makes stray output harmless instead of fatal.
 
-**Grammar — single-line by default, self-describing when not.**
+**Grammar.**
 
 ```
-=OK  cmd=<c> [k=v ...]                     success, complete in one line
-!ERR cmd=<c> code=<CODE> [k=v ...]         failure, complete in one line
-=OK  cmd=<c> n=<count> [k=v ...]           success, exactly <count> payload
-=<payload line>                              lines follow, each sigil-prefixed
-*EVT t=<µs> src=<s> ch=<c> val=<v>         async event (phase 2)
-#<free text>                               ignored by the host
+=<op> [<tok> ...]                success, complete in one line
+!<op> <CODE> [<tok> ...]         failure, complete in one line
+=<op> K<n> [<tok> ...]           success, exactly <n> payload lines follow
++<text>                          payload line
+*<src><ch> T<hex> V<hex>         async event (phase 2)
+#<text>                          not protocol; host ignores the line
 ```
 
-A response is **one line** unless its header carries `n=<count>`, in which case
-exactly that many sigil-prefixed payload lines follow. The host reads a line,
-checks for `n=`, and reads that many more — no terminator scanning, and a
-truncated frame is *detectable* because fewer lines arrive than were promised.
-Of the phase-1 commands only the `L` op-list needs the multi-line form.
+`<op>` is the single command character, echoed back so a desynchronised host
+notices immediately. A `<tok>` is **one uppercase key letter immediately followed
+by a hex value** — no `=`, no `0x`, no separator inside the token; tokens are
+separated by single spaces, which is what keeps a hex value containing `A`–`F`
+unambiguous.
 
-**This reverses the earlier leaning in this row, and the reason is new
-information.** The bracketed `=END` form was argued for on the grounds that a
-single-line frame would have to "squeeze a four-channel state dump into key=value
-pairs". Now that **D6** is locked, that dump is two hex bitmaps — the objection
-does not survive contact with the actual payload. A declared count is also
-strictly better than a terminator: it detects truncation, which a terminator
-cannot.
+| Key | Meaning | | Key | Meaning |
+|:---:|---------|-|:---:|---------|
+| `L` | level bitmap | | `C` | repeat count |
+| `M` | mode bitmap | | `D` | cycles done |
+| `R` | run bitmap | | `K` | payload line count |
+| `N` | oN-time, µs | | `T` | timestamp, µs |
+| `F` | oFf-time, µs | | `V` | value |
+
+A response is **one line** unless its header carries `K<n>`, in which case exactly
+that many `+` lines follow. The host reads a line, checks for `K`, reads that many
+more — no terminator scanning, and a truncated frame is *detectable* because fewer
+lines arrive than were promised. Of the phase-1 commands only the `L` op-list
+needs the multi-line form.
 
 **Worked examples:**
 
 ```
-=OK cmd=S level=0x9 mode=0x4 run=0x4
-!ERR cmd=W code=RANGE arg=on_us val=1000 min=50000 level=0x9 mode=0x4 run=0x4
-=OK cmd=L n=8
-=V  version / ping
-...
+=S L9 M4 R4                          set levels -> ok
+!W RNG L9 M4 R4                      write params -> rejected, out of range
+=G L9 M4 R4 N7A120 F7A120 C0 D4D2    get params for a channel
+=L K8                                op list, 8 payload lines follow
++V ping / version
 ```
 
-**Resolution:** _pending_
+**What was tightened, and what deliberately was not.** `=S L9 M4 R4` is 13 bytes
+against 37 for the earlier `=OK cmd=S level=0x9 mode=0x4 run=0x4` — a 65 %
+reduction. Removed: the `OK`/`ERR` words (the sigil already says it), the `cmd=`
+key (position after the sigil says it), the `0x` prefixes, the `=` inside every
+token, and the echo of the offending value on an error (the host sent it and
+already knows it).
+
+**Not** taken all the way to pure positional (`=S 9 4 4`), which would save four
+more bytes. Terminal readability is the entire reason **D8** chose ASCII over
+binary; spending four bytes to keep a response self-describing is consistent with
+that decision, whereas positional fields would undercut the rationale while still
+paying ASCII's costs. One-character keys are the point at which those two pressures
+balance.
+
+**Also reversed here, on new information:** the bracketed `=END` form was
+originally argued for because a single-line frame would have to "squeeze a
+four-channel state dump into key=value pairs". Once **D6** landed, that dump is
+three hex nibbles. A declared count is strictly better than a terminator anyway —
+it detects truncation, which a terminator cannot.
 
 ---
 
@@ -534,7 +561,8 @@ drop-oldest (keeps the most recent, needs a tail advance in the ISR), or block
 (unacceptable — this is an ISR).
 
 **Leaning:** **drop-newest** with a saturating dropped-counter, and emit a
-`*OVF n=<count>` frame at the head of the next flush whenever the counter is
+`*O D<count>` frame (source `O` for overflow, `D` for dropped) at the head of
+the next flush whenever the counter is
 non-zero, then clear it. The host then knows precisely that its event record has
 a hole and how big, rather than quietly receiving an incomplete history. Combined
 with **S9**'s default-off subscriptions, overflow should be rare in practice.
@@ -649,8 +677,8 @@ ask.
 host still learns what the hardware is doing without a follow-up read — and the
 value it wanted to check is usually exactly the one it was trying to set.
 
-**Implementation:** one formatter emitting `level=0x<n> mode=0x<n> run=0x<n>`, shared by
-the read command and all four mutating commands. One parser on the host side, one
+**Implementation:** one formatter emitting `L<n> M<n> R<n>` (**D3**), shared by
+the read command, the getter and all four mutating commands. One parser on the host side, one
 thing to document.
 
 ---
@@ -1265,7 +1293,7 @@ a whole run with nobody noticing.
      **S7**, **S8**); the cycling ISR is the first producer
   9. Fine-grained subscription mask (**S9**) — only if a campaign asks for it
   10. Bench: events on a slow cycle, force an overflow deliberately and confirm
-      `*OVF`, confirm no event ever lands inside a response frame, and confirm
+      `*O`, confirm no event ever lands inside a response frame, and confirm
       the runner survives an event arriving in the command-commit window (**S11**)
 
 - **One producer shape, forever.** Every async source added later (sense EXTI,
@@ -1273,7 +1301,7 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 10 · 🟡 18 · 🔴 3 · 🔵 4 (35 rows) + 5 wish rows (one
+- **Plan status:** 🟢 11 · 🟡 17 · 🔴 3 · 🔵 4 (35 rows) + 5 wish rows (one
   promoted). **Nothing gates phase 1 any more** — the three remaining reds are
   **S4** (decidable without new input; leaning recorded), and **T1**/**T2**,
   which follow the code rather than precede it. The twenty yellows all carry
