@@ -57,7 +57,7 @@ exists.
 | **D4** | 🟡 | Host→device grammar — freeform opcode+args vs fixed packet with length/CRC |
 | **D5** | 🟡 | Prompt / echo policy while in harness mode |
 | **D6** | 🟢 | Phase-1 op set — five commands, mask-addressed where simultaneity matters |
-| **D9** | 🔴 | Level-command mask encoding — select/AND/OR vs set/clear |
+| **D9** | 🟢 | Level-command encoding — Select + Set + Clear, BSRR-style, both = toggle |
 | **D7** | 🟡 | Module name and file home |
 | **D8** | 🟢 | Wire encoding — ASCII lines, hex for binary data, both directions |
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
@@ -528,50 +528,52 @@ stamp, captured in the ISR at enqueue, wrap documented and handled host-side.
 
 ---
 
-### D9 — Level-command mask encoding
+### D9 — Level-command encoding *(resolved)*
 
-**Status:** 🔴 · **Needs user:** yes
+**Status:** 🟢
 
-**Question:** The level command needs to say, per channel, one of four things:
-*leave alone* (stay in whatever mode it is in), *manual high*, *manual low*, and
-*manual, hold current level*. What is the cleanest encoding?
+**Three 4-bit masks: `Select`, `Set`, `Clear`.** `Select` governs *mode* —
+which channels are forced into manual control; `Set`/`Clear` govern *level*,
+BSRR-style, with both bits set meaning toggle.
 
-**Option A — select / AND / OR (as proposed).** Three 4-bit masks;
-`level = (level & AND) | OR` for channels in `select`. A familiar hardware idiom.
-Two observations:
+| `Select` | `Set` | `Clear` | Result for that channel |
+|:---:|:---:|:---:|---|
+| 0 | – | – | **Untouched.** Mode and level both preserved; a cycling channel keeps cycling. |
+| 1 | 0 | 0 | Manual, **hold current level** — freeze wherever it is. |
+| 1 | 1 | 0 | Manual, **high**. |
+| 1 | 0 | 1 | Manual, **low**. |
+| 1 | 1 | 1 | Manual, **toggle** — invert the present pad level. |
 
-- The AND/OR pair yields only **three** distinct per-channel outcomes — set
-  (`OR=1`), clear (`AND=0,OR=0`), preserve (`AND=1,OR=0`) — so of the four
-  combinations one is redundant (`AND=0,OR=1` is another "set").
-- **Toggle is not expressible** in any combination; a host that wants it must
-  read, invert, write — two round trips and a race against a cycling channel.
+**Why all three masks and not two.** Mode and level are *orthogonal*, which is
+what the original proposal's `Select` captured and what a bare two-mask
+set/clear form loses. Dropping `Select` would make "force to manual without
+changing the level" inexpressible — and that operation has a specific use here:
+`Select` = all channels, `Set` = 0, `Clear` = 0 **freezes every switch
+simultaneously, wherever it is**. For an instrument built to catch a DUT lockup,
+capturing the switch state at the moment of the event is exactly the kind of
+thing worth being able to do in one command.
 
-**Option B — set / clear (two masks), BSRR-style.** Channel in neither mask is
-untouched; in `set` only → manual high; in `clear` only → manual low; in **both**
-→ manual, hold current level. Two arguments instead of three, every combination
-meaningful, no redundant encoding, and all four behaviours reachable.
+Replacing AND/OR with Set/Clear is what buys **toggle**, which the AND/OR pair
+could not express in any combination — and it removes AND/OR's redundant
+encoding (`AND=0,OR=1` was a second spelling of "set") in the process.
 
-The caveat is honest: STM32's own `BSRR` resolves the both-bits-set case as
-*set wins*, so overloading it as "hold" is a near-miss on a familiar idiom and
-could mislead exactly the reader who knows the register best. It needs to be
-loud in the docs, or the hold case needs a different home.
+**Toggle is well defined even from cycling mode:** `Select` forces manual first,
+and the level inverted is the present *pad* level read from `IDR` (**I6**), which
+is valid whether the channel was cycling or manual. So "freeze and invert" is a
+single atomic command rather than a read-modify-write race.
 
-**Option C — select / level (two masks), no hold.** Simplest to read and to
-document; drops "go manual but keep the current level", which would then need
-the mode change to live in its own command.
+The only remaining redundancy is benign and conventional — when `Select` is 0 the
+`Set`/`Clear` bits are simply ignored, the same way masked-off bits are ignored
+anywhere else.
 
-**Leaning / recommendation:** **Option B**, with the both-bits case documented
-prominently — it is the only two-argument form that keeps every behaviour, and
-"turn these on, turn these off" is how a script actually thinks about it.
+**Note:** the `Select=1, Set=0, Clear=0` → *hold* cell is the natural completion
+of the table rather than something explicitly specified; the alternative reading
+is that it should be a no-op. Hold is the more useful of the two and leaves no
+combination wasted, but it is a one-line change if the other reading is wanted.
 
-**But the encoding matters less than it appears**, because ergonomics belong in
-the host runner (**T1**), not on the wire. A script author calls
-`sw_set(on=['A','B'], off=['C'])` and never sees a mask under any of the three
-options. The wire format should therefore be chosen for *unambiguity and
-compactness*, not for how it reads by hand — which is an argument for whichever
-form has no redundant encodings.
-
-**Resolution:** _pending_
+**Ergonomics live in the host runner (T1), not on the wire.** A script author
+calls `sw_set(on=['A'], off=['B'], toggle=['C'], freeze=['D'])` and never
+assembles a mask by hand under any encoding.
 
 ---
 
@@ -650,8 +652,9 @@ defined by whatever the code happens to do:
 - **Level after stop.** `v_switch_cycle_stop()` currently leaves the output
   forced LOW. For a race hunt, "stop and hold wherever you are" is also a
   plausible want. *Leaning: keep forced-LOW as the default* — it is the existing
-  behaviour and it is deterministic — and let the level command (**D9**) express
-  hold-at-current-level for anyone who wants the other thing.
+  behaviour and it is deterministic — since the level command now expresses
+  freeze-at-current-level directly (**D9**, `Select` set with `Set`/`Clear` both
+  clear), which covers the other want without changing stop's semantics.
 - **Repeat-count exhaustion.** A channel that finishes its repeats stops on its
   own, so the host's model of "is it running" goes stale with no notification.
   *Leaning:* the read command reports it accurately, and in phase 2 exhaustion
@@ -706,7 +709,7 @@ expected to follow.
 
 | # | Command | Inputs | Returns |
 |---|---------|--------|---------|
-| 1 | Set switch output levels (manual mode) | channel masks — encoding is **D9** | applied level bitmap |
+| 1 | Set switch output levels (manual mode) | `Select`, `Set`, `Clear` masks (**D9**) | applied level bitmap |
 | 2 | Read switch state | none | mode bitmap + level bitmap (**I6**) |
 | 3 | Set cycling parameters | switch # (0–3), on-time, off-time, repeat count | ack (**S13** proposes post-state) |
 | 4 | Start auto-cycling | start bitmask | ack (**S13** proposes post-state) |
@@ -1124,7 +1127,7 @@ a whole run with nobody noticing.
 - **The cycler is unverified on hardware.** If REPL bring-up and cycler
   bench-testing happen in the same session, a failure is ambiguous — prefer
   proving the cycler by hand at the menu first.
-- **Phase 1 — command/response** (needs **D9** green; **D6** and **S10** are):
+- **Phase 1 — command/response** — **unblocked; every gating row is green:**
   1. `hil_repl.{c,h}` — executive, line reader, builtins, frame emit (**D3**),
      honouring all four **I5** obligations from the first commit
   2. `debug_menu.c` intercept (**I1**) + `debug_config.h` gate (**I3**)
@@ -1148,8 +1151,10 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 6 · 🟡 20 · 🔴 4 · 🔵 4 (34 rows) + 5 wish rows (one
-  promoted). **Next ID: D9** — the mask encoding, and the last row gating phase 1.
-  (**S4** is red but decidable without new input; **T1**/**T2** follow the code.)
+- **Plan status:** 🟢 7 · 🟡 20 · 🔴 3 · 🔵 4 (34 rows) + 5 wish rows (one
+  promoted). **Nothing gates phase 1 any more** — the three remaining reds are
+  **S4** (decidable without new input; leaning recorded), and **T1**/**T2**,
+  which follow the code rather than precede it. The twenty yellows all carry
+  leanings; they are implementation guidance, not open questions.
 
 **End of hil-repl-plan.md**
