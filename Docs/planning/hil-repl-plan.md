@@ -56,7 +56,8 @@ exists.
 | **D3** | 🟡 | Frame identity — how the host tells a response from an async event |
 | **D4** | 🟡 | Host→device grammar — freeform opcode+args vs fixed packet with length/CRC |
 | **D5** | 🟡 | Prompt / echo policy while in harness mode |
-| **D6** | 🔴 | v1 op set — which commands actually ship |
+| **D6** | 🟢 | Phase-1 op set — five commands, mask-addressed where simultaneity matters |
+| **D9** | 🔴 | Level-command mask encoding — select/AND/OR vs set/clear |
 | **D7** | 🟡 | Module name and file home |
 | **D8** | 🟢 | Wire encoding — ASCII lines, hex for binary data, both directions |
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
@@ -71,11 +72,15 @@ exists.
 | **S10** | 🟢 | Minimum cycle-period guard — 50 ms, REPL-commanded cycling only |
 | **S11** | 🟡 | Host receive contract — dispatch by sigil, never by position |
 | **S12** | 🟡 | Menu-mode human log — separate gate flag, emitted from the job runner |
+| **S13** | 🟡 | Mutating commands return post-state, not a bare acknowledgement |
+| **S14** | 🟡 | Time units on the wire, and whether REPL-set params persist to NVM |
+| **S15** | 🟡 | Start/stop edge cases — already cycling, level on stop, repeat exhaustion |
 | **I1** | 🟡 | Hook point — where the 0xDA intercept lives |
 | **I2** | 🟡 | Op-table home + registration-time collision checking |
 | **I3** | 🟡 | Build gate for release images |
 | **I4** | 🟡 | Line-buffer sizing and static (not stack) allocation |
 | **I5** | 🟡 | **Async-readiness contract — what phase 1 must do so phase 2 is a drop-in** |
+| **I6** | 🟡 | State readback source — GPIO `IDR` for level, `OCxM` for mode |
 | **T1** | 🔴 | Host-side Python runner |
 | **T2** | 🔴 | Sync decisions back into `SwitchTester-Design.md` |
 | **T3** | 🔵 | Promote the REPL to `G0B1_Skeleton` alongside `uart_stream` |
@@ -523,35 +528,211 @@ stamp, captured in the ISR at enqueue, wrap documented and handled host-side.
 
 ---
 
-### D6 — v1 op set
+### D9 — Level-command mask encoding
 
-**Status:** 🔴 · **Needs user:** yes — follows **Q1**
+**Status:** 🔴 · **Needs user:** yes
 
-**Question:** Which commands ship in v1?
+**Question:** The level command needs to say, per channel, one of four things:
+*leave alone* (stay in whatever mode it is in), *manual high*, *manual low*, and
+*manual, hold current level*. What is the cleanest encoding?
 
-**Candidate set** (drive side only; every one is a thin wrapper over an existing
-`switch_out` entry point, so cost is parsing and framing, not new logic):
+**Option A — select / AND / OR (as proposed).** Three 4-bit masks;
+`level = (level & AND) | OR` for channels in `select`. A familiar hardware idiom.
+Two observations:
 
-| Cmd | Meaning |
-|-----|---------|
-| `V` | version / ping — product, platform, firmware, build config |
-| `L` / `?` | list ops |
-| `Q` | quit |
-| `S <ch> <0\|1>` | force one output off/on |
-| `T <ch>` | toggle one output |
-| `P <ch> <ms>` | pulse one output |
-| `X` | all off, stop everything |
-| `C <ch> start\|stop` | start / stop cycling on a channel |
-| `W <ch> <on_us> <off_us> <repeat>` | write cycle parameters |
-| `R <ch>` | read back channel state — drive level, pulse remaining, cycling, params |
-| `E` | transport error counters (**S5**) |
-| `N` | NVM commit / status |
+- The AND/OR pair yields only **three** distinct per-channel outcomes — set
+  (`OR=1`), clear (`AND=0,OR=0`), preserve (`AND=1,OR=0`) — so of the four
+  combinations one is redundant (`AND=0,OR=1` is another "set").
+- **Toggle is not expressible** in any combination; a host that wants it must
+  read, invert, write — two round trips and a race against a cycling channel.
 
-**Leaning / recommendation:** ship the whole table. It is a couple of hundred
-lines of argument parsing over an API that already exists, and a half-populated
-command set is the thing a host script will immediately need to work around.
+**Option B — set / clear (two masks), BSRR-style.** Channel in neither mask is
+untouched; in `set` only → manual high; in `clear` only → manual low; in **both**
+→ manual, hold current level. Two arguments instead of three, every combination
+meaningful, no redundant encoding, and all four behaviours reachable.
+
+The caveat is honest: STM32's own `BSRR` resolves the both-bits-set case as
+*set wins*, so overloading it as "hold" is a near-miss on a familiar idiom and
+could mislead exactly the reader who knows the register best. It needs to be
+loud in the docs, or the hold case needs a different home.
+
+**Option C — select / level (two masks), no hold.** Simplest to read and to
+document; drops "go manual but keep the current level", which would then need
+the mode change to live in its own command.
+
+**Leaning / recommendation:** **Option B**, with the both-bits case documented
+prominently — it is the only two-argument form that keeps every behaviour, and
+"turn these on, turn these off" is how a script actually thinks about it.
+
+**But the encoding matters less than it appears**, because ergonomics belong in
+the host runner (**T1**), not on the wire. A script author calls
+`sw_set(on=['A','B'], off=['C'])` and never sees a mask under any of the three
+options. The wire format should therefore be chosen for *unambiguity and
+compactness*, not for how it reads by hand — which is an argument for whichever
+form has no redundant encodings.
 
 **Resolution:** _pending_
+
+---
+
+### S13 — Mutating commands return post-state
+
+**Status:** 🟡 · **Needs user:** no
+
+The proposal has the level command return the resulting levels, and the other
+three return "acknowledgement". That asymmetry is worth removing in the more
+useful direction: **every mutating command returns the resulting state**, in the
+same shape the read command returns it.
+
+**Why:** a bare ack forces a script that wants to verify into a second round
+trip, and the two-step is racy — between the ack and the read, a cycling channel
+has moved on. Returning the post-state makes each command self-verifying in one
+exchange, and it costs nothing, since the state is already assembled in order to
+answer the read command at all.
+
+It also gives the host a free assertion at every step of a sequence rather than
+only where it remembered to ask, which is exactly the property a step sequencer
+wants.
+
+**Leaning:** one shared response payload — mode bitmap plus level bitmap
+(**I6**) — emitted by the read command and by all four mutating commands. One
+formatter, one parser, one thing to document.
+
+**Resolution:** _pending_
+
+---
+
+### S14 — Time units and NVM persistence
+
+**Status:** 🟡 · **Needs user:** no
+
+Two ambiguities in the cycle-parameter command that will otherwise be settled by
+accident at implementation time.
+
+**Units.** The NVM parameters and the cycle engine are already in **microseconds**
+(`u32_on_time_us` / `u32_off_time_us`), and `TIM2->CNT` is a 1 µs timebase
+(**S8**). Milliseconds on the wire would mean a conversion at exactly one place
+and a mismatch everywhere else.
+
+**Leaning:** microseconds on the wire, and rename **S10**'s constant to
+`REPL_MIN_CYCLE_PERIOD_US = 50000` so the floor is expressed in the same unit it
+is checked in. A 32-bit µs field spans about 71 minutes per phase, which is far
+past any plausible cycle.
+
+**Persistence.** The menu setters call `v_switch_cycle_nvm_save()`. The REPL
+shares the same parameter storage, so "does the REPL setter persist too?" has to
+be answered.
+
+**Leaning: no auto-persist from the REPL.** Two reasons, both concrete. A script
+that configures before each of a thousand iterations would commit a thousand
+flash writes for values it re-sends anyway — gratuitous wear on a part with no
+wear levelling (`switch-cycling-plan.md` **W6**). And a run that silently mutates
+stored configuration is not reproducible from a clean boot, which is the property
+a test campaign most needs. If persistence is ever wanted it should be an
+explicit op the host calls deliberately, not a side effect of configuring.
+
+**Resolution:** _pending_
+
+---
+
+### S15 — Start/stop edge cases
+
+**Status:** 🟡 · **Needs user:** no
+
+Three cases the command set does not yet define, each of which will otherwise be
+defined by whatever the code happens to do:
+
+- **Start on a channel already cycling.** Ignore it, reject the whole command, or
+  restart the channel from its ON phase? *Leaning: restart from ON.* A host that
+  says "start" wants a known phase to measure against; silently ignoring leaves
+  the channel at an arbitrary point in its cycle and every subsequent timing
+  measurement inherits that unknown.
+- **Level after stop.** `v_switch_cycle_stop()` currently leaves the output
+  forced LOW. For a race hunt, "stop and hold wherever you are" is also a
+  plausible want. *Leaning: keep forced-LOW as the default* — it is the existing
+  behaviour and it is deterministic — and let the level command (**D9**) express
+  hold-at-current-level for anyone who wants the other thing.
+- **Repeat-count exhaustion.** A channel that finishes its repeats stops on its
+  own, so the host's model of "is it running" goes stale with no notification.
+  *Leaning:* the read command reports it accurately, and in phase 2 exhaustion
+  emits an async event — this is one of the better arguments for **S6** existing
+  at all, since polling for it is exactly what async is meant to replace.
+
+**Resolution:** _pending_
+
+---
+
+### I6 — State readback source
+
+**Status:** 🟡 · **Needs user:** no
+
+The proposal reads **GPIO `IDR`** for the level rather than reporting a shadow or
+the compare-mode setting. That is right, and it is more than a stylistic
+preference.
+
+`x_switch_out_get()` today reads `OCxM` and returns `SWITCH_OUT_ON` /
+`SWITCH_OUT_OFF` / `SWITCH_OUT_TIMED` — it deliberately reads hardware rather
+than a shadow, but it **cannot report a level for a cycling channel at all**,
+because while cycling the mode field matches neither forced value. `IDR` can: it
+captures the actual pad state every AHB cycle regardless of the pin being under
+TIM2's alternate function, so it reports the real driven level whether the
+channel is manual or cycling.
+
+The two sources are therefore complementary rather than competing, which is
+exactly the two-bitmap response the proposal describes:
+
+| Bitmap | Source | Meaning |
+|--------|--------|---------|
+| Mode | `OCxM` via `LL_TIM_OC_GetMode()` | 0 = manual/forced, 1 = TIM cycling |
+| Level | `GPIOx->IDR` | 0 = low, 1 = high, **valid in both modes** |
+
+For a *tester*, reading the pad is also the more honest measurement: it reports
+what the pin is doing, not what the peripheral was told to do.
+
+**Leaning:** adopt as described; add a small `u8_switch_out_level_bitmap()` and
+`u8_switch_out_mode_bitmap()` to `switch_out.c` so the REPL, the menu and any
+later logging share one implementation.
+
+**Resolution:** _pending_
+
+---
+
+### D6 — Phase-1 op set *(resolved)*
+
+**Status:** 🟢
+
+Five commands, plus the executive builtins. Deliberately a starting set; more are
+expected to follow.
+
+| # | Command | Inputs | Returns |
+|---|---------|--------|---------|
+| 1 | Set switch output levels (manual mode) | channel masks — encoding is **D9** | applied level bitmap |
+| 2 | Read switch state | none | mode bitmap + level bitmap (**I6**) |
+| 3 | Set cycling parameters | switch # (0–3), on-time, off-time, repeat count | ack (**S13** proposes post-state) |
+| 4 | Start auto-cycling | start bitmask | ack (**S13** proposes post-state) |
+| 5 | Stop auto-cycling | stop bitmask | ack (**S13** proposes post-state) |
+
+Plus builtins from **D1**: `V` version/ping, `L`/`?` list, `Q` quit.
+
+**Addressing is by mask where simultaneity matters, per-channel where it does
+not.** Commands 1, 4 and 5 take bitmasks so that several channels change together
+within a single command execution rather than across several commands separated
+by host round-trip latency. For an instrument built to hunt a pushbutton race
+condition, "these two switches changed at the same time" is a capability, not a
+convenience — and it is not recoverable by a host issuing four separate commands.
+Command 3 is per-channel because its parameters differ per channel and there is
+nothing to synchronise.
+
+Setting parameters (3) is deliberately separate from starting (4), so a host can
+stage several channels' configurations and then start them together.
+
+**Parameter storage is shared with the debug menu** — the REPL sets the same
+values the menu does. Whether it also *persists* them is **S14**.
+
+**Deferred from the earlier candidate list:** pulse, toggle, all-off, transport
+error counters (**S5**) and NVM commit/status. All remain sensible additions;
+none is needed to run a first campaign, and several are expressible with the five
+above (all-off is a level command with every channel selected).
 
 ---
 
@@ -943,12 +1124,13 @@ a whole run with nobody noticing.
 - **The cycler is unverified on hardware.** If REPL bring-up and cycler
   bench-testing happen in the same session, a failure is ambiguous — prefer
   proving the cycler by hand at the menu first.
-- **Phase 1 — command/response** (needs **D6** and **S10** green):
+- **Phase 1 — command/response** (needs **D9** green; **D6** and **S10** are):
   1. `hil_repl.{c,h}` — executive, line reader, builtins, frame emit (**D3**),
      honouring all four **I5** obligations from the first commit
   2. `debug_menu.c` intercept (**I1**) + `debug_config.h` gate (**I3**)
-  3. Op table + collision scan (**I2**), ops in **D6** order
-  4. Cycle-period floor (**S10**) at the REPL setter and at cycle start
+  3. Op table + collision scan (**I2**), the five **D6** commands in order
+  4. Shared state-bitmap helpers (**I6**) + cycle-period floor (**S10**) at the
+     REPL parameter setter only
   5. Bench: enter, `V`, `L`, one op of each shape, exit by all three routes
   6. `scripts/` host runner (**T1**) — sigil dispatch from day one (**S11**)
   7. Design-doc sync (**T2**)
@@ -966,8 +1148,8 @@ a whole run with nobody noticing.
   timestamping and overflow accounting for free. Phase 2 is where that machinery
   gets built; **I5** is what keeps phase 1 from making it a refactor.
 
-- **Plan status:** 🟢 5 · 🟡 16 · 🔴 4 · 🔵 4 (29 rows) + 5 wish rows (one
-  promoted). **Next ID: D6** — the op set, and the last row gating phase 1.
+- **Plan status:** 🟢 6 · 🟡 20 · 🔴 4 · 🔵 4 (34 rows) + 5 wish rows (one
+  promoted). **Next ID: D9** — the mask encoding, and the last row gating phase 1.
   (**S4** is red but decidable without new input; **T1**/**T2** follow the code.)
 
 **End of hil-repl-plan.md**
