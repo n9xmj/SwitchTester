@@ -100,7 +100,21 @@ explicitly, or it hardens into assumed fact.
 
 ### 6. Detail sections — one per ID
 
-Open items first, then resolved ones for history:
+**Keep them sorted by ID, in the same order as the Big Board** — all the **D**
+rows in numeric order, then all the **S** rows, then **I**, then **T**. Never
+group by status, and never append a new row at the end of the file: insert it in
+its numeric place.
+
+The reason is navigation. The board is the index; if the detail sections run in
+the same order, finding a row means scrolling or paging to roughly the right
+place, with no search. Sorting by status instead means the file reshuffles every
+time a row goes green, and a reader who knows where **S7** was last week finds
+something else there.
+
+Resolved rows stay in place — a `*(resolved)*` suffix on the heading marks them
+without moving them.
+
+Section skeleton:
 
 ```markdown
 ### D1 — <short title>

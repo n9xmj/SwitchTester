@@ -60,10 +60,10 @@ exists.
 | **D4** | 🟢 | Host→device grammar — freeform, comma-separated, **no CRC or length** |
 | **D5** | 🟢 | No prompt, no echo; everything answers; no-op is `Z` / `' '` / bare CR |
 | **D6** | 🟢 | Phase-1 op set — six commands, mask-addressed where simultaneity matters |
-| **D9** | 🟢 | Level-command encoding — Select + Set + Clear, BSRR-style, both = toggle |
-| **D10** | 🟢 | Human mode — mode is an entry parameter; no in-band switch |
 | **D7** | 🟢 | Module name — `automation_console.{c,h}`, not a "test harness" |
 | **D8** | 🟢 | Wire encoding — ASCII lines, hex for binary data, both directions |
+| **D9** | 🟢 | Level-command encoding — Select + Set + Clear, BSRR-style, both = toggle |
+| **D10** | 🟢 | Human mode — mode is an entry parameter; no in-band switch |
 | **S1** | 🟢 | Reject-on-error, structured machine-readable error response |
 | **S2** | 🟢 | Re-entry lock already covers it — verified, no code change needed |
 | **S3** | 🟢 | 15 s `#define`, reset on any byte, announced exit `!~,TMO` |
@@ -204,151 +204,103 @@ Established; do not re-litigate unless explicitly reopened.
 
 ## Detail sections
 
-### I5 — Async-readiness contract
-
-**Status:** 🟡 · **Needs user:** no — but it is the row phase 1 is judged against
-
-Phase 1 ships no async machinery. The risk is that phase-1 code makes phase 2 a
-refactor instead of an addition — and worse, that it invalidates host scripts
-already written. Four obligations prevent that. All four are close to free in
-phase 1; all four are expensive to retrofit.
-
-1. **Emit sigils from the very first frame.** Every device→host line starts with
-   `=`, `!` or `#` (**D3**) even though `*` is unused in phase 1, and the phase-1
-   host runner (**T1**) must already skip lines whose sigil it does not
-   recognise. This is the one that actually matters: if phase 1 emits bare lines,
-   every host script written against it breaks the day the first `*` frame appears.
-2. **Ops never `printf` directly.** They emit through a framing helper —
-   `v_acon_emit(...)` — so that phase 2 can add the "not inside a response frame"
-   interlock in exactly one place. Ops that write to stdout freely cannot be
-   fenced later without touching every op.
-3. **The flush call site exists in phase 1.** `v_acon_flush_events()` is called at
-   the top of the wait-for-command state and is an empty function. Zero cost, and
-   it fixes the one architectural point — *where* async is allowed to happen —
-   while the loop is still small enough to see whole.
-4. **Response frames are bounded in phase 1.** Every response is one line, or
-   declares its `K<n>` payload count up front (**D3**). Emitting async "between
-   frames" is only well defined if a frame has a knowable end; a response that
-   just trails off gives phase 2 nowhere safe to insert.
-
-Explicitly *not* required in phase 1: the event record struct, the ring, the
-overflow counter, the subscription mask. Those are additive once the four above
-hold.
-
-**Leaning:** take all four. Combined they are perhaps thirty lines and one empty
-function.
-
-**Resolution:** _pending_
-
----
-
-### S11 — Host receive contract
-
-**Status:** 🟡 · **Needs user:** no
-
-**The identified window is real, and it is harmless.** The host commits to
-sending a command; in the same one-or-two-byte-time window the device dequeues an
-event and emits it. The host then reads a `*` frame where it might have expected its
-response.
-
-Nothing is corrupted. The link is full duplex — two rings, two directions, no
-coupling — so a device→host event frame and a host→device command frame in flight
-simultaneously do not interfere on the wire. The device's own invariant also
-survives: emission happens only in the main loop, one whole frame at a time, so
-an event can precede or follow a response but can never land inside one.
-
-What the window actually breaks is a *host parser that identifies a response by
-position* — the common pyserial idiom of "write the command, read one line, that
-line is the answer".
-
-**Options considered:**
-
-- **A `ready for events` / `stop events` token pair.** Host declares when async
-  is welcome. This does not close the window: the `stop events` token races the
-  device's in-flight emit exactly as before, so the host must *still* handle a
-  straggler arriving after it asked for silence. It adds a two-state mode that
-  can disagree between the ends, and while events are suppressed the device is
-  queueing them anyway — so the deferral has moved, not disappeared.
-- **Sigil dispatch as a contract.** The host reads lines and routes by first
-  character: `*` and `#` go to handlers, `+` is payload, and the first `=` / `!`
-  line is the
-  response to the outstanding command. The window becomes a non-event because no
-  code anywhere assumes positional ordering.
-
-**Leaning / recommendation:** sigil dispatch, stated as a protocol contract
-rather than left as an implementation detail of the runner — *the host must be
-prepared for an async frame at any point at which it is reading device output.*
-This is already **I5** obligation 1 seen from the host side, and it is why that
-obligation applies to the phase-1 runner even though phase 1 emits no events: a
-runner written to the contract needs no change when phase 2 lands, and one
-written to positional reads has to be rewritten.
-
-Note that the **S6** REPL-mode enqueue gate bounds this further — outside REPL
-mode no event exists to race with anything.
-
-**Resolution:** _pending_
-
----
-
-### S12 — Menu-mode human log
-
-**Status:** 🟡 · **Needs user:** no
-
-Cycling transitions may be worth *watching* from the debug menu too, not just
-reporting to a host. That is a different feature from the REPL event queue and it
-must not reuse the same gate: **S6**'s flag means "a host is attached and events
-may be enqueued", and overloading it would couple the human view to REPL mode.
-
-Two constraints carry over unchanged, though:
-
-- **No `printf` from an ISR** — same reason as **S6**. Emission goes through the
-  job runner, with the ISR doing nothing but recording what happened.
-- **Timestamps are captured at the event**, not at print time (**S8**), or the
-  log shows when the job ran rather than when the switch moved.
-
-**Leaning:** a second, independent gate flag; the transition ISR records into a
-small structure and posts a job; the job formats and prints. Whether that shares
-**S6**'s ring or gets its own is an implementation detail to settle when the row
-is built — sharing is tempting but couples two features with different lifetimes,
-and the ring is 512 bytes.
-
-Low priority — this is a convenience, and the REPL path is the one that matters
-for the campaign the tester exists to run.
-
-**Resolution:** _pending_
-
----
-
-### S10 — Minimum cycle-period guard *(resolved)*
+### Q1 — What the host runner must do *(resolved)*
 
 **Status:** 🟢
 
-**`on_time + off_time >= 50 ms`, enforced only on REPL-commanded cycling.** The
-threshold is `ACON_MIN_CYCLE_PERIOD_US` in `device_config.h`. Violations are **rejected**
-with a structured error naming the offending value (**S1**), never clamped —
-silently running a different test than the host asked for is the failure mode this
-whole protocol exists to prevent.
+The channel carries **two transaction kinds**, and the protocol is designed for
+both from v1:
 
-**The debug menu is deliberately exempt.** Its setters keep a much lower floor —
-1000 µs on/off proposed — or none at all, above the 4 µs hardware guard that
-`SWITCH_CYCLE_MIN_LEAD_US` already enforces for correctness. Feeding the menu
-absurd values to find where the system breaks is a wanted experiment.
+1. **Command / response.** Host sends one command, device answers with one
+   bounded response frame. Responses follow a fixed, easily parseable format.
+2. **Async events.** Device-originated transmissions the host did not request —
+   a cycled output changing state, a sense comparator transitioning, captured ADC
+   data, and any other system event the host wants to know about.
 
-**Rationale, and why the earlier recommendation was declined.** The proposal on
-the table was to *also* hard-check at `v_switch_cycle_start()`, so the floor held
-regardless of path — menu edits, and NVM restores, which matters here because this
-project has already been bitten by a pool carrying another project's contents. That
-was rejected on the correct grounds: this is bench tooling, not a commercial
-product, and the guard exists to protect *automated* runs, not to protect the
-operator from themselves.
+**Rules locked with it:**
 
-**The residual case, recorded for honesty rather than as an objection:** a cycle
-configured below 50 ms from the menu, followed by REPL entry, will report events at
-that rate. The numbers say it does not matter — at the proposed 1000 µs floor the
-worst case is ~1000 edges/s, and at ~350 µs per ASCII frame that is roughly a third
-of the link, which **S7**'s drain loop and overflow accounting already handle. With
-no menu floor at all the cycler bottoms out at the 4 µs hardware guard, but the
-**S6** REPL-mode enqueue gate means nothing is being queued in menu mode anyway.
+- An async transmission is **never inserted into a response frame**. It occurs
+  only between the end of one response frame and the start of the next.
+- Both kinds carry a **lead disambiguation header**, with different identifiers,
+  so the host always knows which it is reading (**D3**).
+- Async events are **timestamped** (**S8**).
+- Events arising during a command/response exchange are **queued** and flushed
+  when the REPL returns to wait-for-command (**S6**, **S7**).
+
+**Rationale:** the earlier leaning — build a step sequencer and defer async push
+to v2 — was wrong for this instrument. A switch tester whose host cannot see
+*when* an edge happened is measuring nothing; and unsolicited output cannot be
+retrofitted into a strict request/response protocol without invalidating every
+host parser written against v1. Designing the frame identity for it now costs one
+sigil.
+
+**Consequence:** wish row **W2** is promoted into v1 as **S6**–**S9**.
+
+---
+
+### D1 — Entry / exit protocol *(resolved)*
+
+**Status:** 🟢
+
+`ACON_ENTER` = 0xDA enters, printing `=~,V1`. `ACON_EXIT` = 0xA5 or
+a `Q` line exits, printing `=~,BYE`; `^C` (0x03) is an alias for `Q`
+and exits identically in either mode (**D10**). An idle timeout (**S3**) also exits,
+printing `!~,TMO` first. Both sentinels have the MS bit set so they cannot
+collide with a printable menu key and cannot be typed by accident from a
+terminal; they are a bit-complement pair (0x5A | 0x80 and ~0x5A).
+
+**Rationale:** carried from the reference implementation and confirmed when the
+backdoor was first sketched. The alternative — a printable escape sequence —
+costs namespace and can be produced accidentally by a human at a terminal.
+
+---
+
+### D2 — Command namespace and case sensitivity *(resolved)*
+
+**Status:** 🟢
+
+**Strict case sensitivity.** No `toupper()` anywhere in dispatch. The reference
+implementation folds case in both the builtin `switch` and the op-table scan,
+halving an already small namespace — this does not.
+
+**The namespace is `0x01..0x7F`, not just the printable range.** There is no
+reason to exclude `0x01..0x1F` merely because those codes are unprintable: an
+opcode is a byte a machine sends, and a control character is as good a byte as any.
+
+| Range | Status |
+|---|---|
+| `0x01..0x7F` | **available as opcodes**, minus the reservations below |
+| `0x00` | reserved — out-of-band |
+| `0x80..0xFF` | reserved — entry/exit sentinels (`ACON_ENTER` 0xDA, `ACON_EXIT` 0xA5) and any future out-of-band signalling |
+
+**Reserved inside the usable range** (**I2** enforces all of these at
+registration, so a domain op cannot claim one):
+
+| Code | Why |
+|---|---|
+| `0x0A` LF | ignored everywhere by the line reader (**D4**) |
+| `0x0D` CR | line terminator; a bare CR is the no-op (**D5**) |
+| `0x20` space | no-op alias (**D5**) |
+| `0x5E` `^` | caret-notation introducer for control-char echoes (**D3**) |
+| `0x03` `^C` | quit alias / escape hatch (**D10**) |
+| `V` `L` `?` `Q` `Z` | builtins — **both cases** reserved |
+| `~` | protocol/session frames (**D3**) |
+
+**Guidance, not restriction: prefer printable opcodes for ordinary commands.**
+A printable opcode can be typed at a terminal while debugging; a control-character
+one cannot — and its response comes back in caret notation (**D3**) rather than as
+the byte itself, so the two directions no longer look alike in a log. The control
+range is there for commands that *should* be hard to send by accident, not as the
+default place to put the next feature.
+
+**I2's collision check reserves both cases of every builtin letter**, so `v` and
+`q` cannot be claimed by a domain op even though they are technically free. A host
+that sends lowercase by habit then gets a clean `!v,UNK` rather than silently
+hitting some unrelated command that happened to take the letter.
+
+**Rationale:** loud failure beats a namespace booby trap. Case folding makes
+`s` and `S` the same command forever, which is a permanent halving of the
+namespace to buy tolerance for a typo that a machine does not make.
 
 ---
 
@@ -487,585 +439,6 @@ originally argued for because a single-line frame would have to "squeeze a
 four-channel state dump into key=value pairs". Once **D6** landed, that dump is
 three hex nibbles. A declared count is strictly better than a terminator anyway —
 it detects truncation, which a terminator cannot.
-
----
-
-### S9 — Event subscription / arming
-
-**Status:** 🔵 — phase 2 · **Needs user:** yes, when phase 2 opens
-
-**Question:** Which events are reported, and from when? Three sub-questions that
-have to be answered together:
-
-1. **Default off or default on?** If every cycling transition reports
-   unconditionally, a soak run at a 1 ms half-period floods the link with data
-   nobody asked for and overflows the queue continuously (**S7**).
-2. **Granularity.** Per event *class* (switch transitions / sense edges / ADC),
-   per channel, or the cross product? Per-class is one bitmask and is probably
-   enough; per-channel matters if the host wants to watch one DUT input while
-   three others cycle as background load.
-3. **Lifetime.** Does a subscription survive REPL exit and re-entry? Survive
-   reset? If events are enqueued while no host is attached, the queue fills and
-   the dropped-count is meaningless by the time anyone reads it.
-
-**Largely superseded by the S6 REPL-mode gate.** With enqueue disabled outside
-REPL mode, "default off" and "cleared on exit" are both satisfied structurally —
-the coarse subscription *is* REPL mode, and question 3 (lifetime) answers itself.
-What remains of this row is only the fine-grained part: whether a host that wants
-to watch one channel while three others cycle as background load can say so.
-
-**Leaning / recommendation:** phase 2 ships with the REPL-mode gate alone — all
-classes, all channels, reported whenever a host is attached. A per-class /
-per-channel mask op is added only if a real campaign wants it; at the intended
-~1 s cycle rate, filtering to save two frames a second is not worth an op, a
-mask, and the chance of a host silently filtering out the thing it came to
-measure. Never persisted to NVM — session state, not configuration.
-
-**Resolution:** _pending_
-
----
-
-### S6 — Async event queue
-
-**Status:** 🔵 — phase 2, design below is the standing plan · **Needs user:** no
-
-Events originate in ISR context — TIM2 compare for cycling transitions (priority
-0), EXTI for sense edges later (priority 3). `printf` in an ISR is out of the
-question: it is not reentrant, it would block on the TX ring, and it would run
-formatting at priority 0.
-
-So the queue holds **fixed-size binary records, not strings**, and formatting
-happens in the main loop at flush time:
-
-```c
-typedef struct {
-    uint32_t u32_timestamp;   /* TIM2->CNT at the event -- S8            */
-    uint8_t  u8_class;        /* SW transition / sense edge / ADC / ...  */
-    uint8_t  u8_channel;
-    uint16_t u16_value;
-} repl_event_t;               /* 8 bytes                                 */
-```
-
-An 8-byte record in a power-of-two ring is a single-producer/single-consumer
-structure with the same discipline as `uart_stream`'s rings — producer (ISR)
-writes `head`, consumer (main loop) writes `tail`, disjoint aligned `volatile`
-indices, no critical section needed on M0+. Multiple ISR sources at *different*
-priorities do break the single-producer assumption, though: TIM2 at priority 0
-can preempt EXTI at priority 3 mid-enqueue. That needs either a short PRIMASK
-guard around the head advance or all event sources at one priority — the guard is
-a handful of cycles and does not constrain the priority map, so prefer it.
-
-**Enqueue is gated on REPL mode.** While the debug menu owns the console, no
-interrupt or background process may push into the queue at all; the gate flips to
-allowed on REPL entry and back on exit. This is a single flag tested at the top of
-the enqueue path, and it settles several things at once: nothing accumulates for
-an absent host, the queue cannot overflow while nobody is listening, a dropped
-count is only ever attributable to a live session, and the ISR cost outside REPL
-mode is one predictable-branch test.
-
-**Corollary — reset the queue on entry, not just enable it.** A previous REPL
-session can exit with events still queued. Without a head/tail/dropped-counter
-reset at entry, those stale events are emitted into the new session carrying
-timestamps from the old one, which is exactly the sort of thing that produces an
-unreproducible measurement nobody can explain. Reset costs three stores.
-
-**Leaning:** 64 records (512 bytes), statically allocated, PRIMASK-guarded
-enqueue, gated on REPL mode, reset at entry, formatted at dequeue.
-
-**Resolution:** _pending_
-
----
-
-### S7 — Deferral rule and overflow policy
-
-**Status:** 🔵 — phase 2, design below is the standing plan · **Needs user:** no
-
-Locked by **Q1**: async frames are emitted only between the end of one response
-frame and the start of the next — never inside one.
-
-**Drain structure.** The executive loop makes the deferral rule structural rather
-than something that has to be remembered at each emit site:
-
-```c
-for (;;)
-{
-    if (<lead char available from host>)
-    {
-        <capture the rest of the command frame>
-        <dispatch on opcode>
-        <emit the response frame>
-    }
-
-    <service the event queue -- emit at most ONE event frame>
-}
-```
-
-Two properties fall out of this ordering and both are wanted. Command service
-comes first, so a pending command is never delayed behind a backlog. And exactly
-one event per iteration — rather than draining the whole queue — bounds the
-latency a command can suffer to a single frame time instead of up to 64 of them;
-when the host is idle the loop spins freely and a backlog still drains as fast as
-the link allows.
-
-**One hazard in the capture step.** `<capture the rest of the command frame>` is
-a blocking read. A host that sends a lead character and then stalls would wedge
-the device there, so **S3**'s idle timeout must apply *inside* frame capture, not
-only at the wait-for-command read — otherwise the anti-wedge guarantee has a hole
-exactly one byte wide.
-
-Two consequences that the rule creates and that need explicit answers:
-
-- **Transmit time is not event time.** A queued event may be emitted milliseconds
-  after it happened. This is exactly why **S8** insists the timestamp is captured
-  at the event, in the ISR — if it were sampled at flush the queueing latency
-  would be silently folded into the measurement, which defeats the purpose of
-  timestamping at all.
-- **The queue can overflow.** A long-running command plus a fast cycle rate fills
-  64 records quickly. Silent loss is the failure mode **S1** exists to prevent, so
-  overflow must be *reported*, not just survived.
-
-**Options for overflow:** drop-newest (cheap, keeps the oldest history),
-drop-oldest (keeps the most recent, needs a tail advance in the ISR), or block
-(unacceptable — this is an ISR).
-
-**Leaning:** **drop-newest** with a saturating dropped-counter, and emit a
-`*O,D<count>` frame (source `O` for overflow, `D` for dropped) at the head of
-the next flush whenever the counter is
-non-zero, then clear it. The host then knows precisely that its event record has
-a hole and how big, rather than quietly receiving an incomplete history. Combined
-with **S9**'s default-off subscriptions, overflow should be rare in practice.
-
-**Resolution:** _pending_
-
----
-
-### S8 — Timestamp source and capture point
-
-**Status:** 🟡 · **Needs user:** no — but it is a correction, not a detail
-
-**Question:** What clock timestamps an async event, and when is it sampled?
-
-`SYSTEM_TICK()` / `HAL_GetTick()` is the obvious choice and is the wrong one
-here: **1 ms resolution**. A switch bounce is tens of microseconds, and the whole
-point of this tester is measuring what the DUT does at switch edges. A 1 ms
-timestamp cannot distinguish a bounce from a clean edge, and the drive side is
-already programmed in microseconds (`u32_on_time_us` / `u32_off_time_us`).
-
-`TIM2->CNT` is free-running at **1 µs**, 32-bit, never stopped, and is *already*
-the timebase the cycling engine schedules against — so a switch-transition event
-and the compare that caused it are expressed in the same units, on the same
-clock, with no conversion.
-
-**Two refinements worth taking:**
-
-- For a **cycling transition**, do not read `CNT` in the ISR — the `CCR` value
-  that fired *is* the exact edge time, unaffected by interrupt latency. Reading
-  `CNT` instead folds in however long the ISR took to be entered.
-- `TIM2->CNT` wraps every **71.6 minutes**, which is well inside a soak run. The
-  device should not try to extend it; the host unwraps trivially by watching for
-  a decrease in a monotonic event stream. Document the wrap rather than hiding it.
-
-**Leaning:** `TIM2->CNT` (or the firing `CCR`) as a raw 32-bit microsecond
-stamp, captured in the ISR at enqueue, wrap documented and handled host-side.
-
-**Resolution:** _pending_
-
----
-
-### D9 — Level-command encoding *(resolved)*
-
-**Status:** 🟢
-
-**Three 4-bit masks: `Select`, `Set`, `Clear`.** `Select` governs *mode* —
-which channels are forced into manual control; `Set`/`Clear` govern *level*,
-BSRR-style, with both bits set meaning toggle.
-
-| `Select` | `Set` | `Clear` | Result for that channel |
-|:---:|:---:|:---:|---|
-| 0 | – | – | **Untouched.** Mode and level both preserved; a cycling channel keeps cycling. |
-| 1 | 0 | 0 | Manual, **hold current level** — freeze wherever it is. |
-| 1 | 1 | 0 | Manual, **high**. |
-| 1 | 0 | 1 | Manual, **low**. |
-| 1 | 1 | 1 | Manual, **toggle** — invert the present pad level. |
-
-**Why all three masks and not two.** Mode and level are *orthogonal*, which is
-what the original proposal's `Select` captured and what a bare two-mask
-set/clear form loses. Dropping `Select` would make "force to manual without
-changing the level" inexpressible — and that operation has a specific use here:
-`Select` = all channels, `Set` = 0, `Clear` = 0 **freezes every switch
-simultaneously, wherever it is**. For an instrument built to catch a DUT lockup,
-capturing the switch state at the moment of the event is exactly the kind of
-thing worth being able to do in one command.
-
-Replacing AND/OR with Set/Clear is what buys **toggle**, which the AND/OR pair
-could not express in any combination — and it removes AND/OR's redundant
-encoding (`AND=0,OR=1` was a second spelling of "set") in the process.
-
-**Toggle is well defined even from cycling mode:** `Select` forces manual first,
-and the level inverted is the present *pad* level read from `IDR` (**I6**), which
-is valid whether the channel was cycling or manual. So "freeze and invert" is a
-single atomic command rather than a read-modify-write race.
-
-The only remaining redundancy is benign and conventional — when `Select` is 0 the
-`Set`/`Clear` bits are simply ignored, the same way masked-off bits are ignored
-anywhere else.
-
-**Note:** the `Select=1, Set=0, Clear=0` → *hold* cell is the natural completion
-of the table rather than something explicitly specified; the alternative reading
-is that it should be a no-op. Hold is the more useful of the two and leaves no
-combination wasted, but it is a one-line change if the other reading is wanted.
-
-**Ergonomics live in the host runner (T1), not on the wire.** A script author
-calls `sw_set(on=['A'], off=['B'], toggle=['C'], freeze=['D'])` and never
-assembles a mask by hand under any encoding.
-
----
-
-### S13 — Switch-op responses carry state *(resolved)*
-
-**Status:** 🟢
-
-**Every switch-oriented command — success or failure — returns the resulting
-state**, as the three bitmaps of **I6** — level from `IDR`, mode from `OCxM`, run from the cycle engine. There
-is no bare-acknowledgement response.
-
-The ok/error status is *not* part of that payload; it lives in the frame header
-(**D3**), so the two concerns stay separate: the sigil and header say whether the
-command succeeded, the payload says what the hardware is now doing.
-
-**Why state rather than an ack.** A bare ack forces a script that wants to verify
-into a second round trip, and that two-step is racy — between the ack and the
-read, a cycling channel has moved on. Returning post-state makes every command
-self-verifying in one exchange, and it costs nothing because the state is already
-assembled to answer the read command at all. It also gives a host a free
-assertion at every step of a sequence rather than only where it remembered to
-ask.
-
-**Errors carry state too.** A rejected command has not changed anything, but the
-host still learns what the hardware is doing without a follow-up read — and the
-value it wanted to check is usually exactly the one it was trying to set.
-
-**Implementation:** one formatter emitting `L<n>,M<n>,R<n>` (**D3**), shared by
-the read command, the getter and all four mutating commands. One parser on the host side, one
-thing to document.
-
----
-
-### S14 — Time units and NVM persistence *(resolved)*
-
-**Status:** 🟢 — the persistence half is **entailed** by **S4**'s `P` command;
-say so if the setter should auto-persist after all and this reopens.
-
-Two ambiguities in the cycle-parameter command that would otherwise be settled by
-accident at implementation time.
-
-**Units.** The NVM parameters and the cycle engine are already in **microseconds**
-(`u32_on_time_us` / `u32_off_time_us`), and `TIM2->CNT` is a 1 µs timebase
-(**S8**). Milliseconds on the wire would mean a conversion at exactly one place
-and a mismatch everywhere else.
-
-**Resolved:** microseconds on the wire, hex-encoded like every other numeric
-(**D3**), and **S10**'s constant is named
-`ACON_MIN_CYCLE_PERIOD_US = 50000` so the floor is expressed in the same unit it
-is checked in. A 32-bit µs field spans about 71 minutes per phase, which is far
-past any plausible cycle.
-
-**Persistence.** The menu setters call `v_switch_cycle_nvm_save()`. The REPL
-shares the same parameter storage, so "does the REPL setter persist too?" has to
-be answered.
-
-**Resolved: no auto-persist from the automation console.** An explicit commit
-command (`P`, **S4**) only makes sense if configuring does not already commit —
-the two decisions are one decision. Two reasons, both concrete. A script
-that configures before each of a thousand iterations would commit a thousand
-flash writes for values it re-sends anyway — gratuitous wear on a part with no
-wear levelling (`switch-cycling-plan.md` **W6**). And a run that silently mutates
-stored configuration is not reproducible from a clean boot, which is the property
-a test campaign most needs. If persistence is ever wanted it should be an
-explicit op the host calls deliberately, not a side effect of configuring.
-
-**Resolution:** _pending_
-
----
-
-### S16 — Repeat progress reporting *(resolved)*
-
-**Status:** 🟢
-
-**Command 6 reports cycles _done_ (`u32_cycles_done`), not cycles remaining.**
-The host derives `remaining = repeat − done` itself, since the getter returns the
-configured repeat count in the same response. The one asymmetry the host must
-carry: **`repeat == 0` means infinite**, so there is no remaining to compute in
-that case — a host-side special case rather than a wire-format sentinel.
-
-`u32_cycles_done` is ISR-written and main-loop-read, but it is 32-bit and
-aligned, so the read is a single `LDR` on M0+ and cannot tear.
-
-**Why not remaining, as originally proposed.** `repeat_count == 0` means "run until
-stopped" — confirmed in
-`switch_out.h:63` and in the ISR at `switch_out.c:167` —
-`if (repeat_count && (cycles_done >= repeat_count))` — so a zero repeat count
-never terminates. It is also `SWITCH_CYCLE_REPEAT_DEFAULT`, which makes the
-infinite run the *common* case, not an edge case.
-
-That makes "**# cycles remaining**, 0 if stopped or in manual mode" ambiguous in
-three different ways, all of which encode as `0`:
-
-| Situation | "remaining" | What the host should conclude |
-|---|:---:|---|
-| Stopped / manual | 0 | not running |
-| Finite run, just completed | 0 | ran to completion |
-| **Infinite run, cycling right now** | 0 (?) | *actively running* — the opposite |
-
-**Options considered:**
-
-- **Report `remaining` as specified**, with a sentinel for infinite (`0xFFFFFFFF`
-  or `-1`). Works, but a sentinel is a thing to remember, and the field is still
-  a derived quantity the device computes on the host's behalf.
-- **Report `done` (`u32_cycles_done`) instead.** Always well defined — including
-  during an infinite run, which is exactly the case a soak campaign cares about,
-  since "how many cycles has it completed" *is* the question. The host computes
-  `remaining = repeat - done` itself whenever `repeat != 0`, and knows there is no
-  such thing as remaining when `repeat == 0`. No sentinel, no ambiguity.
-- **Report both.** Redundant — `remaining` is derivable from the other two fields.
-
-`done` also carries strictly more information: after a finite run completes it is
-the final tally, whereas `remaining` collapses to 0 and says nothing about what
-happened.
-
----
-
-### S15 — Start/stop edge cases
-
-**Status:** 🟡 · **Needs user:** no
-
-Three cases the command set does not yet define, each of which will otherwise be
-defined by whatever the code happens to do:
-
-- **Start on a channel already cycling.** Today `v_switch_cycle_start()` returns
-  silently — confirmed at `switch_out.c:485`. *Leaning: restart from ON.* A host
-  that says "start" wants a known phase to measure against; silently ignoring
-  leaves the channel at an arbitrary point in its cycle and every subsequent
-  timing measurement inherits that unknown. Whichever way this goes, **I6**'s
-  `run` bitmap in the **S13** response means the host is never left guessing.
-- **Level after stop.** `v_switch_cycle_stop()` currently leaves the output
-  forced LOW. For a race hunt, "stop and hold wherever you are" is also a
-  plausible want. *Leaning: keep forced-LOW as the default* — it is the existing
-  behaviour and it is deterministic — since the level command now expresses
-  freeze-at-current-level directly (**D9**, `Select` set with `Set`/`Clear` both
-  clear), which covers the other want without changing stop's semantics.
-- **Repeat-count exhaustion.** A channel that finishes its repeats stops on its
-  own, so the host's model of "is it running" goes stale with no notification.
-  *Leaning:* the read command reports it accurately, and in phase 2 exhaustion
-  emits an async event — this is one of the better arguments for **S6** existing
-  at all, since polling for it is exactly what async is meant to replace.
-
-**Resolution:** _pending_
-
----
-
-### I6 — State readback *(resolved)*
-
-**Status:** 🟢
-
-**Three 4-bit bitmaps**, from three independent sources:
-
-| Bitmap | Source | Meaning |
-|--------|--------|---------|
-| `level` | `GPIOx->IDR` | 0 = low, 1 = high — **valid in both modes** |
-| `mode` | `OCxM` via `LL_TIM_OC_GetMode()` | 0 = manual/forced, 1 = under TIM control |
-| `run` | `switch_cycle_t.u8_running` | 1 = cycling *and* repeat count not exhausted |
-
-**Why `IDR` and not a shadow.** `x_switch_out_get()` reads `OCxM` and returns
-`SWITCH_OUT_ON`/`OFF`/`TIMED` — deliberately hardware rather than a shadow, but
-it **cannot report a level for a cycling channel at all**, because while cycling
-`OCxM` holds `ACTIVE`/`INACTIVE` (act-on-match), never either *forced* value.
-`IDR` captures the pad every AHB cycle regardless of TIM2 owning the pin through
-its alternate function, so it reports the real driven level in either mode. For a
-*tester*, reading the pad is also the more honest measurement — what the pin is
-doing, not what the peripheral was told to do.
-
-**Why `run` as well as `mode`, given they agree in normal operation.** Both go to
-1 together at start and both go to 0 together on exhaustion, since
-`v_switch_cycle_halt()` forces the output LOW *and* clears `u8_running` in one
-place. So `run` is functionally redundant while everything works — and that is not
-the reason to carry it:
-
-- **It detects a silently refused start.** `v_switch_cycle_start()` returns
-  without any indication if the channel is already running, or if the stored
-  on/off times fall outside `SWITCH_CYCLE_TIME_MIN_US`/`MAX_US`. With **S13**'s
-  post-state response, a host issuing "start" and reading back `run` learns
-  immediately whether the command took effect — no separate query, no ambiguity.
-- **It is a genuine cross-check.** `mode` is read from the timer, `run` from
-  software state. The existing code comments already describe the `OCxM` read as
-  "an independent cross-check on `switch_cycle_t.u8_running`". Disagreement means
-  a bug, and on an instrument the ability to see that is worth four bits.
-
-**What three bitmaps still cannot express: repeat progress.** "How many cycles
-have completed" is a per-channel *count*, not a boolean, so it does not belong in
-a bitmap. **Resolved by giving it its own command** — **D6** command 6, the getter
-complement to the parameter setter — rather than by widening the read command.
-The reporting semantics are **S16**.
-
-**Implementation:** `u8_switch_out_level_bitmap()`, `u8_switch_out_mode_bitmap()`
-and `u8_switch_cycle_run_bitmap()` in `switch_out.c`, so the REPL, the menu and
-any later logging share one implementation.
-
----
-
-### D6 — Phase-1 op set *(resolved)*
-
-**Status:** 🟢
-
-Seven commands, plus the executive builtins. Deliberately a starting set; more
-are expected to follow.
-
-| # | Command | Inputs | Returns |
-|---|---------|--------|---------|
-| 1 | Set switch output levels (manual mode) | `Select`, `Set`, `Clear` masks (**D9**) | level + mode + run bitmaps (**I6**) |
-| 2 | Read switch state | none | level + mode + run bitmaps (**I6**) |
-| 3 | Set cycling parameters | switch # (0–3), on-time, off-time, repeat count | level + mode + run bitmaps (**S13**) |
-| 4 | Start auto-cycling | start bitmask | level + mode + run bitmaps (**S13**) |
-| 5 | Stop auto-cycling | stop bitmask | level + mode + run bitmaps (**S13**) |
-| 6 | **Get** cycling parameters | switch # (0–3) | on-time, off-time, repeat count, cycles **done** (**S16**) + the three bitmaps |
-| 7 | Commit parameters to NVM now | none | written / no-change, or refused while cycling (**S4**) |
-
-**Opcode assignment** — fixed here so collisions are designed out rather than
-caught by **I2**'s registration scan at startup:
-
-| Op | Command | | Op | Builtin |
-|:--:|---------|-|:--:|---------|
-| `S` | set switch levels (**D9**) | | `V` | version / identity ping |
-| `R` | read switch state | | `L` `?` | list ops |
-| `W` | write cycling parameters | | `Z` `' '` CR | no-op (**D5**) |
-| `^C` | quit — alias of `Q` (**D10**) |
-| `G` | get cycling parameters | | `Q` | quit |
-| `C` | start cycling | | `~` | *reserved* — session frames (**D3**) |
-| `X` | stop cycling | | | |
-| `P` | persist to NVM (**S4**) | | | |
-
-**Addressing is by mask where simultaneity matters, per-channel where it does
-not.** Commands 1, 4 and 5 take bitmasks so that several channels change together
-within a single command execution rather than across several commands separated
-by host round-trip latency. For an instrument built to hunt a pushbutton race
-condition, "these two switches changed at the same time" is a capability, not a
-convenience — and it is not recoverable by a host issuing four separate commands.
-Command 3 is per-channel because its parameters differ per channel and there is
-nothing to synchronise.
-
-Setting parameters (3) is deliberately separate from starting (4), so a host can
-stage several channels' configurations and then start them together.
-
-**Command 6 is the getter complement to command 3** — same per-channel
-addressing, returning the configured on-time, off-time and repeat count plus
-run progress. It is what carries the per-channel data the three bitmaps of
-**I6** structurally cannot: a count is not a bit. It also lets a host verify
-what it configured without inferring it, and read the final tally after a
-finite run has completed. Progress is reported as cycles *done* (**S16**).
-Response stays single-line, so it needs no `n=` payload (**D3**).
-
-**Parameter storage is shared with the debug menu** — the REPL sets the same
-values the menu does. Whether it also *persists* them is **S14**.
-
-**Deferred from the earlier candidate list:** pulse, toggle, all-off, transport
-error counters (**S5**) and NVM commit/status. All remain sensible additions;
-none is needed to run a first campaign, and several are expressible with the five
-above (all-off is a level command with every channel selected).
-
----
-
-### S4 — Behaviour while channels are cycling *(resolved)*
-
-**Status:** 🟢
-
-**1. Entry and exit are non-disturbing.** The host may enter and leave the
-automation console freely while channels are cycling — a soak driver attaching to
-query status is the main use case. Neither the sentinel, `Q`, nor an idle timeout
-touches drive state. Explicit `X` is the only thing that stops a run, so a
-timeout firing mid-soak cannot silently kill it.
-
-**2. NVM commits stay deferred while any channel cycles.** Existing behaviour,
-kept: `app_main.c` holds the commit off and zeroes `u16_commit_timer` so the
-auto-commit countdown re-arms, and the parameters reach flash once the run ends.
-A commit erases and rewrites a flash page — tens of milliseconds against phase
-times that can be as short as 10 µs — so letting it run mid-cycle would stall the
-compare ISR.
-
-**3. A new command requests an immediate commit** rather than waiting for the
-auto-commit timer: `P` (persist), **D6** command 7. It **refuses while cycling**,
-which is what keeps rule 2 intact — the deferral is not something the host can
-override, only something it can pre-empt when the bench is idle.
-
-`P` calls `x_nvm_commit()` **synchronously** rather than posting `JOB_NVM_COMMIT`,
-so the response carries the real outcome instead of an acknowledgement that a job
-was queued. The distinction matters: `x_nvm_commit()` returns `NVM_ERROR_NONE`
-(a page was actually written), `NVM_ERROR_NO_CHANGE` (pool already clean, no
-erase/write spent), or a genuine failure — and a host that just configured a soak
-run wants to know which of those happened before it walks away.
-
-| Response | Meaning |
-|---|---|
-| `=P,W1` | written — a flash page was erased and rewritten |
-| `=P,W0` | no change — pool was already clean (`NVM_ERROR_NO_CHANGE`) |
-| `!P,BUSY,R<n>` | refused, cycling active; `R` is the run bitmap |
-| `!P,NVM,E<n>` | commit failed; `E` is the `nvm_error_t` |
-
-The `R` bitmap on the BUSY refusal is deliberate — it tells the host *which*
-channels it needs to stop, rather than making it issue a separate read to find
-out.
-
-**Note on the opcode.** The suggestion was to reuse `W`, but `W` is already the
-cycle-parameter *writer* (**D6** command 3). `P` avoids a collision that **I2**'s
-registration scan would have caught at startup anyway — better to not build it in.
-
----
-
-### D2 — Command namespace and case sensitivity *(resolved)*
-
-**Status:** 🟢
-
-**Strict case sensitivity.** No `toupper()` anywhere in dispatch. The reference
-implementation folds case in both the builtin `switch` and the op-table scan,
-halving an already small namespace — this does not.
-
-**The namespace is `0x01..0x7F`, not just the printable range.** There is no
-reason to exclude `0x01..0x1F` merely because those codes are unprintable: an
-opcode is a byte a machine sends, and a control character is as good a byte as any.
-
-| Range | Status |
-|---|---|
-| `0x01..0x7F` | **available as opcodes**, minus the reservations below |
-| `0x00` | reserved — out-of-band |
-| `0x80..0xFF` | reserved — entry/exit sentinels (`ACON_ENTER` 0xDA, `ACON_EXIT` 0xA5) and any future out-of-band signalling |
-
-**Reserved inside the usable range** (**I2** enforces all of these at
-registration, so a domain op cannot claim one):
-
-| Code | Why |
-|---|---|
-| `0x0A` LF | ignored everywhere by the line reader (**D4**) |
-| `0x0D` CR | line terminator; a bare CR is the no-op (**D5**) |
-| `0x20` space | no-op alias (**D5**) |
-| `0x5E` `^` | caret-notation introducer for control-char echoes (**D3**) |
-| `0x03` `^C` | quit alias / escape hatch (**D10**) |
-| `V` `L` `?` `Q` `Z` | builtins — **both cases** reserved |
-| `~` | protocol/session frames (**D3**) |
-
-**Guidance, not restriction: prefer printable opcodes for ordinary commands.**
-A printable opcode can be typed at a terminal while debugging; a control-character
-one cannot — and its response comes back in caret notation (**D3**) rather than as
-the byte itself, so the two directions no longer look alike in a log. The control
-range is there for commands that *should* be hard to send by accident, not as the
-default place to put the next feature.
-
-**I2's collision check reserves both cases of every builtin letter**, so `v` and
-`q` cannot be claimed by a domain op even though they are technically free. A host
-that sends lowercase by habit then gets a clean `!v,UNK` rather than silently
-hitting some unrelated command that happened to take the letter.
-
-**Rationale:** loud failure beats a namespace booby trap. Case folding makes
-`s` and `S` the same command forever, which is a permanent halving of the
-namespace to buy tolerance for a typo that a machine does not make.
 
 ---
 
@@ -1213,6 +586,67 @@ those banners get sigils like everything else (**I5** obligation 1).
 
 ---
 
+### D6 — Phase-1 op set *(resolved)*
+
+**Status:** 🟢
+
+Seven commands, plus the executive builtins. Deliberately a starting set; more
+are expected to follow.
+
+| # | Command | Inputs | Returns |
+|---|---------|--------|---------|
+| 1 | Set switch output levels (manual mode) | `Select`, `Set`, `Clear` masks (**D9**) | level + mode + run bitmaps (**I6**) |
+| 2 | Read switch state | none | level + mode + run bitmaps (**I6**) |
+| 3 | Set cycling parameters | switch # (0–3), on-time, off-time, repeat count | level + mode + run bitmaps (**S13**) |
+| 4 | Start auto-cycling | start bitmask | level + mode + run bitmaps (**S13**) |
+| 5 | Stop auto-cycling | stop bitmask | level + mode + run bitmaps (**S13**) |
+| 6 | **Get** cycling parameters | switch # (0–3) | on-time, off-time, repeat count, cycles **done** (**S16**) + the three bitmaps |
+| 7 | Commit parameters to NVM now | none | written / no-change, or refused while cycling (**S4**) |
+
+**Opcode assignment** — fixed here so collisions are designed out rather than
+caught by **I2**'s registration scan at startup:
+
+| Op | Command | | Op | Builtin |
+|:--:|---------|-|:--:|---------|
+| `S` | set switch levels (**D9**) | | `V` | version / identity ping |
+| `R` | read switch state | | `L` `?` | list ops |
+| `W` | write cycling parameters | | `Z` `' '` CR | no-op (**D5**) |
+| `^C` | quit — alias of `Q` (**D10**) |
+| `G` | get cycling parameters | | `Q` | quit |
+| `C` | start cycling | | `~` | *reserved* — session frames (**D3**) |
+| `X` | stop cycling | | | |
+| `P` | persist to NVM (**S4**) | | | |
+
+**Addressing is by mask where simultaneity matters, per-channel where it does
+not.** Commands 1, 4 and 5 take bitmasks so that several channels change together
+within a single command execution rather than across several commands separated
+by host round-trip latency. For an instrument built to hunt a pushbutton race
+condition, "these two switches changed at the same time" is a capability, not a
+convenience — and it is not recoverable by a host issuing four separate commands.
+Command 3 is per-channel because its parameters differ per channel and there is
+nothing to synchronise.
+
+Setting parameters (3) is deliberately separate from starting (4), so a host can
+stage several channels' configurations and then start them together.
+
+**Command 6 is the getter complement to command 3** — same per-channel
+addressing, returning the configured on-time, off-time and repeat count plus
+run progress. It is what carries the per-channel data the three bitmaps of
+**I6** structurally cannot: a count is not a bit. It also lets a host verify
+what it configured without inferring it, and read the final tally after a
+finite run has completed. Progress is reported as cycles *done* (**S16**).
+Response stays single-line, so it needs no `n=` payload (**D3**).
+
+**Parameter storage is shared with the debug menu** — the REPL sets the same
+values the menu does. Whether it also *persists* them is **S14**.
+
+**Deferred from the earlier candidate list:** pulse, toggle, all-off, transport
+error counters (**S5**) and NVM commit/status. All remain sensible additions;
+none is needed to run a first campaign, and several are expressible with the five
+above (all-off is a level command with every channel selected).
+
+---
+
 ### D7 — Module name and file home *(resolved)*
 
 **Status:** 🟢
@@ -1244,108 +678,82 @@ spelling of their names moves.
 
 ---
 
-### S2 — Cooperative pumping and re-entrancy *(resolved)*
-
-**Status:** 🟢 — **no code change required; verified against the call graph**
-
-The console reads with bare `getchar()` and pumps `v_app_polling_task()`
-directly. It never calls `v_debug_menu_service()` or `v_debug_delay()`.
-
-**The existing re-entry lock already provides the guarantee.** Traced 2026-08-02:
-
-```
-app_main()                                   app_main.c:257
-  v_app_polling_task()                       app_main.c:244
-    KICK_WATCHDOG()
-    v_debug_menu_service()                   debug_menu.c:777
-      u8_reentry_lock = 1                    <-- set here, cleared only on return
-      getchar() -> 0xDA
-        v_automation_console_run()           <-- I1 intercept, inside the lock
-          loop:
-            v_app_polling_task()
-              KICK_WATCHDOG()                <-- still kicked. good
-              v_debug_menu_service()         <-- returns immediately, lock held
-              v_process_next_job()           <-- still runs. wanted
-            getchar()                        <-- console gets every byte
-    v_process_next_job()
-```
-
-Because the console is entered from *inside* `v_debug_menu_service()`, the lock
-is held for the console's entire lifetime, and the nested
-`v_debug_menu_service()` reached through `v_app_polling_task()` returns at its
-first statement. No recursion, no call stacking, no second reader.
-
-**The lock is load-bearing for correctness, not tidiness — and that deserves a
-comment at both ends.** Without it the nested service call would `getchar()`
-bytes destined for the console *and dispatch them as menu keys*, executing
-arbitrary menu commands in the middle of an automation session. It is not merely
-that the menu would be noisy; it would be actuating the instrument.
-
-**What still runs nested, deliberately:** `KICK_WATCHDOG()` (so a long session
-cannot trip the watchdog) and `v_process_next_job()` (so jobs, the pulse timebase
-and deferred commits keep working). The job runner continuing to run is wanted —
-and it is also why **I7** exists, since jobs log.
-
-**Also verified:** `v_debug_menu_service()` has exactly one caller outside its own
-file (`app_main.c:246`), and `v_debug_delay()` has none. `i_getchar_blocking()`
-and `i_getline()` in `utils.c` pump `v_app_polling_task()` too, so they are safe
-by the same argument if the console ever uses them.
-
----
-
-### S3 — Idle timeout *(resolved)*
+### D8 — Wire encoding *(resolved)*
 
 **Status:** 🟢
 
-**15 seconds**, as `ACON_IDLE_TIMEOUT_MS` in `debug_config.h` alongside the other
-build switches. An anti-wedge measure: without it, a host that dies mid-session
-leaves the board unreachable from a terminal.
+**ASCII in both directions**, with hex for any raw binary-coded data. Frames are
+printable lines, self-delimiting on CR — no escaping layer, no framing layer, and
+no CRC strictly required because a truncated line fails to parse rather than
+silently decoding to something plausible.
 
-**The timer resets on any received byte**, not on a completed command — so a
-keep-alive works even if it arrives mid-line, and a host streaming a long command
-cannot time out partway through sending it.
+**Options considered:** binary records (length-prefixed or COBS-framed with a
+CRC) would halve the bytes and remove formatting cost from the emit path, but
+need a real framing layer — a length prefix resynchronises badly after a lost
+byte, which is why **W1** names COBS specifically — and make the shared console
+unreadable to a human, on the very channel that also serves the debug menu.
 
-**It applies inside frame capture, not only at wait-for-command** (**S7**).
-Otherwise a host that sends a lead character and then dies wedges the device in
-the capture loop, and the anti-wedge guarantee has a hole exactly one byte wide.
+**Rationale.** The throughput argument that would have favoured binary evaporated
+once the rate profile was stated: a typical full cycle is ~1 second, so events
+arrive at ~2/second and frame size is irrelevant. What remains is the ability to
+watch an entire live host session — commands, responses and later events — in a
+terminal window, which is worth a great deal while bringing up a protocol that
+has to be trusted before it can be used to trust anything else.
 
-**Exit is announced, never silent:** `!~,TMO`. The `!` sigil is doing real work
-here — a timeout is an exit the host did not ask for, so it is reported as a
-failure rather than as the clean `=~,BYE`.
-
-**The session-frame rule, stated once:** *any* `~` frame after entry means the
-session has ended. `=~,BYE` if the host caused it (`Q` or the exit sentinel),
-`!~,TMO` if it did not. A host needs to watch for one opcode, and the sigil tells
-it whether to be surprised.
-
-**Keeping the timeout short is a deliberate trade.** The earlier leaning here was
-60 s plus a host-settable value, on the reasoning that a soak campaign might
-connect, start a run and return in an hour. That was solving the wrong problem:
-**a soak run does not need the session held open.** Cycling continues after exit
-(**S4**), so the host can start a run, leave, and reconnect later. What actually
-needs the session held open is a host blocked on some external process — and that
-host can send a no-op keep-alive (**D5**), which is 2 bytes every few seconds. A
-short fixed timeout plus keep-alives is more robust than a long one, because the
-board recovers from a dead host in 15 seconds rather than a minute, and it removes
-a host-settable knob that could be set to something absurd.
+**Left open deliberately:** oscilloscope-style analog capture on the sense inputs
+would move real volumes of data and may justify revisiting this. **D3**'s frame
+sigil means a binary frame kind can be added alongside the ASCII ones without
+disturbing them — that is **W1**, and it is a bridge to cross when the sense
+design exists, not now.
 
 ---
 
-### S5 — Transport error counters as a builtin
+### D9 — Level-command encoding *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
-Inherited decision from the transport plan (**S5** there): `uart_stream` counts
-ORE/FE/NE/PE per instance and the count becomes queryable, so a host can assert
-it has not moved across a run. `u32_uart_stream_get_error_count()` already
-exists.
+**Three 4-bit masks: `Select`, `Set`, `Clear`.** `Select` governs *mode* —
+which channels are forced into manual control; `Set`/`Clear` govern *level*,
+BSRR-style, with both bits set meaning toggle.
 
-**Leaning:** an `E` op that returns the console instance's count, plus a way to
-zero it at the start of a run. Once the loopback rig (**T3** in the transport
-plan) is up, the same op should be able to report *any* bound instance, not just
-the console.
+| `Select` | `Set` | `Clear` | Result for that channel |
+|:---:|:---:|:---:|---|
+| 0 | – | – | **Untouched.** Mode and level both preserved; a cycling channel keeps cycling. |
+| 1 | 0 | 0 | Manual, **hold current level** — freeze wherever it is. |
+| 1 | 1 | 0 | Manual, **high**. |
+| 1 | 0 | 1 | Manual, **low**. |
+| 1 | 1 | 1 | Manual, **toggle** — invert the present pad level. |
 
-**Resolution:** _pending_
+**Why all three masks and not two.** Mode and level are *orthogonal*, which is
+what the original proposal's `Select` captured and what a bare two-mask
+set/clear form loses. Dropping `Select` would make "force to manual without
+changing the level" inexpressible — and that operation has a specific use here:
+`Select` = all channels, `Set` = 0, `Clear` = 0 **freezes every switch
+simultaneously, wherever it is**. For an instrument built to catch a DUT lockup,
+capturing the switch state at the moment of the event is exactly the kind of
+thing worth being able to do in one command.
+
+Replacing AND/OR with Set/Clear is what buys **toggle**, which the AND/OR pair
+could not express in any combination — and it removes AND/OR's redundant
+encoding (`AND=0,OR=1` was a second spelling of "set") in the process.
+
+**Toggle is well defined even from cycling mode:** `Select` forces manual first,
+and the level inverted is the present *pad* level read from `IDR` (**I6**), which
+is valid whether the channel was cycling or manual. So "freeze and invert" is a
+single atomic command rather than a read-modify-write race.
+
+The only remaining redundancy is benign and conventional — when `Select` is 0 the
+`Set`/`Clear` bits are simply ignored, the same way masked-off bits are ignored
+anywhere else.
+
+**Note:** the `Select=1, Set=0, Clear=0` → *hold* cell is the natural completion
+of the table rather than something explicitly specified; the alternative reading
+is that it should be a no-op. Hold is the more useful of the two and leaves no
+combination wasted, but it is a one-line change if the other reading is wanted.
+
+**Ergonomics live in the host runner (T1), not on the wire.** A script author
+calls `sw_set(on=['A'], off=['B'], toggle=['C'], freeze=['D'])` and never
+assembles a mask by hand under any encoding.
 
 ---
 
@@ -1498,106 +906,763 @@ want one, it belongs on this row later.
 
 ---
 
-### I9 — `i_getline()` gains a silent `^C` exit *(resolved)*
+### S1 — Reject on error, structured error response *(resolved)*
 
 **Status:** 🟢
 
-**`i_getline()` is modified in place**: `^C` (0x03) becomes a third exit state,
-`GETLINE_CANCEL_EXIT`, returning **−2**. It emits **nothing** — no `<Cancel>`, no
-CRLF, no line-clearing erase. Silent by design, because in the automation console
-any unframed output would be noise on a machine-readable stream.
+Inherited from the transport plan's **S5**. A command whose reception was
+compromised is never partially executed: the parser fails it and the host gets an
+explicit, machine-readable error rather than silence or a plausible-looking wrong
+result. The exact error envelope is **D3**'s to specify.
 
-```c
-if (u8_done == GETLINE_ESCAPE_EXIT) { return -1; }
-if (u8_done == GETLINE_CANCEL_EXIT) { return -2; }
-return i_len;
-```
-
-**In-place modification is safe here, and it was not for `^X` — that is the whole
-reason `^C` is the right key.** `^C` is currently **unhandled**: it falls into the
-`< 0x20` silent-discard bucket, so nothing anywhere responds to it today. Adding a
-branch introduces *new* behaviour where there was none, rather than *changing*
-existing behaviour. `^X` already means "clear the line and keep going", and
-repurposing it would have been a regression — which is what the wrapper in the
-earlier option C existed to avoid. With `^C` there is nothing to avoid.
-
-**Consumers need no edit.** Exactly one call site exists in the repository —
-`u8_debug_entry_u32()` at `debug_menu.c:163` — and it already tests
-`if (i_length < 0)`. `^C` therefore cancels a menu entry exactly as ESC does,
-which is both universal convention and previously a no-op, so nothing regresses.
-`< 0` rather than `== GETLINE_ESCAPE_EXIT` is the house style for this check and
-is what keeps future exit states from breaking callers.
-
-**Also settled by this:** ESC keeps meaning "cancel this line" inside the console,
-so an arrow key (ESC `[` `A`) discards the line and nothing worse — no mode
-change, no spurious frames. The hazard that option A carried is gone without
-paying for option C's wrapper or option D's duplicated reader.
-
-**Optional, still separate:** `i_getline()` handles `\b` but not `0x7F`, and
-terminals disagree on which Backspace sends. Unlike the `^C` addition, that one
-*does* change existing behaviour, so it stays a separate decision.
+**Rationale:** on a test interface, a silently mis-parsed command can invalidate
+a whole run with nobody noticing.
 
 ---
 
-#### Options considered *(kept for audit)*
+### S2 — Cooperative pumping and re-entrancy *(resolved)*
 
-**The starting facts** (`utils.c`, verified 2026-08-02). Before this change,
-`i_getline()` had exactly **two** exits:
+**Status:** 🟢 — **no code change required; verified against the call graph**
 
-| Key | Handling | Return |
-|---|---|---|
-| **CR** `0x0D` | `GETLINE_NORMAL_EXIT` | `i_len` (0…limit) |
-| **ESC** `0x1B` | `GETLINE_ESCAPE_EXIT`, clears line, prints `<Cancel>` | **−1** |
+The console reads with bare `getchar()` and pumps `v_app_polling_task()`
+directly. It never calls `v_debug_menu_service()` or `v_debug_delay()`.
 
-Consumed without exiting: **BS** `0x08` (destructive backspace), **^X** `0x18`
-(clears the whole line, keeps reading), every other byte `< 0x20` including
-**^C** `0x03` (silently discarded), and `≥ 0x20` (appended, echoed).
+**The existing re-entry lock already provides the guarantee.** Traced 2026-08-02:
 
-So **ESC is the only special-case return**. `^X` is recognised but does not exit;
-`^C` is not recognised at all.
+```
+app_main()                                   app_main.c:257
+  v_app_polling_task()                       app_main.c:244
+    KICK_WATCHDOG()
+    v_debug_menu_service()                   debug_menu.c:777
+      u8_reentry_lock = 1                    <-- set here, cleared only on return
+      getchar() -> 0xDA
+        v_automation_console_run()           <-- I1 intercept, inside the lock
+          loop:
+            v_app_polling_task()
+              KICK_WATCHDOG()                <-- still kicked. good
+              v_debug_menu_service()         <-- returns immediately, lock held
+              v_process_next_job()           <-- still runs. wanted
+            getchar()                        <-- console gets every byte
+    v_process_next_job()
+```
 
-**Consumers:** exactly one outside `utils.c` — `u8_debug_entry_u32()` at
-`debug_menu.c:163`, which treats *any* negative as "Cancelled - unchanged".
+Because the console is entered from *inside* `v_debug_menu_service()`, the lock
+is held for the console's entire lifetime, and the nested
+`v_debug_menu_service()` reached through `v_app_polling_task()` returns at its
+first statement. No recursion, no call stacking, no second reader.
 
-**Options.**
+**The lock is load-bearing for correctness, not tidiness — and that deserves a
+comment at both ends.** Without it the nested service call would `getchar()`
+bytes destined for the console *and dispatch them as menu keys*, executing
+arbitrary menu commands in the middle of an automation session. It is not merely
+that the menu would be noisy; it would be actuating the instrument.
 
-- **A — use ESC, change nothing.** ESC already returns −1 distinguishably, so
-  human→script needs no edit to shared code at all. `^X` keeps its present job
-  (clear the line, stay in the mode), which is a tidy split: `^X` cancels a line,
-  ESC leaves the mode. Symmetric too — 0x1B switches script→human, ESC switches
-  back.
-  *Cost:* ESC is the lead byte of every ANSI sequence a terminal sends. An arrow
-  key becomes ESC `[` `A` → mode switch, then `[` and `A` dispatch as commands.
-  The debug menu already has the milder form of this (an arrow key cancels an
-  entry), so it is a known wart — but here it also changes mode and emits two
-  spurious frames.
-- **B — no in-band switch at all.** Mode comes only from the entry argument
-  (**D10**); to change it, leave the console and re-enter. Zero code, zero risk,
-  no symmetry.
-- **C — `i_getline_ex(buf, limit, flags)`, `i_getline()` becomes a `flags = 0`
-  wrapper.** With `GETLINE_RETURN_ON_CANCEL`, `^X` becomes a third exit returning
-  −2. The existing caller is **not touched and not refactored** — it keeps
-  clear-and-retype byte-for-byte, because its call compiles to the same wrapper.
-  ESC keeps meaning "cancel this line", so arrow keys stay annoying rather than
-  becoming mode changes. Cost: one enumerator, one branch, one wrapper in a shared
-  file.
-- **D — private line reader in `automation_console.c`.** Total independence, and
-  freedom to handle `0x7F`, control opcodes and ANSI sequences properly. Cost:
-  ~40 duplicated lines that will drift from the menu's editing feel.
+**What still runs nested, deliberately:** `KICK_WATCHDOG()` (so a long session
+cannot trip the watchdog) and `v_process_next_job()` (so jobs, the pulse timebase
+and deferred commits keep working). The job runner continuing to run is wanted —
+and it is also why **I7** exists, since jobs log.
 
-**Note on modifying `i_getline()` in place:** it must not simply be changed to
-return on `^X`. The one existing caller reads any negative as cancel, so that
-would silently convert the menu's clear-and-retype into abandon-entry — a
-regression in a path nobody asked to change. Options C and D both avoid this; A
-avoids it by not touching anything.
+**Also verified:** `v_debug_menu_service()` has exactly one caller outside its own
+file (`app_main.c:246`), and `v_debug_delay()` has none. `i_getchar_blocking()`
+and `i_getline()` in `utils.c` pump `v_app_polling_task()` too, so they are safe
+by the same argument if the console ever uses them.
 
-**Chosen: none of the four.** Switching the key from `^X` to `^C` removed the
-constraint they were all working around — `^C` had no existing behaviour to
-preserve, so the in-place edit that was unsafe for `^X` is safe for `^C`, and the
-wrapper (C) and the duplicated reader (D) both become unnecessary.
+---
 
-The `0x7F`/DEL point raised alongside those options is unaffected by the choice and
-carries forward — see the resolution above.
+### S3 — Idle timeout *(resolved)*
+
+**Status:** 🟢
+
+**15 seconds**, as `ACON_IDLE_TIMEOUT_MS` in `debug_config.h` alongside the other
+build switches. An anti-wedge measure: without it, a host that dies mid-session
+leaves the board unreachable from a terminal.
+
+**The timer resets on any received byte**, not on a completed command — so a
+keep-alive works even if it arrives mid-line, and a host streaming a long command
+cannot time out partway through sending it.
+
+**It applies inside frame capture, not only at wait-for-command** (**S7**).
+Otherwise a host that sends a lead character and then dies wedges the device in
+the capture loop, and the anti-wedge guarantee has a hole exactly one byte wide.
+
+**Exit is announced, never silent:** `!~,TMO`. The `!` sigil is doing real work
+here — a timeout is an exit the host did not ask for, so it is reported as a
+failure rather than as the clean `=~,BYE`.
+
+**The session-frame rule, stated once:** *any* `~` frame after entry means the
+session has ended. `=~,BYE` if the host caused it (`Q` or the exit sentinel),
+`!~,TMO` if it did not. A host needs to watch for one opcode, and the sigil tells
+it whether to be surprised.
+
+**Keeping the timeout short is a deliberate trade.** The earlier leaning here was
+60 s plus a host-settable value, on the reasoning that a soak campaign might
+connect, start a run and return in an hour. That was solving the wrong problem:
+**a soak run does not need the session held open.** Cycling continues after exit
+(**S4**), so the host can start a run, leave, and reconnect later. What actually
+needs the session held open is a host blocked on some external process — and that
+host can send a no-op keep-alive (**D5**), which is 2 bytes every few seconds. A
+short fixed timeout plus keep-alives is more robust than a long one, because the
+board recovers from a dead host in 15 seconds rather than a minute, and it removes
+a host-settable knob that could be set to something absurd.
+
+---
+
+### S4 — Behaviour while channels are cycling *(resolved)*
+
+**Status:** 🟢
+
+**1. Entry and exit are non-disturbing.** The host may enter and leave the
+automation console freely while channels are cycling — a soak driver attaching to
+query status is the main use case. Neither the sentinel, `Q`, nor an idle timeout
+touches drive state. Explicit `X` is the only thing that stops a run, so a
+timeout firing mid-soak cannot silently kill it.
+
+**2. NVM commits stay deferred while any channel cycles.** Existing behaviour,
+kept: `app_main.c` holds the commit off and zeroes `u16_commit_timer` so the
+auto-commit countdown re-arms, and the parameters reach flash once the run ends.
+A commit erases and rewrites a flash page — tens of milliseconds against phase
+times that can be as short as 10 µs — so letting it run mid-cycle would stall the
+compare ISR.
+
+**3. A new command requests an immediate commit** rather than waiting for the
+auto-commit timer: `P` (persist), **D6** command 7. It **refuses while cycling**,
+which is what keeps rule 2 intact — the deferral is not something the host can
+override, only something it can pre-empt when the bench is idle.
+
+`P` calls `x_nvm_commit()` **synchronously** rather than posting `JOB_NVM_COMMIT`,
+so the response carries the real outcome instead of an acknowledgement that a job
+was queued. The distinction matters: `x_nvm_commit()` returns `NVM_ERROR_NONE`
+(a page was actually written), `NVM_ERROR_NO_CHANGE` (pool already clean, no
+erase/write spent), or a genuine failure — and a host that just configured a soak
+run wants to know which of those happened before it walks away.
+
+| Response | Meaning |
+|---|---|
+| `=P,W1` | written — a flash page was erased and rewritten |
+| `=P,W0` | no change — pool was already clean (`NVM_ERROR_NO_CHANGE`) |
+| `!P,BUSY,R<n>` | refused, cycling active; `R` is the run bitmap |
+| `!P,NVM,E<n>` | commit failed; `E` is the `nvm_error_t` |
+
+The `R` bitmap on the BUSY refusal is deliberate — it tells the host *which*
+channels it needs to stop, rather than making it issue a separate read to find
+out.
+
+**Note on the opcode.** The suggestion was to reuse `W`, but `W` is already the
+cycle-parameter *writer* (**D6** command 3). `P` avoids a collision that **I2**'s
+registration scan would have caught at startup anyway — better to not build it in.
+
+---
+
+### S5 — Transport error counters as a builtin
+
+**Status:** 🟡 · **Needs user:** no
+
+Inherited decision from the transport plan (**S5** there): `uart_stream` counts
+ORE/FE/NE/PE per instance and the count becomes queryable, so a host can assert
+it has not moved across a run. `u32_uart_stream_get_error_count()` already
+exists.
+
+**Leaning:** an `E` op that returns the console instance's count, plus a way to
+zero it at the start of a run. Once the loopback rig (**T3** in the transport
+plan) is up, the same op should be able to report *any* bound instance, not just
+the console.
+
+**Resolution:** _pending_
+
+---
+
+### S6 — Async event queue
+
+**Status:** 🔵 — phase 2, design below is the standing plan · **Needs user:** no
+
+Events originate in ISR context — TIM2 compare for cycling transitions (priority
+0), EXTI for sense edges later (priority 3). `printf` in an ISR is out of the
+question: it is not reentrant, it would block on the TX ring, and it would run
+formatting at priority 0.
+
+So the queue holds **fixed-size binary records, not strings**, and formatting
+happens in the main loop at flush time:
+
+```c
+typedef struct {
+    uint32_t u32_timestamp;   /* TIM2->CNT at the event -- S8            */
+    uint8_t  u8_class;        /* SW transition / sense edge / ADC / ...  */
+    uint8_t  u8_channel;
+    uint16_t u16_value;
+} repl_event_t;               /* 8 bytes                                 */
+```
+
+An 8-byte record in a power-of-two ring is a single-producer/single-consumer
+structure with the same discipline as `uart_stream`'s rings — producer (ISR)
+writes `head`, consumer (main loop) writes `tail`, disjoint aligned `volatile`
+indices, no critical section needed on M0+. Multiple ISR sources at *different*
+priorities do break the single-producer assumption, though: TIM2 at priority 0
+can preempt EXTI at priority 3 mid-enqueue. That needs either a short PRIMASK
+guard around the head advance or all event sources at one priority — the guard is
+a handful of cycles and does not constrain the priority map, so prefer it.
+
+**Enqueue is gated on REPL mode.** While the debug menu owns the console, no
+interrupt or background process may push into the queue at all; the gate flips to
+allowed on REPL entry and back on exit. This is a single flag tested at the top of
+the enqueue path, and it settles several things at once: nothing accumulates for
+an absent host, the queue cannot overflow while nobody is listening, a dropped
+count is only ever attributable to a live session, and the ISR cost outside REPL
+mode is one predictable-branch test.
+
+**Corollary — reset the queue on entry, not just enable it.** A previous REPL
+session can exit with events still queued. Without a head/tail/dropped-counter
+reset at entry, those stale events are emitted into the new session carrying
+timestamps from the old one, which is exactly the sort of thing that produces an
+unreproducible measurement nobody can explain. Reset costs three stores.
+
+**Leaning:** 64 records (512 bytes), statically allocated, PRIMASK-guarded
+enqueue, gated on REPL mode, reset at entry, formatted at dequeue.
+
+**Resolution:** _pending_
+
+---
+
+### S7 — Deferral rule and overflow policy
+
+**Status:** 🔵 — phase 2, design below is the standing plan · **Needs user:** no
+
+Locked by **Q1**: async frames are emitted only between the end of one response
+frame and the start of the next — never inside one.
+
+**Drain structure.** The executive loop makes the deferral rule structural rather
+than something that has to be remembered at each emit site:
+
+```c
+for (;;)
+{
+    if (<lead char available from host>)
+    {
+        <capture the rest of the command frame>
+        <dispatch on opcode>
+        <emit the response frame>
+    }
+
+    <service the event queue -- emit at most ONE event frame>
+}
+```
+
+Two properties fall out of this ordering and both are wanted. Command service
+comes first, so a pending command is never delayed behind a backlog. And exactly
+one event per iteration — rather than draining the whole queue — bounds the
+latency a command can suffer to a single frame time instead of up to 64 of them;
+when the host is idle the loop spins freely and a backlog still drains as fast as
+the link allows.
+
+**One hazard in the capture step.** `<capture the rest of the command frame>` is
+a blocking read. A host that sends a lead character and then stalls would wedge
+the device there, so **S3**'s idle timeout must apply *inside* frame capture, not
+only at the wait-for-command read — otherwise the anti-wedge guarantee has a hole
+exactly one byte wide.
+
+Two consequences that the rule creates and that need explicit answers:
+
+- **Transmit time is not event time.** A queued event may be emitted milliseconds
+  after it happened. This is exactly why **S8** insists the timestamp is captured
+  at the event, in the ISR — if it were sampled at flush the queueing latency
+  would be silently folded into the measurement, which defeats the purpose of
+  timestamping at all.
+- **The queue can overflow.** A long-running command plus a fast cycle rate fills
+  64 records quickly. Silent loss is the failure mode **S1** exists to prevent, so
+  overflow must be *reported*, not just survived.
+
+**Options for overflow:** drop-newest (cheap, keeps the oldest history),
+drop-oldest (keeps the most recent, needs a tail advance in the ISR), or block
+(unacceptable — this is an ISR).
+
+**Leaning:** **drop-newest** with a saturating dropped-counter, and emit a
+`*O,D<count>` frame (source `O` for overflow, `D` for dropped) at the head of
+the next flush whenever the counter is
+non-zero, then clear it. The host then knows precisely that its event record has
+a hole and how big, rather than quietly receiving an incomplete history. Combined
+with **S9**'s default-off subscriptions, overflow should be rare in practice.
+
+**Resolution:** _pending_
+
+---
+
+### S8 — Timestamp source and capture point
+
+**Status:** 🟡 · **Needs user:** no — but it is a correction, not a detail
+
+**Question:** What clock timestamps an async event, and when is it sampled?
+
+`SYSTEM_TICK()` / `HAL_GetTick()` is the obvious choice and is the wrong one
+here: **1 ms resolution**. A switch bounce is tens of microseconds, and the whole
+point of this tester is measuring what the DUT does at switch edges. A 1 ms
+timestamp cannot distinguish a bounce from a clean edge, and the drive side is
+already programmed in microseconds (`u32_on_time_us` / `u32_off_time_us`).
+
+`TIM2->CNT` is free-running at **1 µs**, 32-bit, never stopped, and is *already*
+the timebase the cycling engine schedules against — so a switch-transition event
+and the compare that caused it are expressed in the same units, on the same
+clock, with no conversion.
+
+**Two refinements worth taking:**
+
+- For a **cycling transition**, do not read `CNT` in the ISR — the `CCR` value
+  that fired *is* the exact edge time, unaffected by interrupt latency. Reading
+  `CNT` instead folds in however long the ISR took to be entered.
+- `TIM2->CNT` wraps every **71.6 minutes**, which is well inside a soak run. The
+  device should not try to extend it; the host unwraps trivially by watching for
+  a decrease in a monotonic event stream. Document the wrap rather than hiding it.
+
+**Leaning:** `TIM2->CNT` (or the firing `CCR`) as a raw 32-bit microsecond
+stamp, captured in the ISR at enqueue, wrap documented and handled host-side.
+
+**Resolution:** _pending_
+
+---
+
+### S9 — Event subscription / arming
+
+**Status:** 🔵 — phase 2 · **Needs user:** yes, when phase 2 opens
+
+**Question:** Which events are reported, and from when? Three sub-questions that
+have to be answered together:
+
+1. **Default off or default on?** If every cycling transition reports
+   unconditionally, a soak run at a 1 ms half-period floods the link with data
+   nobody asked for and overflows the queue continuously (**S7**).
+2. **Granularity.** Per event *class* (switch transitions / sense edges / ADC),
+   per channel, or the cross product? Per-class is one bitmask and is probably
+   enough; per-channel matters if the host wants to watch one DUT input while
+   three others cycle as background load.
+3. **Lifetime.** Does a subscription survive REPL exit and re-entry? Survive
+   reset? If events are enqueued while no host is attached, the queue fills and
+   the dropped-count is meaningless by the time anyone reads it.
+
+**Largely superseded by the S6 REPL-mode gate.** With enqueue disabled outside
+REPL mode, "default off" and "cleared on exit" are both satisfied structurally —
+the coarse subscription *is* REPL mode, and question 3 (lifetime) answers itself.
+What remains of this row is only the fine-grained part: whether a host that wants
+to watch one channel while three others cycle as background load can say so.
+
+**Leaning / recommendation:** phase 2 ships with the REPL-mode gate alone — all
+classes, all channels, reported whenever a host is attached. A per-class /
+per-channel mask op is added only if a real campaign wants it; at the intended
+~1 s cycle rate, filtering to save two frames a second is not worth an op, a
+mask, and the chance of a host silently filtering out the thing it came to
+measure. Never persisted to NVM — session state, not configuration.
+
+**Resolution:** _pending_
+
+---
+
+### S10 — Minimum cycle-period guard *(resolved)*
+
+**Status:** 🟢
+
+**`on_time + off_time >= 50 ms`, enforced only on REPL-commanded cycling.** The
+threshold is `ACON_MIN_CYCLE_PERIOD_US` in `device_config.h`. Violations are **rejected**
+with a structured error naming the offending value (**S1**), never clamped —
+silently running a different test than the host asked for is the failure mode this
+whole protocol exists to prevent.
+
+**The debug menu is deliberately exempt.** Its setters keep a much lower floor —
+1000 µs on/off proposed — or none at all, above the 4 µs hardware guard that
+`SWITCH_CYCLE_MIN_LEAD_US` already enforces for correctness. Feeding the menu
+absurd values to find where the system breaks is a wanted experiment.
+
+**Rationale, and why the earlier recommendation was declined.** The proposal on
+the table was to *also* hard-check at `v_switch_cycle_start()`, so the floor held
+regardless of path — menu edits, and NVM restores, which matters here because this
+project has already been bitten by a pool carrying another project's contents. That
+was rejected on the correct grounds: this is bench tooling, not a commercial
+product, and the guard exists to protect *automated* runs, not to protect the
+operator from themselves.
+
+**The residual case, recorded for honesty rather than as an objection:** a cycle
+configured below 50 ms from the menu, followed by REPL entry, will report events at
+that rate. The numbers say it does not matter — at the proposed 1000 µs floor the
+worst case is ~1000 edges/s, and at ~350 µs per ASCII frame that is roughly a third
+of the link, which **S7**'s drain loop and overflow accounting already handle. With
+no menu floor at all the cycler bottoms out at the 4 µs hardware guard, but the
+**S6** REPL-mode enqueue gate means nothing is being queued in menu mode anyway.
+
+---
+
+### S11 — Host receive contract
+
+**Status:** 🟡 · **Needs user:** no
+
+**The identified window is real, and it is harmless.** The host commits to
+sending a command; in the same one-or-two-byte-time window the device dequeues an
+event and emits it. The host then reads a `*` frame where it might have expected its
+response.
+
+Nothing is corrupted. The link is full duplex — two rings, two directions, no
+coupling — so a device→host event frame and a host→device command frame in flight
+simultaneously do not interfere on the wire. The device's own invariant also
+survives: emission happens only in the main loop, one whole frame at a time, so
+an event can precede or follow a response but can never land inside one.
+
+What the window actually breaks is a *host parser that identifies a response by
+position* — the common pyserial idiom of "write the command, read one line, that
+line is the answer".
+
+**Options considered:**
+
+- **A `ready for events` / `stop events` token pair.** Host declares when async
+  is welcome. This does not close the window: the `stop events` token races the
+  device's in-flight emit exactly as before, so the host must *still* handle a
+  straggler arriving after it asked for silence. It adds a two-state mode that
+  can disagree between the ends, and while events are suppressed the device is
+  queueing them anyway — so the deferral has moved, not disappeared.
+- **Sigil dispatch as a contract.** The host reads lines and routes by first
+  character: `*` and `#` go to handlers, `+` is payload, and the first `=` / `!`
+  line is the
+  response to the outstanding command. The window becomes a non-event because no
+  code anywhere assumes positional ordering.
+
+**Leaning / recommendation:** sigil dispatch, stated as a protocol contract
+rather than left as an implementation detail of the runner — *the host must be
+prepared for an async frame at any point at which it is reading device output.*
+This is already **I5** obligation 1 seen from the host side, and it is why that
+obligation applies to the phase-1 runner even though phase 1 emits no events: a
+runner written to the contract needs no change when phase 2 lands, and one
+written to positional reads has to be rewritten.
+
+Note that the **S6** REPL-mode enqueue gate bounds this further — outside REPL
+mode no event exists to race with anything.
+
+**Resolution:** _pending_
+
+---
+
+### S12 — Menu-mode human log
+
+**Status:** 🟡 · **Needs user:** no
+
+Cycling transitions may be worth *watching* from the debug menu too, not just
+reporting to a host. That is a different feature from the REPL event queue and it
+must not reuse the same gate: **S6**'s flag means "a host is attached and events
+may be enqueued", and overloading it would couple the human view to REPL mode.
+
+Two constraints carry over unchanged, though:
+
+- **No `printf` from an ISR** — same reason as **S6**. Emission goes through the
+  job runner, with the ISR doing nothing but recording what happened.
+- **Timestamps are captured at the event**, not at print time (**S8**), or the
+  log shows when the job ran rather than when the switch moved.
+
+**Leaning:** a second, independent gate flag; the transition ISR records into a
+small structure and posts a job; the job formats and prints. Whether that shares
+**S6**'s ring or gets its own is an implementation detail to settle when the row
+is built — sharing is tempting but couples two features with different lifetimes,
+and the ring is 512 bytes.
+
+Low priority — this is a convenience, and the REPL path is the one that matters
+for the campaign the tester exists to run.
+
+**Resolution:** _pending_
+
+---
+
+### S13 — Switch-op responses carry state *(resolved)*
+
+**Status:** 🟢
+
+**Every switch-oriented command — success or failure — returns the resulting
+state**, as the three bitmaps of **I6** — level from `IDR`, mode from `OCxM`, run from the cycle engine. There
+is no bare-acknowledgement response.
+
+The ok/error status is *not* part of that payload; it lives in the frame header
+(**D3**), so the two concerns stay separate: the sigil and header say whether the
+command succeeded, the payload says what the hardware is now doing.
+
+**Why state rather than an ack.** A bare ack forces a script that wants to verify
+into a second round trip, and that two-step is racy — between the ack and the
+read, a cycling channel has moved on. Returning post-state makes every command
+self-verifying in one exchange, and it costs nothing because the state is already
+assembled to answer the read command at all. It also gives a host a free
+assertion at every step of a sequence rather than only where it remembered to
+ask.
+
+**Errors carry state too.** A rejected command has not changed anything, but the
+host still learns what the hardware is doing without a follow-up read — and the
+value it wanted to check is usually exactly the one it was trying to set.
+
+**Implementation:** one formatter emitting `L<n>,M<n>,R<n>` (**D3**), shared by
+the read command, the getter and all four mutating commands. One parser on the host side, one
+thing to document.
+
+---
+
+### S14 — Time units and NVM persistence *(resolved)*
+
+**Status:** 🟢 — the persistence half is **entailed** by **S4**'s `P` command;
+say so if the setter should auto-persist after all and this reopens.
+
+Two ambiguities in the cycle-parameter command that would otherwise be settled by
+accident at implementation time.
+
+**Units.** The NVM parameters and the cycle engine are already in **microseconds**
+(`u32_on_time_us` / `u32_off_time_us`), and `TIM2->CNT` is a 1 µs timebase
+(**S8**). Milliseconds on the wire would mean a conversion at exactly one place
+and a mismatch everywhere else.
+
+**Resolved:** microseconds on the wire, hex-encoded like every other numeric
+(**D3**), and **S10**'s constant is named
+`ACON_MIN_CYCLE_PERIOD_US = 50000` so the floor is expressed in the same unit it
+is checked in. A 32-bit µs field spans about 71 minutes per phase, which is far
+past any plausible cycle.
+
+**Persistence.** The menu setters call `v_switch_cycle_nvm_save()`. The REPL
+shares the same parameter storage, so "does the REPL setter persist too?" has to
+be answered.
+
+**Resolved: no auto-persist from the automation console.** An explicit commit
+command (`P`, **S4**) only makes sense if configuring does not already commit —
+the two decisions are one decision. Two reasons, both concrete. A script
+that configures before each of a thousand iterations would commit a thousand
+flash writes for values it re-sends anyway — gratuitous wear on a part with no
+wear levelling (`switch-cycling-plan.md` **W6**). And a run that silently mutates
+stored configuration is not reproducible from a clean boot, which is the property
+a test campaign most needs. If persistence is ever wanted it should be an
+explicit op the host calls deliberately, not a side effect of configuring.
+
+**Resolution:** _pending_
+
+---
+
+### S15 — Start/stop edge cases
+
+**Status:** 🟡 · **Needs user:** no
+
+Three cases the command set does not yet define, each of which will otherwise be
+defined by whatever the code happens to do:
+
+- **Start on a channel already cycling.** Today `v_switch_cycle_start()` returns
+  silently — confirmed at `switch_out.c:485`. *Leaning: restart from ON.* A host
+  that says "start" wants a known phase to measure against; silently ignoring
+  leaves the channel at an arbitrary point in its cycle and every subsequent
+  timing measurement inherits that unknown. Whichever way this goes, **I6**'s
+  `run` bitmap in the **S13** response means the host is never left guessing.
+- **Level after stop.** `v_switch_cycle_stop()` currently leaves the output
+  forced LOW. For a race hunt, "stop and hold wherever you are" is also a
+  plausible want. *Leaning: keep forced-LOW as the default* — it is the existing
+  behaviour and it is deterministic — since the level command now expresses
+  freeze-at-current-level directly (**D9**, `Select` set with `Set`/`Clear` both
+  clear), which covers the other want without changing stop's semantics.
+- **Repeat-count exhaustion.** A channel that finishes its repeats stops on its
+  own, so the host's model of "is it running" goes stale with no notification.
+  *Leaning:* the read command reports it accurately, and in phase 2 exhaustion
+  emits an async event — this is one of the better arguments for **S6** existing
+  at all, since polling for it is exactly what async is meant to replace.
+
+**Resolution:** _pending_
+
+---
+
+### S16 — Repeat progress reporting *(resolved)*
+
+**Status:** 🟢
+
+**Command 6 reports cycles _done_ (`u32_cycles_done`), not cycles remaining.**
+The host derives `remaining = repeat − done` itself, since the getter returns the
+configured repeat count in the same response. The one asymmetry the host must
+carry: **`repeat == 0` means infinite**, so there is no remaining to compute in
+that case — a host-side special case rather than a wire-format sentinel.
+
+`u32_cycles_done` is ISR-written and main-loop-read, but it is 32-bit and
+aligned, so the read is a single `LDR` on M0+ and cannot tear.
+
+**Why not remaining, as originally proposed.** `repeat_count == 0` means "run until
+stopped" — confirmed in
+`switch_out.h:63` and in the ISR at `switch_out.c:167` —
+`if (repeat_count && (cycles_done >= repeat_count))` — so a zero repeat count
+never terminates. It is also `SWITCH_CYCLE_REPEAT_DEFAULT`, which makes the
+infinite run the *common* case, not an edge case.
+
+That makes "**# cycles remaining**, 0 if stopped or in manual mode" ambiguous in
+three different ways, all of which encode as `0`:
+
+| Situation | "remaining" | What the host should conclude |
+|---|:---:|---|
+| Stopped / manual | 0 | not running |
+| Finite run, just completed | 0 | ran to completion |
+| **Infinite run, cycling right now** | 0 (?) | *actively running* — the opposite |
+
+**Options considered:**
+
+- **Report `remaining` as specified**, with a sentinel for infinite (`0xFFFFFFFF`
+  or `-1`). Works, but a sentinel is a thing to remember, and the field is still
+  a derived quantity the device computes on the host's behalf.
+- **Report `done` (`u32_cycles_done`) instead.** Always well defined — including
+  during an infinite run, which is exactly the case a soak campaign cares about,
+  since "how many cycles has it completed" *is* the question. The host computes
+  `remaining = repeat - done` itself whenever `repeat != 0`, and knows there is no
+  such thing as remaining when `repeat == 0`. No sentinel, no ambiguity.
+- **Report both.** Redundant — `remaining` is derivable from the other two fields.
+
+`done` also carries strictly more information: after a finite run completes it is
+the final tally, whereas `remaining` collapses to 0 and says nothing about what
+happened.
+
+---
+
+### I1 — Hook point
+
+**Status:** 🟡 · **Needs user:** no
+
+`v_debug_menu_service()` currently does `getchar()` → `printf("Cmd [%s]")` →
+`v_debug_menu_exec()`. The intercept goes between the read and the echo: if the
+byte is `ACON_ENTER`, call the REPL and `continue`, so the sentinel is never
+echoed and never reaches the menu dispatcher.
+
+**Leaning:** intercept in `v_debug_menu_service()`, one `if` before the echo,
+guarded by the **I3** build gate. Keeps the REPL out of `debug_menu.c` proper —
+`debug_menu.c` gains an include and three lines.
+
+**Resolution:** _pending_
+
+---
+
+### I2 — Op table and collision checking
+
+**Status:** 🟡 · **Needs user:** no
+
+Decided earlier: add registration-time collision checking — the reference has
+none, so two ops claiming the same letter means the second is unreachable and
+nothing says so.
+
+**Options:** compile-time (`_Static_assert` over a table — awkward for a
+duplicate-scan in C) versus a runtime scan at init that complains loudly on the
+console. Table home: single static table in the REPL module (reference) versus
+per-module registration.
+
+**Leaning:** single static table in the REPL module — SwitchTester has one
+subsystem worth driving today — plus a one-time O(n²) runtime scan at first entry
+that reports duplicates and builtin-letter squatting (**D2**). n is a dozen; the
+scan costs nothing and it runs on a test build.
+
+**Resolution:** _pending_
+
+---
+
+### I3 — Build gate
+
+**Status:** 🟡 · **Needs user:** no
+
+Reference gates the whole module on `TEST_HARNESS_ENABLED`, defaulting to 1.
+
+**Leaning:** same pattern, `ACON_ENABLED`, defaulting to 1, defined in
+`debug_config.h` alongside the other debug switches rather than in the module
+header — SwitchTester keeps its build switches in one place. Note that
+SwitchTester *is* a bench instrument, so there is no real release image to strip;
+the gate is for tidiness and for when this is promoted to the skeleton (**T3**).
+
+**Resolution:** _pending_
+
+---
+
+### I4 — Line-buffer sizing
+
+**Status:** 🟡 · **Needs user:** no
+
+Reference carries an 8 KiB-ish static line buffer because its `P` op takes a long
+hex-encoded PLAY string. SwitchTester's candidate ops (**D6**) are a letter and
+up to four small integers.
+
+**Leaning:** 96 bytes, static (not stack — the REPL runs on the main-loop stack
+inside an already-nested call). Overflow characters are dropped and the line
+still terminates on CR, but overflow must produce an `<ERR>` rather than
+silently executing a truncated command — the reference drops silently, which is
+exactly the failure mode **S1** exists to prevent.
+
+**Resolution:** _pending_
+
+---
+
+### I5 — Async-readiness contract
+
+**Status:** 🟡 · **Needs user:** no — but it is the row phase 1 is judged against
+
+Phase 1 ships no async machinery. The risk is that phase-1 code makes phase 2 a
+refactor instead of an addition — and worse, that it invalidates host scripts
+already written. Four obligations prevent that. All four are close to free in
+phase 1; all four are expensive to retrofit.
+
+1. **Emit sigils from the very first frame.** Every device→host line starts with
+   `=`, `!` or `#` (**D3**) even though `*` is unused in phase 1, and the phase-1
+   host runner (**T1**) must already skip lines whose sigil it does not
+   recognise. This is the one that actually matters: if phase 1 emits bare lines,
+   every host script written against it breaks the day the first `*` frame appears.
+2. **Ops never `printf` directly.** They emit through a framing helper —
+   `v_acon_emit(...)` — so that phase 2 can add the "not inside a response frame"
+   interlock in exactly one place. Ops that write to stdout freely cannot be
+   fenced later without touching every op.
+3. **The flush call site exists in phase 1.** `v_acon_flush_events()` is called at
+   the top of the wait-for-command state and is an empty function. Zero cost, and
+   it fixes the one architectural point — *where* async is allowed to happen —
+   while the loop is still small enough to see whole.
+4. **Response frames are bounded in phase 1.** Every response is one line, or
+   declares its `K<n>` payload count up front (**D3**). Emitting async "between
+   frames" is only well defined if a frame has a knowable end; a response that
+   just trails off gives phase 2 nowhere safe to insert.
+
+Explicitly *not* required in phase 1: the event record struct, the ring, the
+overflow counter, the subscription mask. Those are additive once the four above
+hold.
+
+**Leaning:** take all four. Combined they are perhaps thirty lines and one empty
+function.
+
+**Resolution:** _pending_
+
+---
+
+### I6 — State readback *(resolved)*
+
+**Status:** 🟢
+
+**Three 4-bit bitmaps**, from three independent sources:
+
+| Bitmap | Source | Meaning |
+|--------|--------|---------|
+| `level` | `GPIOx->IDR` | 0 = low, 1 = high — **valid in both modes** |
+| `mode` | `OCxM` via `LL_TIM_OC_GetMode()` | 0 = manual/forced, 1 = under TIM control |
+| `run` | `switch_cycle_t.u8_running` | 1 = cycling *and* repeat count not exhausted |
+
+**Why `IDR` and not a shadow.** `x_switch_out_get()` reads `OCxM` and returns
+`SWITCH_OUT_ON`/`OFF`/`TIMED` — deliberately hardware rather than a shadow, but
+it **cannot report a level for a cycling channel at all**, because while cycling
+`OCxM` holds `ACTIVE`/`INACTIVE` (act-on-match), never either *forced* value.
+`IDR` captures the pad every AHB cycle regardless of TIM2 owning the pin through
+its alternate function, so it reports the real driven level in either mode. For a
+*tester*, reading the pad is also the more honest measurement — what the pin is
+doing, not what the peripheral was told to do.
+
+**Why `run` as well as `mode`, given they agree in normal operation.** Both go to
+1 together at start and both go to 0 together on exhaustion, since
+`v_switch_cycle_halt()` forces the output LOW *and* clears `u8_running` in one
+place. So `run` is functionally redundant while everything works — and that is not
+the reason to carry it:
+
+- **It detects a silently refused start.** `v_switch_cycle_start()` returns
+  without any indication if the channel is already running, or if the stored
+  on/off times fall outside `SWITCH_CYCLE_TIME_MIN_US`/`MAX_US`. With **S13**'s
+  post-state response, a host issuing "start" and reading back `run` learns
+  immediately whether the command took effect — no separate query, no ambiguity.
+- **It is a genuine cross-check.** `mode` is read from the timer, `run` from
+  software state. The existing code comments already describe the `OCxM` read as
+  "an independent cross-check on `switch_cycle_t.u8_running`". Disagreement means
+  a bug, and on an instrument the ability to see that is worth four bits.
+
+**What three bitmaps still cannot express: repeat progress.** "How many cycles
+have completed" is a per-channel *count*, not a boolean, so it does not belong in
+a bitmap. **Resolved by giving it its own command** — **D6** command 6, the getter
+complement to the parameter setter — rather than by widening the read command.
+The reporting semantics are **S16**.
+
+**Implementation:** `u8_switch_out_level_bitmap()`, `u8_switch_out_mode_bitmap()`
+and `u8_switch_cycle_run_bitmap()` in `switch_out.c`, so the REPL, the menu and
+any later logging share one implementation.
 
 ---
 
@@ -1736,76 +1801,106 @@ it that way avoids linking newlib's float formatter into an M0+ image.
 
 ---
 
-### I1 — Hook point
+### I9 — `i_getline()` gains a silent `^C` exit *(resolved)*
 
-**Status:** 🟡 · **Needs user:** no
+**Status:** 🟢
 
-`v_debug_menu_service()` currently does `getchar()` → `printf("Cmd [%s]")` →
-`v_debug_menu_exec()`. The intercept goes between the read and the echo: if the
-byte is `ACON_ENTER`, call the REPL and `continue`, so the sentinel is never
-echoed and never reaches the menu dispatcher.
+**`i_getline()` is modified in place**: `^C` (0x03) becomes a third exit state,
+`GETLINE_CANCEL_EXIT`, returning **−2**. It emits **nothing** — no `<Cancel>`, no
+CRLF, no line-clearing erase. Silent by design, because in the automation console
+any unframed output would be noise on a machine-readable stream.
 
-**Leaning:** intercept in `v_debug_menu_service()`, one `if` before the echo,
-guarded by the **I3** build gate. Keeps the REPL out of `debug_menu.c` proper —
-`debug_menu.c` gains an include and three lines.
+```c
+if (u8_done == GETLINE_ESCAPE_EXIT) { return -1; }
+if (u8_done == GETLINE_CANCEL_EXIT) { return -2; }
+return i_len;
+```
 
-**Resolution:** _pending_
+**In-place modification is safe here, and it was not for `^X` — that is the whole
+reason `^C` is the right key.** `^C` is currently **unhandled**: it falls into the
+`< 0x20` silent-discard bucket, so nothing anywhere responds to it today. Adding a
+branch introduces *new* behaviour where there was none, rather than *changing*
+existing behaviour. `^X` already means "clear the line and keep going", and
+repurposing it would have been a regression — which is what the wrapper in the
+earlier option C existed to avoid. With `^C` there is nothing to avoid.
 
----
+**Consumers need no edit.** Exactly one call site exists in the repository —
+`u8_debug_entry_u32()` at `debug_menu.c:163` — and it already tests
+`if (i_length < 0)`. `^C` therefore cancels a menu entry exactly as ESC does,
+which is both universal convention and previously a no-op, so nothing regresses.
+`< 0` rather than `== GETLINE_ESCAPE_EXIT` is the house style for this check and
+is what keeps future exit states from breaking callers.
 
-### I2 — Op table and collision checking
+**Also settled by this:** ESC keeps meaning "cancel this line" inside the console,
+so an arrow key (ESC `[` `A`) discards the line and nothing worse — no mode
+change, no spurious frames. The hazard that option A carried is gone without
+paying for option C's wrapper or option D's duplicated reader.
 
-**Status:** 🟡 · **Needs user:** no
-
-Decided earlier: add registration-time collision checking — the reference has
-none, so two ops claiming the same letter means the second is unreachable and
-nothing says so.
-
-**Options:** compile-time (`_Static_assert` over a table — awkward for a
-duplicate-scan in C) versus a runtime scan at init that complains loudly on the
-console. Table home: single static table in the REPL module (reference) versus
-per-module registration.
-
-**Leaning:** single static table in the REPL module — SwitchTester has one
-subsystem worth driving today — plus a one-time O(n²) runtime scan at first entry
-that reports duplicates and builtin-letter squatting (**D2**). n is a dozen; the
-scan costs nothing and it runs on a test build.
-
-**Resolution:** _pending_
-
----
-
-### I3 — Build gate
-
-**Status:** 🟡 · **Needs user:** no
-
-Reference gates the whole module on `TEST_HARNESS_ENABLED`, defaulting to 1.
-
-**Leaning:** same pattern, `ACON_ENABLED`, defaulting to 1, defined in
-`debug_config.h` alongside the other debug switches rather than in the module
-header — SwitchTester keeps its build switches in one place. Note that
-SwitchTester *is* a bench instrument, so there is no real release image to strip;
-the gate is for tidiness and for when this is promoted to the skeleton (**T3**).
-
-**Resolution:** _pending_
+**Optional, still separate:** `i_getline()` handles `\b` but not `0x7F`, and
+terminals disagree on which Backspace sends. Unlike the `^C` addition, that one
+*does* change existing behaviour, so it stays a separate decision.
 
 ---
 
-### I4 — Line-buffer sizing
+#### Options considered *(kept for audit)*
 
-**Status:** 🟡 · **Needs user:** no
+**The starting facts** (`utils.c`, verified 2026-08-02). Before this change,
+`i_getline()` had exactly **two** exits:
 
-Reference carries an 8 KiB-ish static line buffer because its `P` op takes a long
-hex-encoded PLAY string. SwitchTester's candidate ops (**D6**) are a letter and
-up to four small integers.
+| Key | Handling | Return |
+|---|---|---|
+| **CR** `0x0D` | `GETLINE_NORMAL_EXIT` | `i_len` (0…limit) |
+| **ESC** `0x1B` | `GETLINE_ESCAPE_EXIT`, clears line, prints `<Cancel>` | **−1** |
 
-**Leaning:** 96 bytes, static (not stack — the REPL runs on the main-loop stack
-inside an already-nested call). Overflow characters are dropped and the line
-still terminates on CR, but overflow must produce an `<ERR>` rather than
-silently executing a truncated command — the reference drops silently, which is
-exactly the failure mode **S1** exists to prevent.
+Consumed without exiting: **BS** `0x08` (destructive backspace), **^X** `0x18`
+(clears the whole line, keeps reading), every other byte `< 0x20` including
+**^C** `0x03` (silently discarded), and `≥ 0x20` (appended, echoed).
 
-**Resolution:** _pending_
+So **ESC is the only special-case return**. `^X` is recognised but does not exit;
+`^C` is not recognised at all.
+
+**Consumers:** exactly one outside `utils.c` — `u8_debug_entry_u32()` at
+`debug_menu.c:163`, which treats *any* negative as "Cancelled - unchanged".
+
+**Options.**
+
+- **A — use ESC, change nothing.** ESC already returns −1 distinguishably, so
+  human→script needs no edit to shared code at all. `^X` keeps its present job
+  (clear the line, stay in the mode), which is a tidy split: `^X` cancels a line,
+  ESC leaves the mode. Symmetric too — 0x1B switches script→human, ESC switches
+  back.
+  *Cost:* ESC is the lead byte of every ANSI sequence a terminal sends. An arrow
+  key becomes ESC `[` `A` → mode switch, then `[` and `A` dispatch as commands.
+  The debug menu already has the milder form of this (an arrow key cancels an
+  entry), so it is a known wart — but here it also changes mode and emits two
+  spurious frames.
+- **B — no in-band switch at all.** Mode comes only from the entry argument
+  (**D10**); to change it, leave the console and re-enter. Zero code, zero risk,
+  no symmetry.
+- **C — `i_getline_ex(buf, limit, flags)`, `i_getline()` becomes a `flags = 0`
+  wrapper.** With `GETLINE_RETURN_ON_CANCEL`, `^X` becomes a third exit returning
+  −2. The existing caller is **not touched and not refactored** — it keeps
+  clear-and-retype byte-for-byte, because its call compiles to the same wrapper.
+  ESC keeps meaning "cancel this line", so arrow keys stay annoying rather than
+  becoming mode changes. Cost: one enumerator, one branch, one wrapper in a shared
+  file.
+- **D — private line reader in `automation_console.c`.** Total independence, and
+  freedom to handle `0x7F`, control opcodes and ANSI sequences properly. Cost:
+  ~40 duplicated lines that will drift from the menu's editing feel.
+
+**Note on modifying `i_getline()` in place:** it must not simply be changed to
+return on `^X`. The one existing caller reads any negative as cancel, so that
+would silently convert the menu's clear-and-retype into abandon-entry — a
+regression in a path nobody asked to change. Options C and D both avoid this; A
+avoids it by not touching anything.
+
+**Chosen: none of the four.** Switching the key from `^X` to `^C` removed the
+constraint they were all working around — `^C` had no existing behaviour to
+preserve, so the in-place edit that was unsafe for `^X` is safe for `^C`, and the
+wrapper (C) and the duplicated reader (D) both become unnecessary.
+
+The `0x7F`/DEL point raised alongside those options is unaffected by the choice and
+carries forward — see the resolution above.
 
 ---
 
@@ -1846,101 +1941,6 @@ generic; only the op table is application-specific, which is the split that make
 it portable — and the reason **D7** wants the HuIL routines kept out.
 
 **Resolution:** _deferred_
-
----
-
-### D8 — Wire encoding *(resolved)*
-
-**Status:** 🟢
-
-**ASCII in both directions**, with hex for any raw binary-coded data. Frames are
-printable lines, self-delimiting on CR — no escaping layer, no framing layer, and
-no CRC strictly required because a truncated line fails to parse rather than
-silently decoding to something plausible.
-
-**Options considered:** binary records (length-prefixed or COBS-framed with a
-CRC) would halve the bytes and remove formatting cost from the emit path, but
-need a real framing layer — a length prefix resynchronises badly after a lost
-byte, which is why **W1** names COBS specifically — and make the shared console
-unreadable to a human, on the very channel that also serves the debug menu.
-
-**Rationale.** The throughput argument that would have favoured binary evaporated
-once the rate profile was stated: a typical full cycle is ~1 second, so events
-arrive at ~2/second and frame size is irrelevant. What remains is the ability to
-watch an entire live host session — commands, responses and later events — in a
-terminal window, which is worth a great deal while bringing up a protocol that
-has to be trusted before it can be used to trust anything else.
-
-**Left open deliberately:** oscilloscope-style analog capture on the sense inputs
-would move real volumes of data and may justify revisiting this. **D3**'s frame
-sigil means a binary frame kind can be added alongside the ASCII ones without
-disturbing them — that is **W1**, and it is a bridge to cross when the sense
-design exists, not now.
-
----
-
-### Q1 — What the host runner must do *(resolved)*
-
-**Status:** 🟢
-
-The channel carries **two transaction kinds**, and the protocol is designed for
-both from v1:
-
-1. **Command / response.** Host sends one command, device answers with one
-   bounded response frame. Responses follow a fixed, easily parseable format.
-2. **Async events.** Device-originated transmissions the host did not request —
-   a cycled output changing state, a sense comparator transitioning, captured ADC
-   data, and any other system event the host wants to know about.
-
-**Rules locked with it:**
-
-- An async transmission is **never inserted into a response frame**. It occurs
-  only between the end of one response frame and the start of the next.
-- Both kinds carry a **lead disambiguation header**, with different identifiers,
-  so the host always knows which it is reading (**D3**).
-- Async events are **timestamped** (**S8**).
-- Events arising during a command/response exchange are **queued** and flushed
-  when the REPL returns to wait-for-command (**S6**, **S7**).
-
-**Rationale:** the earlier leaning — build a step sequencer and defer async push
-to v2 — was wrong for this instrument. A switch tester whose host cannot see
-*when* an edge happened is measuring nothing; and unsolicited output cannot be
-retrofitted into a strict request/response protocol without invalidating every
-host parser written against v1. Designing the frame identity for it now costs one
-sigil.
-
-**Consequence:** wish row **W2** is promoted into v1 as **S6**–**S9**.
-
----
-
-### D1 — Entry / exit protocol *(resolved)*
-
-**Status:** 🟢
-
-`ACON_ENTER` = 0xDA enters, printing `=~,V1`. `ACON_EXIT` = 0xA5 or
-a `Q` line exits, printing `=~,BYE`; `^C` (0x03) is an alias for `Q`
-and exits identically in either mode (**D10**). An idle timeout (**S3**) also exits,
-printing `!~,TMO` first. Both sentinels have the MS bit set so they cannot
-collide with a printable menu key and cannot be typed by accident from a
-terminal; they are a bit-complement pair (0x5A | 0x80 and ~0x5A).
-
-**Rationale:** carried from the reference implementation and confirmed when the
-backdoor was first sketched. The alternative — a printable escape sequence —
-costs namespace and can be produced accidentally by a human at a terminal.
-
----
-
-### S1 — Reject on error, structured error response *(resolved)*
-
-**Status:** 🟢
-
-Inherited from the transport plan's **S5**. A command whose reception was
-compromised is never partially executed: the parser fails it and the host gets an
-explicit, machine-readable error rather than silence or a plausible-looking wrong
-result. The exact error envelope is **D3**'s to specify.
-
-**Rationale:** on a test interface, a silently mis-parsed command can invalidate
-a whole run with nobody noticing.
 
 ---
 
