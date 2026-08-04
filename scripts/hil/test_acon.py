@@ -476,57 +476,31 @@ def t_engine_limits(con):
 
 @test("an over-long line is rejected, never executed truncated")
 def t_line_overflow(con):
-    """The line must exceed ACON_LINE_MAX (256) to trigger the guard.
+    """Sent as one blast, which is the point as much as the length is.
 
-    It is fed in chunks with gaps rather than as one blast, and that pacing is
-    NOT test tidiness -- it is working around a real device limit found by this
-    very test on 2026-08-03. The console's RX ring is 256 bytes (255 usable),
-    which is SMALLER than ACON_LINE_MAX, and the per-byte getchar() path cannot
-    drain a sustained 921600-baud stream. Blasted in one go, ~19% of the bytes
-    are lost to RX overrun -- including, sometimes, the terminating CR, so the
-    line never completes and no frame comes back at all.
-
-    Paced, the device keeps up and the overflow path is exercised honestly.
-    See t_burst_rx_limit below, which pins the limitation itself.
-    """
-    con.enter()
-    line = 'R' + ('0123456789' * 40)                          # 401 chars
-    for i in range(0, len(line), 32):
-        con.write_raw(line[i:i + 32])
-        time.sleep(0.02)
-    con.write_raw('\r')
-    f = con.read_frame()
-    check(f is not None, "no response to an over-long line")
-    check(not f.ok and f.code == 'OVF',
-          "expected '!~,OVF', got %r" % f.raw)
-    expect_ok(con.command('Z'), 'Z')                          # still in sync
-    con.leave()
-
-
-@test("known limit: a full-length line blasted at line rate overruns RX")
-def t_burst_rx_limit(con):
-    """Documents the defect rather than asserting the bug is absent.
-
-    Fails once the RX ring is enlarged past ACON_LINE_MAX and/or the console
-    reads through i16_uart_stream_rx_byte() instead of getchar() -- at which
-    point delete this test and drop the pacing from t_line_overflow.
+    The line exceeds ACON_LINE_MAX (512) and is written at full line rate. Both
+    matter: this test failed on 2026-08-03 because the RX ring was then 256 --
+    smaller than the longest legal line -- so a maximal frame could not be
+    received at all and the terminating CR was among the bytes lost. The ring
+    is now 1024, and a full-length line blasted at 921600 must arrive intact
+    and be rejected cleanly.
     """
     con.enter()
     before = con.command('E').tokens['E']
     con.drain()
-    con.write_raw('R' + ('0123456789' * 40) + '\r')           # one blast
-    con.read_frame(timeout=2.0)                               # usually nothing
-    time.sleep(0.5)
-    con.drain()
-    # Re-sync: the device may still be chewing through the backlog.
-    for _ in range(4):
-        con.command('')
-    con.drain()
+
+    con.write_raw('R' + ('0123456789' * 60) + '\r')           # 601 chars, one write
+    f = con.read_frame()
+    check(f is not None, "no response to an over-long line")
+    check(not f.ok and f.code == 'OVF',
+          "expected '!~,OVF', got %r" % f.raw)
+
+    expect_ok(con.command('Z'), 'Z')                          # still in sync
     after = con.command('E').tokens['E']
-    check(after > before,
-          "expected RX overrun errors from a line-rate burst "
-          "(%d -> %d) -- if this now passes cleanly, the limit is fixed "
-          "and this test should be deleted" % (before, after))
+    check(after == before,
+          "a full-length burst cost %d transport errors -- the RX ring is "
+          "undersized again (was 1024 against ACON_LINE_MAX 512)"
+          % (after - before))
     con.leave()
 
 
