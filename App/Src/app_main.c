@@ -249,6 +249,22 @@ void v_app_polling_task(void)
     v_process_next_job();
 }
 
+/*
+ * Boot indicator: a 250 ms blip on the Nucleo LED as the last thing before the
+ * main loop. Visible proof the board reset and got all the way through init --
+ * useful when the console is not attached, or when the console is exactly what
+ * you are trying to diagnose.
+ *
+ * Blocking on purpose. Nothing needs servicing between init finishing and the
+ * loop starting, and a plain HAL_Delay keeps it obvious.
+ */
+static void v_boot_indicator(void)
+{
+    HAL_GPIO_WritePin(NUCLEO_LED_GPIO_Port, NUCLEO_LED_Pin, GPIO_PIN_SET);
+    HAL_Delay(250);
+    HAL_GPIO_WritePin(NUCLEO_LED_GPIO_Port, NUCLEO_LED_Pin, GPIO_PIN_RESET);
+}
+
 NEVER_RETURNS void app_main(void)
 {
     v_job_queue_init(NULL, NULL, 0);
@@ -256,6 +272,7 @@ NEVER_RETURNS void app_main(void)
     v_print_startup_banner();
     v_hardware_init();
     v_debug_menu_init();
+    v_boot_indicator();
 
     while (1)
     {
