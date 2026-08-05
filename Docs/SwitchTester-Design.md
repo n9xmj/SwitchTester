@@ -1,11 +1,12 @@
 # SwitchTester — Design Notes
 
-> Status: **manual switch control, timer-driven cycling, and the `uart_stream`
-> console transport are implemented.** `uart_stream` is bench-verified in
-> single-instance mode (2026-08-02); cycling builds clean but is **not yet
-> bench-verified**. The sense front-end and the HIL/script REPL are designed but
-> not built — each is banked for its own planning pass below.
-> Last touched 2026-08-02.
+> Status: **manual switch control, timer-driven cycling, the `uart_stream`
+> console transport, and the automation console (phase 1) are implemented and
+> bench-verified.** A 47-test HIL suite drives the automation console over the
+> real link and passes. `uart_stream` is verified on seven UART instances, not
+> just the console. Remaining: automation-console **phase 2** (async events,
+> designed but not built) and the **sense front-end** (open-ended, not designed).
+> Last touched 2026-08-04.
 
 ## Concept
 
@@ -303,45 +304,105 @@ then repeat/on/off per channel. IDs are contiguous so
 so a virgin pool creates all thirteen in one flash write. Defaults: on 500000 µs,
 off 500000 µs, repeat 0, pulse width 100 ms. About 130 of the 512-byte pool.
 
+## Done — cycler and automation console
+
+### Timer-driven cycling — bench-verified 2026-08-03
+
+Runs at the programmed rate, the completed-cycle count advances, and the level
+bitmap read back from GPIO `IDR` confirms the pad really toggles rather than the
+software merely claiming it does. Decision log:
+[`planning/switch-cycling-plan.md`](planning/switch-cycling-plan.md).
+
+### Automation console, phase 1 — bench-verified 2026-08-03
+
+`App/{Inc,Src}/automation_console.*`. Named for what it is: **not** a test
+harness but the interface *for* one, and not test-only — it is how an external
+host drives the instrument. Full decision log:
+[`planning/automation-console-plan.md`](planning/automation-console-plan.md)
+(30 green, 9 deferred to phase 2, no open rows).
+
+Entered from the debug menu — the `ACON_ENTER` (0xDA) sentinel selects SCRIPT
+mode, the `[a]` menu key selects HUMAN mode — so the entry path carries the
+intent and neither common case needs a mode command. Both modes share one
+dispatcher and one response format, so a command tried by hand behaves exactly
+as it will from a script.
+
+Wire format: ASCII, comma-separated, hex numerics, one line per response unless
+the header declares `K<n>` payload lines. Sigil in column 0 — `=` ok, `!` error,
+`+` payload, `*` reserved for phase-2 events, `#` ignorable. CR terminates and
+**LF is discarded everywhere**, which is what lets a bare CR be a no-op that
+answers without a CRLF host getting a spurious second frame per command.
+
+Nine commands: `S` set levels (Select/Set/Clear, BSRR-style), `R` read state,
+`W`/`G` write and get cycle parameters, `C`/`X` start and stop cycling, `P`
+persist to NVM, `E` transport error counters, `U` UART loopback stress test.
+Plus `V` `L` `?` `Z` `Q` `^C` builtins.
+
+In SCRIPT mode the protocol path does not touch stdio in either direction —
+`v_acon_emit()` out and `i16_uart_stream_rx_byte()` in, both straight to
+`uart_stream`. That is what lets stdout be suppressed wholesale during a session,
+and it makes moving the console to a different UART a matter of passing a
+different handle.
+
+### HIL test suite — `scripts/hil/`
+
+`acon.py` is the host driver; `test_acon.py` is 47 tests over the SCRIPT-facing
+side, all passing against the board:
+
+```
+python scripts/hil/test_acon.py --port COM3          # add --slow for the 15 s timeout test
+```
+
+It has already earned its keep twice: it found the RX ring being *smaller* than
+the longest legal command line, and it characterised the UART performance
+envelope below.
+
+### UART performance envelope — measured 2026-08-04
+
+The `U` command loopback-tests any bindable UART. Results on this bench, 64 B to
+8 kB bursts, 4 per size, all channels jumpered Tx↔Rx with identical 10 cm wires:
+
+| UART | FIFO | baud | result |
+|---|:--:|---|---|
+| USART1 | yes | 921600 | lossless, 88 kB/s — 96% of line rate |
+| LPUART1 | yes | 921600 | lossless, 83 kB/s — 90% |
+| LPUART2 | yes | 921600 | lossless, 88 kB/s — 96% |
+| USART3 | yes | 115200 | lossless — 99% |
+| USART4 | **no** | 115200 | lossless — 99% |
+| USART5 | **no** | 921600 | **fails**; clean at ≤230400, marginal at 460800 |
+| USART6 | no | — | not jumpered |
+
+**USART4/5/6 have no hardware FIFO** on this part — only USART1/2/3 and
+LPUART1/2 do, which is why CubeMX emits `HAL_UARTEx_Set*FifoThreshold()` for
+exactly those five. Without a FIFO the ISR must read `RDR` within **one
+character time** — 10.85 µs at 921600 — and USART5 shares
+`USART3_4_5_6_LPUART1_IRQn` with four other UARTs, so every received byte also
+costs four idle `HAL_UART_IRQHandler()` passes. The measured ceiling tracks the
+character-time budget exactly: 43 µs/char clean, 21.7 µs marginal, 10.85 µs
+hopeless.
+
+Ruled out by experiment, so nobody re-chases them: the wire (replaced, identical
+result), the pins (PC12→PB1 verified by direct GPIO drive with a pull-down), the
+drive strength (`VERY_HIGH` changed nothing), which end transmits (`CR2.SWAP`
+changed nothing), a board-level second driver (PB1 ignores PB8/PB9, holds its
+pull-up), and the divider (`BRR` identical to USART1, and in *self*-loopback a
+divider error cancels anyway).
+
+**Practical rule: FIFO-less instances are good to 230400; the rest to 921600.**
+Going faster on a FIFO-less instance means DMA rather than tuning — circular RX
+DMA plus the IDLE-line interrupt, with the fill level read from `CNDTR`
+(`buffer_size - CNDTR`), which removes the per-byte interrupt entirely. Costs two
+of twelve DMA channels per UART. Not needed by anything today.
+
 ## Banked for later — each gets its own planning pass
 
-Deliberately out of scope until planned properly, in intended order:
+### 1. Automation console, phase 2 — async events
 
-### 0. Bench-test and debug the cycler
-
-Immediate next step. Code is written and builds clean; nothing has been run on
-hardware yet.
-
-### 1. HIL / script REPL
-
-**Transport is done.** `uart_stream` is ported, wired and bench-verified — see
-[`planning/uart-stream-integration-plan.md`](planning/uart-stream-integration-plan.md).
-The console now runs on interrupt-driven TX/RX rings
-(`DEV_CONFIG_CONSOLE_TX_BUF_SIZE` 1024, RX 256), with HAL kept out of USART2's
-interrupt path entirely while still owning every other UART.
-
-What remains is the REPL layered on top of it
-
-: a hook in `v_debug_menu_service()` that **bypasses the menu
-system**, letting a host-side runner — a Python script driving a simple REPL —
-control the tester over the *same* UART the menu uses, for a **deterministic
-script interface**. Decisions already taken: drop `toupper()` from command
-dispatch, open the command namespace to the full printable range `0x20..0x7E`,
-add registration-time collision checking, expose `uart_stream`'s error count as
-a builtin the host can assert on, and keep the `HARNESS_ENTER`/`HARNESS_EXIT`
-sentinels plus an idle timeout (pattern from `LED_Strip_Controller_G474`'s
-`test_harness.c`).
-
-Deliberately sequenced **before** the sense work: once the cycler is trustworthy,
-scripted control is what makes long soak campaigns and phase sweeps practical,
-and the sense work will want that automation already in place to drive it.
-
-Being computer-driven rather than human-driven, this may need a proper
-interrupt-driven circular-buffer UART manager; the user's existing `uart_stream`
-API is the candidate to import. Reference implementation of both `uart_stream`
-and the HIL-runner-to-debug-menu hook:
-`C:\STM32\CubeSource\LED_Strip_Controller_G474`. **Not to be followed slavishly**
-— it is one possible approach among several.
+Designed and fully decided; not built. Device-originated frames (cycle
+transitions, sense edges, captured data), never interleaved into a response,
+queued while a transaction is in flight and flushed between frames, timestamped
+from `TIM2->CNT` at 1 µs. Rows **S6**–**S9**, **S12**, **I5** in the
+automation-console plan carry the design.
 
 ### 2. Sense-input operation
 

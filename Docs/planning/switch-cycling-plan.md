@@ -12,8 +12,10 @@ manual-drive module) · menu in `App/Src/debug_menu.c`.
 contract. This plan is the negotiation log; sync the spec from it once decisions
 land (**T2**).
 
-**Status:** IMPLEMENTING — board fully green, code written and building clean
-(2026-08-01). Awaiting bench verification.
+**Status:** DONE — board fully green; **bench-verified 2026-08-03**. Runs at the
+programmed rate, the completed-cycle count advances, and the GPIO `IDR` readback
+confirms the pad really toggles. Exercised from the automation console (`W`/`C`/
+`G`/`X`) and covered by the HIL suite in `scripts/hil/`.
 
 **Planning model:** [`decision-log-model.md`](decision-log-model.md). No Must-Ship-Gap
 fence — just a Big Board + wish list.

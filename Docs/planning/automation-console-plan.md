@@ -11,9 +11,11 @@ operation.
 
 - **Code home:** `App/Src/automation_console.c` + `App/Inc/automation_console.h` (**D7**)
 - **Transport:** [`uart-stream-integration-plan.md`](uart-stream-integration-plan.md) — **done and bench-verified**
-- **Parent spec:** [`../SwitchTester-Design.md`](../SwitchTester-Design.md) § "HIL / script REPL"
+- **Parent spec:** [`../SwitchTester-Design.md`](../SwitchTester-Design.md) § "Automation console, phase 1"
+- **Code:** `App/{Inc,Src}/automation_console.*`, `App/{Inc,Src}/uart_stress.*`
+- **Tests:** `scripts/hil/test_acon.py` — 47 tests, all passing
 - **Reference implementation:** `C:\STM32\CubeSource\LED_Strip_Controller_G474\App\{Src,Inc}\test_harness.{c,h}` — *a* solution, not *the* solution
-- **Status:** PLANNING
+- **Status:** **PHASE 1 BUILT AND BENCH-VERIFIED (2026-08-03/04)**; phase 2 designed, not built
 - **Working mode:** one question at a time in chat; everything else parks on the board
 
 ---
@@ -90,7 +92,7 @@ exists.
 | **I8** | 🟢 | `v_acon_emit()` — the frame emitter; sigil is an argument, not a convention |
 | **I9** | 🟢 | `i_getline()` gains a silent `^C` exit returning −2; no consumer edits |
 | **T1** | 🔵 | Host-side Python runner — deferred until there is code to drive |
-| **T2** | 🔵 | Sync decisions back into `SwitchTester-Design.md` — after the code lands |
+| **T2** | 🟢 | Design doc synced 2026-08-04 |
 | **T3** | 🔵 | Promote the REPL to `G0B1_Skeleton` alongside `uart_stream` |
 
 ### Wish list (v2+)
@@ -1990,15 +1992,19 @@ Cannot be written until the framing is chosen.
 
 ---
 
-### T2 — Sync to the design doc
+### T2 — Sync to the design doc *(resolved)*
 
-**Status:** 🔵 — deferred until the code lands
+**Status:** 🟢
 
-`Docs/SwitchTester-Design.md` § "HIL / script REPL" currently carries the
-pre-decision sketch, including a stale paragraph about possibly needing an
-interrupt-driven UART manager (`uart_stream` is done). Once the board is mostly
-green, replace that section with the settled contract and link here.
+Done 2026-08-04. `Docs/SwitchTester-Design.md` now describes the cycler and the
+automation console as built and bench-verified rather than banked, carries the
+phase-1 command set and wire format, points at the HIL suite, and records the
+measured UART performance envelope. `switch-cycling-plan.md` moved from
+IMPLEMENTING to DONE.
 
+The stale wording it replaced had survived several sessions and was the single
+most misleading thing in the repo — it described work as unbuilt that had been
+running on the bench for a day.
 ---
 
 ### T3 — Promote to `G0B1_Skeleton`
