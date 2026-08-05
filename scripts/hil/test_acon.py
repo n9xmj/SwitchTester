@@ -504,6 +504,32 @@ def t_line_overflow(con):
     con.leave()
 
 
+@test("RX keeps up: 1.5 kB at line rate costs no transport errors")
+def t_rx_headroom(con):
+    """Guards the headroom above ACON_LINE_MAX, not just the exact limit.
+
+    1.5 kB is ~3x the longest legal line, blasted in one write at 921600. It
+    passes only because the console reads uart_stream's ring directly; through
+    getchar() this shape of burst lost 31% of its bytes (measured 2026-08-03).
+    A regression to the stdio read path, or a shrunken RX ring, fails here.
+    """
+    con.enter()
+    before = con.command('E').tokens['E']
+    con.drain()
+
+    con.write_raw('R' + ('0123456789' * 150) + '\r')          # 1501 chars
+    f = con.read_frame()
+    check(f is not None, "no response to a 1.5 kB burst")
+    check(not f.ok and f.code == 'OVF', "expected '!~,OVF', got %r" % f.raw)
+
+    expect_ok(con.command('Z'), 'Z')
+    after = con.command('E').tokens['E']
+    check(after == before,
+          "1.5 kB burst cost %d transport errors -- RX is not keeping up"
+          % (after - before))
+    con.leave()
+
+
 @test("error frames still carry the state payload")
 def t_error_carries_state(con):
     con.enter()
