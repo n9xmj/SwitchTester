@@ -1786,9 +1786,15 @@ distinction (**D10**); no new flag is needed.
 **D3**'s `#` sigil stays defined as belt-and-braces — it costs nothing and gives
 anything that ever writes directly to the port a harmless way to be ignored.
 
-**Consequence worth recording: the console no longer depends on stdio at all.**
-Its input is `getchar()` only in SCRIPT mode and its output is `uart_stream`
-throughout, so pointing it at a *different* UART becomes a matter of passing a
+**Consequence worth recording: in SCRIPT mode the console does not depend on
+stdio in either direction.** Output goes through `v_acon_emit()` and, since
+2026-08-04, input through `i16_uart_stream_rx_byte()` — both straight to
+`uart_stream`. (An earlier version of this paragraph claimed independence while
+input still went through `getchar()`; that was wrong until the read path
+followed.) HUMAN mode is deliberately the opposite and uses stdio both ways, as
+`i_getline()` echoes through `printf`.
+
+Pointing the console at a *different* UART is therefore a matter of passing a
 different handle. Not wanted for this pass, but it turns wish row **W4** — the
 console on a second port while the first stays human — from a redesign into a
 parameter.

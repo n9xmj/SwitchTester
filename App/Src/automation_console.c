@@ -6,11 +6,18 @@
  *
  * Two invariants hold this together and are easy to break by accident:
  *
- *  1. Nothing in here ever calls printf. Output goes through v_acon_emit(),
- *     which writes to uart_stream directly, bypassing stdio entirely. That is
- *     what lets stdout be suppressed wholesale in SCRIPT mode (I7), and it is
- *     also why the console could be moved to a different UART by passing a
- *     different handle.
+ *  1. In SCRIPT mode the protocol path does not touch stdio in EITHER
+ *     direction. Output goes through v_acon_emit() and input through
+ *     i16_acon_rx_byte(), and both talk to uart_stream directly. That is what
+ *     lets stdout be suppressed wholesale during a session (I7) without
+ *     silencing the console itself, it is why the reader can keep pace with the
+ *     wire, and it is why moving the console to a different UART is a matter of
+ *     passing a different handle rather than a redesign.
+ *
+ *     HUMAN mode is the deliberate opposite: i_getline() reads through stdio
+ *     and echoes through printf, which is the whole point of that mode, and
+ *     stdout stays enabled for it. The one printf in this file -- the op-table
+ *     conflict report -- is on that path only, never on the protocol path.
  *
  *  2. The sigil is an argument to v_acon_emit(), not part of the format string.
  *     "every device->host line carries a sigil" is thereby a property of the
