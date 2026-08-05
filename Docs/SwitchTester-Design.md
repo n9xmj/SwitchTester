@@ -389,10 +389,9 @@ pull-up), and the divider (`BRR` identical to USART1, and in *self*-loopback a
 divider error cancels anyway).
 
 **Practical rule: FIFO-less instances are good to 230400; the rest to 921600.**
-Going faster on a FIFO-less instance means DMA rather than tuning — circular RX
-DMA plus the IDLE-line interrupt, with the fill level read from `CNDTR`
-(`buffer_size - CNDTR`), which removes the per-byte interrupt entirely. Costs two
-of twelve DMA channels per UART. Not needed by anything today.
+Going faster on a FIFO-less instance means DMA rather than tuning — the technique
+is banked in [`UART-DMA-Streaming.md`](UART-DMA-Streaming.md). **Not planned**;
+nothing needs it today.
 
 ## Banked for later — each gets its own planning pass
 
