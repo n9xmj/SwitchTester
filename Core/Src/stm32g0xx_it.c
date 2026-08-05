@@ -221,7 +221,12 @@ void TIM14_IRQHandler(void)
 void USART1_IRQHandler(void)
 {
   /* USER CODE BEGIN USART1_IRQn 0 */
-
+  /* Same pattern as the USART2 vector below: b_uart_stream_service_uart()
+   * services the UART if uart_stream owns it and forwards to HAL internally if
+   * it does not, so the generated call must NOT also run -- hence the return.
+   * Without this, binding USART1 at runtime would leave it unserviced. */
+  b_uart_stream_service_uart(&huart1);
+  return;
   /* USER CODE END USART1_IRQn 0 */
   HAL_UART_IRQHandler(&huart1);
   /* USER CODE BEGIN USART1_IRQn 1 */
@@ -257,7 +262,17 @@ void USART2_LPUART2_IRQHandler(void)
 void USART3_4_5_6_LPUART1_IRQHandler(void)
 {
   /* USER CODE BEGIN USART3_4_5_6_LPUART1_IRQn 0 */
-
+  /* One call per UART on this vector, mirroring the generated list below.
+   * Each forwards to HAL internally for a UART uart_stream does not own, so
+   * the generated calls must NOT also run -- hence the return. Five UARTs
+   * share this vector, so all five have to be offered here or binding any one
+   * of them would silence the rest. */
+  b_uart_stream_service_uart(&huart3);
+  b_uart_stream_service_uart(&huart4);
+  b_uart_stream_service_uart(&huart5);
+  b_uart_stream_service_uart(&huart6);
+  b_uart_stream_service_uart(&hlpuart1);
+  return;
   /* USER CODE END USART3_4_5_6_LPUART1_IRQn 0 */
   HAL_UART_IRQHandler(&huart3);
   HAL_UART_IRQHandler(&huart4);

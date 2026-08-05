@@ -36,6 +36,7 @@
 #include "stdio_retarget.h"         /* h_stdio_retarget_get_stream */
 #include "switch_out.h"
 #include "nvmparams.h"
+#include "uart_stress.h"
 #include "automation_console.h"
 
 /*============================================================================
@@ -617,6 +618,101 @@ static void v_acon_op_errors(char c_op, char *ap_c_arg[], uint8_t u8_argc)
                 (unsigned long) u32_uart_stream_get_error_count(h_stream));
 }
 
+/*
+ * U -- loopback stress test on one uart_stream-bindable UART.
+ *
+ *   U,<index>[,<first_size>[,<last_size>[,<bursts>]]]      all sizes hex
+ *
+ * Multi-line: the header declares K<n> and one payload line per size step
+ * follows, so a host reads a known count rather than guessing where the run
+ * ended. Steps completed before a mid-run failure are still reported.
+ *
+ * This blocks for the whole run -- seconds, at the lower baud rates -- and the
+ * polling task is deliberately not pumped meanwhile. A host must allow for
+ * that; the ordinary command timeout will not be enough.
+ */
+static void v_acon_op_uart_stress(char c_op, char *ap_c_arg[], uint8_t u8_argc)
+{
+    static uart_stress_step_t ax_step[UART_STRESS_MAX_STEPS];
+    uart_stress_result_t x_result;
+    uint32_t u32_index, u32_first, u32_last, u32_bursts;
+    uint8_t u8_steps = 0U;
+    uint8_t u8_i;
+    char ac_op[4];
+
+    if ((u8_argc < 1u) || !b_acon_arg_u32(ap_c_arg[0], &u32_index))
+    {
+        v_acon_err(c_op, ACON_ERR_ARGS);
+        return;
+    }
+
+    u32_first  = UART_STRESS_DEFAULT_FIRST;
+    u32_last   = UART_STRESS_DEFAULT_LAST;
+    u32_bursts = UART_STRESS_DEFAULT_BURSTS;
+
+    if ((u8_argc >= 2u) && !b_acon_arg_u32(ap_c_arg[1], &u32_first))
+    {
+        v_acon_err(c_op, ACON_ERR_ARGS);
+        return;
+    }
+    if ((u8_argc >= 3u) && !b_acon_arg_u32(ap_c_arg[2], &u32_last))
+    {
+        v_acon_err(c_op, ACON_ERR_ARGS);
+        return;
+    }
+    if ((u8_argc >= 4u) && !b_acon_arg_u32(ap_c_arg[3], &u32_bursts))
+    {
+        v_acon_err(c_op, ACON_ERR_ARGS);
+        return;
+    }
+
+    if ((u32_index > 0xFFuL) || (u32_first > 0xFFFFuL)
+        || (u32_last > 0xFFFFuL) || (u32_bursts > 0xFFuL))
+    {
+        v_acon_err(c_op, ACON_ERR_RANGE);
+        return;
+    }
+
+    x_result = x_uart_stress_run((uint8_t) u32_index,
+                                 (uint16_t) u32_first, (uint16_t) u32_last,
+                                 (uint8_t) u32_bursts,
+                                 ax_step, (uint8_t) UART_STRESS_MAX_STEPS,
+                                 &u8_steps);
+
+    if (x_result != UART_STRESS_OK)
+    {
+        static const char *apc_why[] =
+            { "OK", "ARG", "CONS", "BUSY", "MEM", "LOOP" };
+        v_acon_emit(ACON_SIG_ERR, "%s,%s,I%lX",
+                    pc_acon_op_name(c_op, ac_op),
+                    apc_why[(unsigned) x_result],
+                    (unsigned long) u32_index);
+        return;
+    }
+
+    /* Header carries what the steps are relative to: which UART, at what baud.
+     * Without the baud a byte count is uninterpretable. */
+    v_acon_emit(ACON_SIG_OK, "%s,K%X,I%lX,B%lX",
+                pc_acon_op_name(c_op, ac_op),
+                (unsigned) u8_steps,
+                (unsigned long) u32_index,
+                (unsigned long) u32_uart_stress_baud((uint8_t) u32_index));
+
+    for (u8_i = 0U; u8_i < u8_steps; u8_i++)
+    {
+        const uart_stress_step_t *p_x = &ax_step[u8_i];
+
+        v_acon_emit(ACON_SIG_PAYLOAD, "S%X,N%X,T%lX,R%lX,X%lX,E%lX,M%lX",
+                    (unsigned) p_x->u16_size,
+                    (unsigned) p_x->u16_bursts,
+                    (unsigned long) p_x->u32_sent,
+                    (unsigned long) p_x->u32_received,
+                    (unsigned long) p_x->u32_mismatch,
+                    (unsigned long) p_x->u32_errors,
+                    (unsigned long) p_x->u32_elapsed_ms);
+    }
+}
+
 /* V -- identity. Enough for a host to pin exactly what it is talking to. */
 static void v_acon_op_version(char c_op, char *ap_c_arg[], uint8_t u8_argc)
 {
@@ -655,6 +751,7 @@ static const acon_op_t s_ax_acon_op[] =
     { 'X',              v_acon_op_cycle_stop,   "stop cycling: mask"           },
     { 'P',              v_acon_op_persist,      "persist params to NVM"        },
     { 'E',              v_acon_op_errors,       "transport error count"        },
+    { 'U',              v_acon_op_uart_stress,  "uart loopback stress: idx[,first,last,bursts]" },
     { ACON_OP_VERSION,  v_acon_op_version,      "identity"                     },
     { ACON_OP_LIST,     v_acon_op_list,         "list ops"                     },
     { ACON_OP_LIST_ALT, v_acon_op_list,         "list ops"                     },

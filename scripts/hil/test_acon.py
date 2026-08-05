@@ -34,6 +34,7 @@ from acon import (AutomationConsole, ProtocolError, Frame,
 # ---------------------------------------------------------------------------
 
 TESTS = []
+ARGS = None          # parsed command line, for tests that need bench specifics
 
 
 def test(name):
@@ -530,6 +531,64 @@ def t_rx_headroom(con):
     con.leave()
 
 
+@test("U: refuses the console UART and a bad index")
+def t_uart_stress_guards(con):
+    con.enter()
+    f = expect_err(con.command('U,1'), 'U', 'CONS')     # index 1 is USART2
+    check(f.tokens.get('I') == 1, "should name the index: %r" % f.raw)
+    expect_err(con.command('U,9'), 'U', 'ARG')
+    expect_err(con.command('U'), 'U', 'ARG')
+    con.leave()
+
+
+@test("U: unwired UART is reported as no-loopback, not as total loss")
+def t_uart_stress_no_loopback(con):
+    """Index 6 (USART6, PB8/PB9) is deliberately not jumpered on this bench.
+    The probe must say so plainly rather than grinding through eight steps of
+    zeroes -- a missing jumper is the likeliest cause of a dead run."""
+    con.enter()
+    expect_err(con.command('U,6', timeout=15.0), 'U', 'LOOP')
+    con.leave()
+
+
+@test("U: loopback run is lossless at every size")
+def t_uart_stress_run(con):
+    con.enter()
+    f = con.command('U,%X' % ARGS.uart, timeout=90.0)
+    check(f is not None and f.ok,
+          "stress run on index %d failed: %r"
+          % (ARGS.uart, f.raw if f else None))
+    steps = f.tokens.get('K')
+    check(steps and steps > 0, "expected step payload lines: %r" % f.raw)
+    check(len(f.payload) == steps,
+          "declared K%d, got %d lines" % (steps, len(f.payload)))
+    check(f.tokens.get('B', 0) > 0, "header should carry the baud: %r" % f.raw)
+
+    for line in f.payload:
+        d = dict((t[0], int(t[1:], 16)) for t in line.split(','))
+        check(d['T'] == d['R'],
+              "size %d: sent %d but received %d" % (d['S'], d['T'], d['R']))
+        check(d['X'] == 0, "size %d: %d mismatched bytes" % (d['S'], d['X']))
+        check(d['E'] == 0, "size %d: %d transport errors" % (d['S'], d['E']))
+    con.leave()
+
+
+@test("U: explicit size range controls the step count")
+def t_uart_stress_sizes(con):
+    con.enter()
+    f = con.command('U,%X,40,200,2' % ARGS.uart, timeout=60.0)   # 64..512, 2 bursts
+    check(f is not None and f.ok, "run failed: %r" % (f.raw if f else None))
+    check(f.tokens.get('K') == 4,
+          "64,128,256,512 is 4 steps, got K%r" % f.tokens.get('K'))
+    sizes = [int(l.split(',')[0][1:], 16) for l in f.payload]
+    check(sizes == [0x40, 0x80, 0x100, 0x200],
+          "unexpected size ladder: %r" % sizes)
+    for line in f.payload:
+        d = dict((t[0], int(t[1:], 16)) for t in line.split(','))
+        check(d['N'] == 2, "expected 2 bursts per size, got %d" % d['N'])
+    con.leave()
+
+
 @test("error frames still carry the state payload")
 def t_error_carries_state(con):
     con.enter()
@@ -583,7 +642,12 @@ def main():
     ap.add_argument('--trace', action='store_true', help='dump the wire traffic')
     ap.add_argument('--slow', action='store_true', help='include timing tests')
     ap.add_argument('-k', dest='filter', default=None, help='substring filter')
+    ap.add_argument('--uart', type=int, default=0,
+                    help='target-table index to stress-test (default 0 = USART1)')
     args = ap.parse_args()
+
+    global ARGS
+    ARGS = args
 
     selected = [(n, f) for (n, f) in TESTS
                 if (args.slow or not getattr(f, 'slow', False))
