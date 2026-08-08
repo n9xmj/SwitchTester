@@ -41,6 +41,8 @@
 #include "stdio_retarget.h"         /* h_stdio_retarget_get_stream */
 #include "automation_console.h"
 
+#if ACON_ENABLED
+
 /*============================================================================
  * STANDALONE FALLBACK
  *
@@ -600,3 +602,5 @@ uint8_t u8_automation_console_mutes_stdout(void)
      * and there is no host parser to protect there. */
     return (uint8_t) (s_u8_session_active && (s_x_mode == ACON_MODE_SCRIPT));
 }
+
+#endif /* ACON_ENABLED */

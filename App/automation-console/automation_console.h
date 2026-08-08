@@ -62,6 +62,22 @@
 
 #include <stdint.h>
 
+#include "device_config.h"          /* optional DEV_CONFIG_ENABLE_AUTOMATION_CONSOLE */
+
+/*----------------------------------------------------------------------------
+ * Build switch. A project may set DEV_CONFIG_ENABLE_AUTOMATION_CONSOLE to 0 in
+ * device_config.h to compile the console out entirely -- the two .c bodies drop
+ * to nothing and the public entry points below become inert inline stubs, so no
+ * call site needs an #ifdef. Absent means enabled, so a project that never
+ * mentions the flag (e.g. SwitchTester) is unaffected.
+ *--------------------------------------------------------------------------*/
+
+#if !defined(DEV_CONFIG_ENABLE_AUTOMATION_CONSOLE) || (DEV_CONFIG_ENABLE_AUTOMATION_CONSOLE != 0)
+#define ACON_ENABLED 1
+#else
+#define ACON_ENABLED 0
+#endif
+
 /*============================================================================
  * PUBLIC API -- session entry (debug_menu) and stdout gating (stdio_retarget)
  *==========================================================================*/
@@ -95,7 +111,11 @@ acon_mode_t;
  * @param x_mode  Which reader to use. The caller knows: a sentinel byte came
  *                from a machine, a menu key came from a person.
  */
+#if ACON_ENABLED
 extern void v_automation_console_run(acon_mode_t x_mode);
+#else
+static inline void v_automation_console_run(acon_mode_t x_mode) { (void) x_mode; }
+#endif
 
 /**
  * @brief True while a session is in progress and stdout must stay suppressed.
@@ -103,7 +123,11 @@ extern void v_automation_console_run(acon_mode_t x_mode);
  * SCRIPT mode only. Human mode leaves stdout enabled -- i_getline() echoes
  * through printf, and there is no host parser to protect.
  */
+#if ACON_ENABLED
 extern uint8_t u8_automation_console_mutes_stdout(void);
+#else
+static inline uint8_t u8_automation_console_mutes_stdout(void) { return 0u; }
+#endif
 
 /*============================================================================
  * COMMAND-AUTHOR API -- everything below is for automation_commands.c

@@ -29,6 +29,8 @@
 #include "uart_stress.h"
 #include "automation_console.h"
 
+#if ACON_ENABLED
+
 /*============================================================================
  * APPLICATION ERROR CODES  (generic UNK/ARG/RNG/OVF come from the core header)
  *==========================================================================*/
@@ -578,3 +580,5 @@ const acon_op_t g_x_acon_command[] =
 
 const uint8_t g_u8_acon_command_count =
     (uint8_t) (sizeof(g_x_acon_command) / sizeof(g_x_acon_command[0]));
+
+#endif /* ACON_ENABLED */
