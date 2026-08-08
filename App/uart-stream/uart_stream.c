@@ -112,10 +112,28 @@ static inline void v_uart_stream_tx_arm(uart_stream_instance_t *p_x_inst)
  *       context, where foreground cannot preempt it, and masking PRIMASK per
  *       byte would stall higher-priority interrupts.
  */
+/*
+ * PORTING SEAM -- family-specific register surface.
+ *
+ * Everything below assumes the FIFO-capable USART IP (see uart_stream.h,
+ * "STM32-family portability"). A port to a legacy USARTv1 family (F1/F2/F4/F7/
+ * L1) remaps ONLY these tokens, all confined to this function:
+ *   registers   : ISR->SR, TDR->DR, RDR->DR   (CR1/ICR differ too)
+ *   RX ready    : USART_ISR_RXNE_RXFNE   -> USART_SR_RXNE
+ *   TX ready    : USART_ISR_TXE_TXFNF    -> USART_SR_TXE
+ *   errors      : USART_ISR_ORE/FE/NE/PE -> USART_SR_ORE/FE/NE/PE (SR read-clears)
+ *   TX arm bit  : USART_CR1_TXEIE_TXFNFIE (see v_uart_stream_tx_arm)
+ * The logic itself does not change.
+ */
 static void v_uart_stream_service(uart_stream_instance_t *p_x_inst)
 {
     USART_TypeDef *p_x_reg = p_x_inst->p_x_huart->Instance;
     uint32_t       u32_isr = p_x_reg->ISR;
+
+    /* Diagnostic: one unconditional bump per real servicing of this instance.
+     * Free-running, wraps at 2^32, never checked -- it is the wiring tripwire
+     * described in uart_stream.h (u32_uart_stream_get_isr_service_count). */
+    p_x_inst->u32_isr_service_count++;
 
     /* RX: drain while the FIFO has data. Status is re-read only after a byte is
      * actually taken, so the exit iteration costs no extra register access. */
@@ -213,10 +231,11 @@ uart_stream_h_t x_uart_stream_init(UART_HandleTypeDef *p_x_huart,
         return UART_STREAM_HANDLE_INVALID;
     }
 
-    p_x_inst->p_x_huart       = p_x_huart;
-    p_x_inst->e_irqn          = e_irqn;
-    p_x_inst->u32_error_count = 0U;
-    p_x_inst->b_active        = true;
+    p_x_inst->p_x_huart            = p_x_huart;
+    p_x_inst->e_irqn               = e_irqn;
+    p_x_inst->u32_error_count      = 0U;
+    p_x_inst->u32_isr_service_count = 0U;
+    p_x_inst->b_active             = true;
 
     /* Mark the HAL handle busy so a stray HAL_UART_* call fails fast with
      * HAL_BUSY rather than racing this driver for TDR/RDR. */
@@ -253,9 +272,10 @@ void v_uart_stream_deinit(uart_stream_h_t h_stream)
     v_queue_release(&p_x_inst->x_rx_queue);
     v_queue_release(&p_x_inst->x_tx_queue);
 
-    p_x_inst->p_x_huart       = NULL;
-    p_x_inst->u32_error_count = 0U;
-    p_x_inst->b_active        = false;
+    p_x_inst->p_x_huart            = NULL;
+    p_x_inst->u32_error_count      = 0U;
+    p_x_inst->u32_isr_service_count = 0U;
+    p_x_inst->b_active             = false;
 }
 
 /*==============================================================================
@@ -506,6 +526,13 @@ uint32_t u32_uart_stream_get_error_count(uart_stream_h_t h_stream)
     uart_stream_instance_t *p_x_inst = p_x_uart_stream_valid(h_stream);
 
     return (p_x_inst == NULL) ? 0U : p_x_inst->u32_error_count;
+}
+
+uint32_t u32_uart_stream_get_isr_service_count(uart_stream_h_t h_stream)
+{
+    uart_stream_instance_t *p_x_inst = p_x_uart_stream_valid(h_stream);
+
+    return (p_x_inst == NULL) ? 0U : p_x_inst->u32_isr_service_count;
 }
 
 bool b_uart_stream_is_tx_busy(uart_stream_h_t h_stream)

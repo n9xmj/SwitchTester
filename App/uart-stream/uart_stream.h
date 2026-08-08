@@ -17,6 +17,24 @@
  * UARTs this module does **not** bind continue to be serviced by HAL exactly as
  * before, including when they share an NVIC vector with a bound one.
  *
+ * @section uart_stream_portability STM32-family portability
+ *
+ * Two of the three usual sources of family coupling are designed out: the NVIC
+ * vector map lives entirely in the application-owned target table (below), and
+ * everything else goes through the family-uniform HAL API
+ * (@c UART_HandleTypeDef, @c HAL_UART_IRQHandler, @c HAL_GetTick). The one
+ * remaining coupling is the register-level ISR path in @c v_uart_stream_service,
+ * which assumes the **FIFO-capable USART IP**: the @c ISR / @c TDR / @c RDR /
+ * @c ICR register model and the FIFO-era bit names
+ * (@c USART_ISR_RXNE_RXFNE, @c USART_ISR_TXE_TXFNF,
+ * @c USART_CR1_RXNEIE_RXFNEIE, the @c *CF clear flags).
+ *
+ * That IP is shared by G0/C0/G4/L4/L5/U5/H5/H7/WB/WL - so a move to, e.g., an
+ * STM32H723 is a near-drop-in: new target table, register path unchanged. The
+ * legacy USARTv1 families (F1/F2/F4/F7/L1) use @c SR / @c DR and unsuffixed bit
+ * names; porting to one of those means remapping that one register surface,
+ * which is fenced off and flagged in @c v_uart_stream_service.
+ *
  * @section uart_stream_adopt Integrating into a new target
  *
  * Everything MCU-specific lives in one application-owned table, so this module
@@ -155,6 +173,7 @@ typedef struct uart_stream_instance_s
     queue_t             x_tx_queue;        /**< Application produces, ISR consumes.   */
     IRQn_Type           e_irqn;            /**< Vector, from the target table.        */
     volatile uint32_t   u32_error_count;   /**< Cleared-and-counted comms errors.     */
+    volatile uint32_t   u32_isr_service_count; /**< Times the ISR serviced this instance. */
     bool                b_active;          /**< Slot is bound.                        */
 }
 uart_stream_instance_t;
@@ -342,6 +361,24 @@ uint16_t u16_uart_stream_rx_queue_free(uart_stream_h_t h_stream);
  * @return Error count since bind.
  */
 uint32_t u32_uart_stream_get_error_count(uart_stream_h_t h_stream);
+
+/**
+ * @brief Times this instance's registers were serviced in interrupt context.
+ *
+ * Incremented once per @ref b_uart_stream_service_uart call that actually
+ * services this instance (owned, with a pending flag). Free-running; it wraps
+ * at 2^32 and is never checked, because it is a diagnostic, not a control value.
+ *
+ * Primary use is a wiring tripwire: after binding a UART, if traffic is flowing
+ * but this count never moves, the vector's USER CODE hook in the CubeMX-generated
+ * @c *_it.c is missing (HAL is servicing the UART instead of this driver). A
+ * bring-up check can read it before and after known traffic to confirm the ISR
+ * path really reaches this module.
+ *
+ * @param h_stream Bound handle.
+ * @return Service count since bind.
+ */
+uint32_t u32_uart_stream_get_isr_service_count(uart_stream_h_t h_stream);
 
 /**
  * @brief Test whether transmission is still in progress.
