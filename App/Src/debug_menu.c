@@ -32,6 +32,7 @@ static void v_debug_wakeup_sleep_test(void);
 static void v_debug_automation_console(void);
 static void v_debug_quick_test_1(void);
 static void v_debug_quick_test_2(void);
+static void v_debug_at_main_menu(void);
 static void v_debug_menu_exec(char c_key);
 
 static void v_switch_key_off(char c_key, uint8_t u8_index);
@@ -142,6 +143,11 @@ static void v_debug_quick_test_1(void)
 static void v_debug_quick_test_2(void)
 {
     printf("Quick test function 2 (stub)\r\n");
+}
+
+static void v_debug_at_main_menu(void)
+{
+    printf("(at main menu level)\r\n");
 }
 
 /* ---------------------------------------------------------------------------
@@ -764,6 +770,14 @@ static const menu_item_t x_debug_top_menu[] =
         .key = 'Q',
         .text = "Quick test function 2",
         .function = v_debug_quick_test_2
+    },
+    {
+        /* Hidden: ESC at the top level has nowhere to return to, so acknowledge
+         * we are already here rather than logging it as an unknown key. */
+        .item_type = MENU_ITEM_FUNCTION,
+        .key = 0x1B,
+        .text = NULL,
+        .function = v_debug_at_main_menu
     },
     {
         .item_type = MENU_ITEM_END_OF_LIST,
