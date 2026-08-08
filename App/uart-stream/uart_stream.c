@@ -528,11 +528,31 @@ uint32_t u32_uart_stream_get_error_count(uart_stream_h_t h_stream)
     return (p_x_inst == NULL) ? 0U : p_x_inst->u32_error_count;
 }
 
+void v_uart_stream_clear_error_count(uart_stream_h_t h_stream)
+{
+    uart_stream_instance_t *p_x_inst = p_x_uart_stream_valid(h_stream);
+
+    if (p_x_inst != NULL)
+    {
+        p_x_inst->u32_error_count = 0U;
+    }
+}
+
 uint32_t u32_uart_stream_get_isr_service_count(uart_stream_h_t h_stream)
 {
     uart_stream_instance_t *p_x_inst = p_x_uart_stream_valid(h_stream);
 
     return (p_x_inst == NULL) ? 0U : p_x_inst->u32_isr_service_count;
+}
+
+void v_uart_stream_clear_isr_service_count(uart_stream_h_t h_stream)
+{
+    uart_stream_instance_t *p_x_inst = p_x_uart_stream_valid(h_stream);
+
+    if (p_x_inst != NULL)
+    {
+        p_x_inst->u32_isr_service_count = 0U;
+    }
 }
 
 bool b_uart_stream_is_tx_busy(uart_stream_h_t h_stream)

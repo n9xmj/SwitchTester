@@ -363,6 +363,17 @@ uint16_t u16_uart_stream_rx_queue_free(uart_stream_h_t h_stream);
 uint32_t u32_uart_stream_get_error_count(uart_stream_h_t h_stream);
 
 /**
+ * @brief Reset the error count to zero.
+ *
+ * A single aligned store from the main loop; it cannot be lost against the
+ * higher-priority UART ISR, though an error counted in the same instant may be
+ * cleared with it. Call before a run to baseline it, then read it after.
+ *
+ * @param h_stream Bound handle.
+ */
+void v_uart_stream_clear_error_count(uart_stream_h_t h_stream);
+
+/**
  * @brief Times this instance's registers were serviced in interrupt context.
  *
  * Incremented once per @ref b_uart_stream_service_uart call that actually
@@ -379,6 +390,17 @@ uint32_t u32_uart_stream_get_error_count(uart_stream_h_t h_stream);
  * @return Service count since bind.
  */
 uint32_t u32_uart_stream_get_isr_service_count(uart_stream_h_t h_stream);
+
+/**
+ * @brief Reset the ISR service count to zero.
+ *
+ * A single aligned store from the main loop; safe against the higher-priority
+ * UART ISR as above. Use to re-arm the wiring tripwire: clear it, push known
+ * traffic, and confirm it moved.
+ *
+ * @param h_stream Bound handle.
+ */
+void v_uart_stream_clear_isr_service_count(uart_stream_h_t h_stream);
 
 /**
  * @brief Test whether transmission is still in progress.
