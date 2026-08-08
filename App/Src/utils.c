@@ -90,7 +90,9 @@ int i_getline(char *p_c_entry, uint16_t u16_length_limit)
 
         if (i_key == '\r')              // Return/Enter
         {
-            v_newline();
+            /* Echo goes to stderr, the always-through channel, so line entry
+             * stays visible even while stdout is muted (see stdio_retarget.c). */
+            fputs("\r\n", stderr);
             u8_done = GETLINE_NORMAL_EXIT;
         }
 
@@ -98,7 +100,7 @@ int i_getline(char *p_c_entry, uint16_t u16_length_limit)
         {
             if (i_len > 0)
             {
-                printf("\b \b");
+                fputs("\b \b", stderr);
                 i_len--;
             }
         }
@@ -128,7 +130,7 @@ int i_getline(char *p_c_entry, uint16_t u16_length_limit)
         {
             if (i_len < u16_length_limit)
             {
-                printf("%c", i_key);
+                fputc(i_key, stderr);
                 p_c_entry[i_len] = (char) i_key;
                 i_len++;
             }
@@ -138,13 +140,13 @@ int i_getline(char *p_c_entry, uint16_t u16_length_limit)
         {
             while (i_len > 0)
             {
-                printf("\b \b");
+                fputs("\b \b", stderr);
                 i_len--;
             }
             u8_clear_line = 0;
             if (u8_done == GETLINE_ESCAPE_EXIT)
             {
-                printf("<Cancel>\r\n");
+                fputs("<Cancel>\r\n", stderr);
             }
         }
     }

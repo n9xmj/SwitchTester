@@ -34,7 +34,6 @@
 #include "device_config.h"          /* DEV_CONFIG_CONSOLE_* */
 #include "stdio_retarget.h"
 #include "uart_stream.h"
-#include "automation_console.h"     /* stdout muting during a SCRIPT session */
 
 #if !defined(OS_USE_SEMIHOSTING)
 
@@ -58,6 +57,7 @@
 static UART_HandleTypeDef *p_x_stdio_uart;
 static uart_stream_h_t     h_stdio_stream = UART_STREAM_HANDLE_INVALID;
 static unsigned int        ui_stdout_after_crlf_char_count;
+static uint8_t             s_stdout_muted;
 
 /*============================================================================
  * PUBLIC FUNCTIONS
@@ -85,37 +85,53 @@ uart_stream_h_t h_stdio_retarget_get_stream(void)
     return h_stdio_stream;
 }
 
+/*
+ * stdout gating. While muted, _write discards STDOUT (and STDERR is unaffected --
+ * it is the always-through channel for interactive echo and errors). This is a
+ * general stdio capability, not tied to any one subsystem: the automation
+ * console asserts it for a SCRIPT session, but a debug-menu prompt could bracket
+ * a multi-char entry with it just as well.
+ */
+void v_stdout_mute(uint8_t u8_mute)
+{
+    s_stdout_muted = (uint8_t) (u8_mute != 0u);
+}
+
+uint8_t u8_stdout_is_muted(void)
+{
+    return s_stdout_muted;
+}
+
 int _write(int i_fd, char *p_c_ptr, int i_len)
 {
     if ((i_fd == STDOUT_FILENO) || (i_fd == STDERR_FILENO))
     {
-        /* While a SCRIPT-mode automation session owns the console, stdout is
-         * discarded outright rather than filtered. Jobs keep running during a
-         * session and jobs log, and an unframed log line landing between
-         * response frames would desynchronise the host. The console's own
-         * output is unaffected: it writes to uart_stream directly and never
-         * comes through here. Human mode leaves this alone -- i_getline()
-         * echoes through printf, and there is no host parser to protect. */
-        if (u8_automation_console_mutes_stdout())
+        /* stdout is the mutable channel: while muted (a SCRIPT automation
+         * session, or any code that brackets a section with v_stdout_mute()),
+         * stdout is discarded so async output cannot land in a protected span.
+         * stderr is the always-through channel -- interactive echo (i_getline)
+         * and errors -- and is never muted, so a muted section still shows what
+         * the operator types. Anything written to stderr during a SCRIPT session
+         * would bypass the mute and corrupt the frame stream, so keep async
+         * output on stdout. */
+        if ((i_fd == STDOUT_FILENO) && s_stdout_muted)
         {
             return i_len;
         }
 
-        if (i_fd == STDOUT_FILENO)
+        /* Cursor-column tracking: both streams reach the same console and move
+         * the cursor, so both are counted (used by ui_stdout_chars_after_crlf).
+         * Muted stdout returned above, so it correctly does not count. */
+        for (int i = 0; i < i_len; i++)
         {
-            /* Track how many chars have been printed since the last CR/LF, so
-             * utils.c can format output cleanly (ui_stdout_chars_after_crlf). */
-            for (int i = 0; i < i_len; i++)
+            char ch = p_c_ptr[i];
+            if (ch == '\r')
             {
-                char ch = p_c_ptr[i];
-                if (ch == '\r')
-                {
-                    ui_stdout_after_crlf_char_count = 0;
-                }
-                else if (ch != '\n')
-                {
-                    ui_stdout_after_crlf_char_count++;
-                }
+                ui_stdout_after_crlf_char_count = 0;
+            }
+            else if (ch != '\n')
+            {
+                ui_stdout_after_crlf_char_count++;
             }
         }
 

@@ -92,7 +92,6 @@ static char         s_ac_line[ACON_LINE_MAX];
 static char         s_ac_emit[ACON_EMIT_MAX];
 
 static acon_mode_t  s_x_mode;
-static uint8_t      s_u8_session_active;
 static uint8_t      s_u8_quit_requested;
 
 typedef enum
@@ -555,9 +554,14 @@ void v_automation_console_run(acon_mode_t x_mode)
     s_x_mode = x_mode;
     s_u8_quit_requested = 0;
 
-    /* Set before the banner: from here on stdout is muted in SCRIPT mode, so
-     * nothing a job prints can land between our frames. */
-    s_u8_session_active = 1;
+    /* Mute stdout for a SCRIPT session, before the banner, so nothing a job
+     * prints on stdout can land between our frames. stderr stays through, but
+     * nothing writes async output there. HUMAN mode leaves stdout on -- there is
+     * an operator, and i_getline echoes via stderr either way. */
+    if (x_mode == ACON_MODE_SCRIPT)
+    {
+        v_stdout_mute(1);
+    }
 
     v_acon_emit(ACON_SIG_OK, "%c,V%X", ACON_OP_SESSION, ACON_PROTOCOL_VERSION);
     v_acon_check_op_table();
@@ -577,7 +581,10 @@ void v_automation_console_run(acon_mode_t x_mode)
             /* '!' rather than '=': the host did not ask to leave. Drive state is
              * untouched, so a soak run started earlier keeps running. */
             v_acon_emit(ACON_SIG_ERR, "%c,TMO", ACON_OP_SESSION);
-            s_u8_session_active = 0;
+            if (s_x_mode == ACON_MODE_SCRIPT)
+            {
+                v_stdout_mute(0);
+            }
             return;
         }
         if (x_line == ACON_LINE_TOOLONG)
@@ -593,14 +600,10 @@ void v_automation_console_run(acon_mode_t x_mode)
     }
 
     v_acon_emit(ACON_SIG_OK, "%c,BYE", ACON_OP_SESSION);
-    s_u8_session_active = 0;
-}
-
-uint8_t u8_automation_console_mutes_stdout(void)
-{
-    /* HUMAN mode leaves stdout alone and must: i_getline() echoes through printf,
-     * and there is no host parser to protect there. */
-    return (uint8_t) (s_u8_session_active && (s_x_mode == ACON_MODE_SCRIPT));
+    if (s_x_mode == ACON_MODE_SCRIPT)
+    {
+        v_stdout_mute(0);
+    }
 }
 
 #endif /* ACON_ENABLED */

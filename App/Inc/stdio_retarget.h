@@ -18,6 +18,13 @@ void v_stdio_retarget_attach_stream(uart_stream_h_t h_stream);
 
 /* Console stream handle, or UART_STREAM_HANDLE_INVALID while still HAL-backed. */
 uart_stream_h_t h_stdio_retarget_get_stream(void);
+
+/* stdout gating -- see stdio_retarget.c. v_stdout_mute(1) discards STDOUT until
+ * v_stdout_mute(0); STDERR is unaffected (the always-through echo/error channel).
+ * General-purpose: any subsystem may bracket a section with it. */
+void v_stdout_mute(uint8_t u8_mute);
+uint8_t u8_stdout_is_muted(void);
+
 int _isatty(int i_fd);
 int _write(int i_fd, char* p_c_ptr, int i_len);
 unsigned int ui_stdout_chars_after_crlf(void);

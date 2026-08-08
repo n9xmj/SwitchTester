@@ -117,18 +117,6 @@ extern void v_automation_console_run(acon_mode_t x_mode);
 static inline void v_automation_console_run(acon_mode_t x_mode) { (void) x_mode; }
 #endif
 
-/**
- * @brief True while a session is in progress and stdout must stay suppressed.
- *
- * SCRIPT mode only. Human mode leaves stdout enabled -- i_getline() echoes
- * through printf, and there is no host parser to protect.
- */
-#if ACON_ENABLED
-extern uint8_t u8_automation_console_mutes_stdout(void);
-#else
-static inline uint8_t u8_automation_console_mutes_stdout(void) { return 0u; }
-#endif
-
 /*============================================================================
  * COMMAND-AUTHOR API -- everything below is for automation_commands.c
  *==========================================================================*/
