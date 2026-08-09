@@ -1,14 +1,37 @@
 /******************************************************************************
  * logging.c
+ *
+ * VENDORED MODULE -- App/logging/ (the engine layer)
+ *
+ * Dependencies: the C library, the vendored ANSI.h, and logging_config.h
+ * (the per-project config header this module names; copy
+ * logging_config_template.h into your app's include directory). No HAL, no
+ * platform.h, no other application header -- the millisecond tick arrives
+ * through u32_log_timestamp_ms(), which the application defines.
  ******************************************************************************/
 
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
 
-#include "stm32g0xx_hal.h"
-
+#include "logging_config.h"
 #include "logging.h"
+
+/*******************************************************************************
+ * Weak default for the application-supplied millisecond tick.
+ *
+ * Returning 0 means timestamps read (0.000) until the application provides a
+ * real implementation, which lets a freshly-vendored copy link and run before
+ * a port source has been written. Override it by defining a non-weak
+ * u32_log_timestamp_ms() in your own source file -- see
+ * logging_port_template.c.
+ *******************************************************************************/
+
+__attribute__((weak)) uint32_t u32_log_timestamp_ms(void)
+{
+    return 0;
+}
 
 /*******************************************************************************
  *
@@ -52,7 +75,7 @@ static void v_print_color(log_color_t x_color)
 #if LOG_WITH_TIMESTAMP
 static void v_print_timestamp(void)
 {
-    uint32_t u32_tick = HAL_GetTick();
+    uint32_t u32_tick = u32_log_timestamp_ms();
     uint32_t u32_tick_ms = u32_tick % 1000;
     uint32_t u32_tick_s = u32_tick / 1000;
     printf("(%lu.%03lu) ", u32_tick_s, u32_tick_ms);

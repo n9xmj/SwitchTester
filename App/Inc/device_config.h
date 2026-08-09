@@ -11,10 +11,31 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "debug_config.h"
+#include "logging_config.h"
 #include "main.h"
 #include "platform.h"
 #include "globals.h"
+
+//------------------------------------------------------------------------------
+// Build options
+//------------------------------------------------------------------------------
+//
+// Turn off build-time options if DEBUG is not defined (via the -DDEBUG
+// compiler command line option). Logging answers DEBUG for itself, in
+// logging_config.h.
+
+#ifndef DEBUG
+#undef DEBUG_MENU
+#define DEBUG_MENU                      0
+#endif
+
+// Debug menu system enable.
+// Set this to allow the debug menu system to be included. Independent of the
+// logging configuration in logging_config.h.
+
+#ifndef DEBUG_MENU
+#define DEBUG_MENU                      1
+#endif
 
 //------------------------------------------------------------------------------
 

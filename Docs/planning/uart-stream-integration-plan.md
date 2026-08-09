@@ -5,7 +5,8 @@ SwitchTester and run it in **HAL-coexistence mode** — `uart_stream` owns
 interrupt processing for the UARTs it binds, HAL keeps everything else, and the
 two share the vector table without fighting.
 
-**Home:** `App/uart-stream/{uart_stream.c,uart_stream.h,queue.c,queue.h}` —
+**Home:** `App/uart_stream/{uart_stream.c,uart_stream.h,queue.c,queue.h}` (renamed from
+`App/uart-stream/` on 2026-08-09 so the directory matches the main source file) —
 sources and headers together, queue API alongside. `App` is a whole-folder
 `sourcePath` in `.cproject`, so the module is **in the build** as of 2026-08-01.
 

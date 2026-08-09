@@ -137,7 +137,68 @@ static void v_debug_automation_console(void)
 
 static void v_debug_quick_test_1(void)
 {
-    printf("Quick test function 1 (stub)\r\n");
+    // Logging API integration test -- kept identical to the one in
+    // G0B1_Skeleton so the two trees can be compared directly.
+    //
+    // Exercises every macro form in log_helpers.h against the vendored module
+    // in App/logging/, and confirms the application-supplied timestamp bridge
+    // (u32_log_timestamp_ms in logging_port.c) is the one being called -- a
+    // weak-default fallback would show (0.000) on every line.
+
+    printf("\r\n--- logging API test ---\r\n");
+
+    // Timestamped + [TAG] forms. LOGCT takes its color from the tag.
+    LOGCT(LOG_SYSTEM, "LOGCT: tag color, value = %d", 42);
+    LOG(LOG_SYSTEM, "LOG: no color, string = %s", "abc");
+    LOGC(LOG_SYSTEM, LOGC_WARNING, "LOGC: explicit color (warning)");
+    LOGC(LOG_SYSTEM, LOGC_ERROR, "LOGC: explicit color (error)");
+
+    // Plain forms: no timestamp, no [TAG] prefix.
+    LOG_PLAIN(LOG_SYSTEM, "LOG_PLAIN: bare text, no prefix\r\n");
+    LOGC_PLAIN(LOG_SYSTEM, LOGC_CYAN, "LOGC_PLAIN: colored, no prefix");
+    LOGCT_PLAIN(LOG_SYSTEM, "LOGCT_PLAIN: tag color, no prefix");
+
+    // Build-gated forms.
+    DPRINTF("DPRINTF: DEBUG-build only, no newline added\r\n");
+    DPRINTF_TS("DPRINTF_TS: DEBUG-build only, timestamped");
+    RPRINTF("RPRINTF: unconditional, survives a release build\r\n");
+
+    // A class set to LOG_LEVEL_QUIET compiles out entirely -- this line should
+    // produce no output at all.
+    LOGCT(LOG_JOBS, "LOG_JOBS is QUIET; you should NOT see this");
+
+    // Verbosity ladder. Every value below is a compile-time constant, so these
+    // are the decisions the compiler actually made, not a runtime re-check.
+    printf("\r\n  LOG_LEVEL = %d (0=QUIET 1=ALWAYS 2=ERROR 3=WARNING 4=INFO 5=DEBUG)\r\n",
+           LOG_LEVEL);
+    printf("  %-12s tier %d  emit=%d\r\n", LOG_SYSTEM_TAG, LOG_SYSTEM, LOG_EMIT(LOG_SYSTEM));
+    printf("  %-12s tier %d  emit=%d\r\n", LOG_JOBS_TAG,   LOG_JOBS,   LOG_EMIT(LOG_JOBS));
+    printf("  %-12s tier %d  emit=%d\r\n", LOG_EXTI_TAG,   LOG_EXTI,   LOG_EMIT(LOG_EXTI));
+
+    // The edges that the ladder ordering exists to get right.
+    printf("  a QUIET class under a DEBUG ceiling  -> emit=%d (want 0)\r\n",
+           (LOG_LEVEL_QUIET != LOG_LEVEL_QUIET && LOG_LEVEL_QUIET <= LOG_LEVEL_DEBUG));
+    printf("  an ALWAYS class under a QUIET ceiling -> emit=%d (want 0)\r\n",
+           (LOG_LEVEL_ALWAYS != LOG_LEVEL_QUIET && LOG_LEVEL_ALWAYS <= LOG_LEVEL_QUIET));
+    printf("  an ERROR class under a WARNING ceiling-> emit=%d (want 1)\r\n",
+           (LOG_LEVEL_ERROR != LOG_LEVEL_QUIET && LOG_LEVEL_ERROR <= LOG_LEVEL_WARNING));
+    printf("  a DEBUG class under a WARNING ceiling -> emit=%d (want 0)\r\n",
+           (LOG_LEVEL_DEBUG != LOG_LEVEL_QUIET && LOG_LEVEL_DEBUG <= LOG_LEVEL_WARNING));
+
+    // Single-statement behaviour: with the do{}while(0) wrapper this compiles
+    // and takes the else. A bare braced macro body would not compile at all.
+    if (LOG_SYSTEM == LOG_LEVEL_QUIET)
+        LOGCT(LOG_SYSTEM, "dangling-else check: taken the wrong way");
+    else
+        printf("  dangling-else check: compiled and took the else\r\n");
+
+    // Two timestamps a known interval apart. The delta proves the tick is
+    // real and advancing rather than a stuck constant.
+    LOGCT(LOG_SYSTEM, "timestamp check: t0");
+    v_delay_ms(250);
+    LOGCT(LOG_SYSTEM, "timestamp check: t0 + 250 mS");
+
+    printf("--- end logging API test ---\r\n");
 }
 
 static void v_debug_quick_test_2(void)

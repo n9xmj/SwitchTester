@@ -4,8 +4,8 @@
  * Generic hardware-interface macros and definitions (skeleton).
  ******************************************************************************/
 
-#ifndef MACROS_H
-#define MACROS_H
+#ifndef PLATFORM_H
+#define PLATFORM_H
 
 #include "stm32g0xx_ll_gpio.h"
 #include "stm32g0xx_ll_exti.h"
@@ -141,4 +141,4 @@ extern void v_app_polling_task(void) __attribute__((weak));
         }                                       \
     } while (0)
 
-#endif // MACROS_H
+#endif // PLATFORM_H
