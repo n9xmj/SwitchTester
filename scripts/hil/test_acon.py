@@ -260,9 +260,9 @@ def t_set_select_mask(con):
     con.enter()
     con.quiesce()
     con.command('S,F,F,0')                      # all high
-    con.command('S,1,0,1')                      # clear channel 0 only
+    con.command('S,8,0,8')                      # clear channel 3 only
     lvl, _, _ = con.state()
-    check(lvl == 0x0E, "expected only ch0 cleared, level=0x%X" % lvl)
+    check(lvl == 0x07, "expected only ch3 cleared, level=0x%X" % lvl)
     con.quiesce()
     con.leave()
 
@@ -272,11 +272,11 @@ def t_set_toggle(con):
     con.enter()
     con.quiesce()
     before, _, _ = con.state()
-    con.command('S,1,1,1')                      # toggle ch0
+    con.command('S,8,8,8')                      # toggle ch3
     after, _, _ = con.state()
-    check((before ^ after) == 0x01,
-          "toggle should flip exactly ch0: 0x%X -> 0x%X" % (before, after))
-    con.command('S,1,1,1')                      # toggle back
+    check((before ^ after) == 0x08,
+          "toggle should flip exactly ch3: 0x%X -> 0x%X" % (before, after))
+    con.command('S,8,8,8')                      # toggle back
     back, _, _ = con.state()
     check(back == before, "second toggle should restore: 0x%X" % back)
     con.quiesce()
@@ -286,8 +286,8 @@ def t_set_toggle(con):
 @test("W then G: parameters round-trip")
 def t_write_get(con):
     con.enter()
-    expect_ok(con.command('W,0,7A120,7A120,0'), 'W')
-    f = expect_ok(con.command('G,0'), 'G')
+    expect_ok(con.command('W,3,7A120,7A120,0'), 'W')
+    f = expect_ok(con.command('G,3'), 'G')
     check(f.tokens.get('N') == 0x7A120, "on-time wrong: %r" % f.raw)
     check(f.tokens.get('F') == 0x7A120, "off-time wrong: %r" % f.raw)
     check(f.tokens.get('C') == 0, "repeat wrong: %r" % f.raw)
@@ -299,13 +299,13 @@ def t_write_get(con):
 def t_cycle_start_stop(con):
     con.enter()
     con.quiesce()
-    con.command('W,0,7A120,7A120,0')
-    f = expect_ok(con.command('C,1'), 'C')
-    check(f.tokens['R'] & 0x01, "run bit not set after start: %r" % f.raw)
-    check(f.tokens['M'] & 0x01, "mode bit not set after start: %r" % f.raw)
-    f = expect_ok(con.command('X,1'), 'X')
-    check(not (f.tokens['R'] & 0x01), "run bit still set after stop: %r" % f.raw)
-    check(not (f.tokens['L'] & 0x01), "stop should leave the output low: %r" % f.raw)
+    con.command('W,3,7A120,7A120,0')
+    f = expect_ok(con.command('C,8'), 'C')
+    check(f.tokens['R'] & 0x08, "run bit not set after start: %r" % f.raw)
+    check(f.tokens['M'] & 0x08, "mode bit not set after start: %r" % f.raw)
+    f = expect_ok(con.command('X,8'), 'X')
+    check(not (f.tokens['R'] & 0x08), "run bit still set after stop: %r" % f.raw)
+    check(not (f.tokens['L'] & 0x08), "stop should leave the output low: %r" % f.raw)
     con.leave()
 
 
@@ -313,12 +313,12 @@ def t_cycle_start_stop(con):
 def t_cycle_counts(con):
     con.enter()
     con.quiesce()
-    con.command('W,0,186A0,186A0,0')            # 100 ms / 100 ms = 5 cycles/s
-    con.command('C,1')
-    first = con.command('G,0').tokens['D']
+    con.command('W,3,186A0,186A0,0')            # 100 ms / 100 ms = 5 cycles/s
+    con.command('C,8')
+    first = con.command('G,3').tokens['D']
     time.sleep(1.5)
-    second = con.command('G,0').tokens['D']
-    con.command('X,1')
+    second = con.command('G,3').tokens['D']
+    con.command('X,8')
     check(second > first,
           "cycle count did not advance: %d -> %d" % (first, second))
     con.quiesce()
@@ -329,12 +329,12 @@ def t_cycle_counts(con):
 def t_hold_freezes(con):
     con.enter()
     con.quiesce()
-    con.command('W,0,7A120,7A120,0')
-    con.command('C,1')
-    f = expect_ok(con.command('S,1,0,0'), 'S')  # hold ch0
-    check(not (f.tokens['M'] & 0x01),
+    con.command('W,3,7A120,7A120,0')
+    con.command('C,8')
+    f = expect_ok(con.command('S,8,0,0'), 'S')  # hold ch3
+    check(not (f.tokens['M'] & 0x08),
           "hold should take the channel out of timer mode: %r" % f.raw)
-    check(not (f.tokens['R'] & 0x01),
+    check(not (f.tokens['R'] & 0x08),
           "hold should stop the cycle: %r" % f.raw)
     con.quiesce()
     con.leave()
@@ -353,12 +353,12 @@ def t_persist(con):
 def t_persist_busy(con):
     con.enter()
     con.quiesce()
-    con.command('W,0,7A120,7A120,0')
-    con.command('C,1')
+    con.command('W,3,7A120,7A120,0')
+    con.command('C,8')
     f = expect_err(con.command('P'), 'P', 'BUSY')
-    check(f.tokens.get('R', 0) & 0x01,
+    check(f.tokens.get('R', 0) & 0x08,
           "BUSY frame should carry the run bitmap: %r" % f.raw)
-    con.command('X,1')
+    con.command('X,8')
     con.quiesce()
     con.leave()
 
@@ -368,7 +368,7 @@ def t_no_autopersist(con):
     con.enter()
     con.quiesce()
     con.command('P')                            # flush anything outstanding
-    con.command('W,0,7A120,7A120,0')            # should NOT dirty the pool
+    con.command('W,3,7A120,7A120,0')            # should NOT dirty the pool
     f = expect_ok(con.command('P'), 'P')
     check(f.tokens.get('W') == 0,
           "W appears to have auto-persisted -- P reported a write: %r" % f.raw)
