@@ -357,6 +357,41 @@ It has already earned its keep twice: it found the RX ring being *smaller* than
 the longest legal command line, and it characterised the UART performance
 envelope below.
 
+### Baud sweep -- measured 2026-08-09
+
+The `B` command walks a UART's loopback up a ladder of baud rates, reporting loss at each
+rung rather than pass/fail, and returns the rate the `BRR` divisor *actually* produced
+alongside the one requested. With no rate list it uses a built-in ladder whose steps bunch
+up above 230400, where the FIFO-less instances give out; a host can pass its own list to
+bisect a knee without a reflash.
+
+512 bytes per rung, one burst:
+
+| requested | actual | USART5 (no FIFO) | USART1 (FIFO) |
+|---|---|---|---|
+| 9600 .. 403200 | -- | lossless | lossless |
+| 460800 | 460431 | **448/512, 64 errors** | lossless |
+| 691200 | 688172 | **341/512, 171 errors** | lossless |
+| 921600 | 927536 | **256/512, 256 errors** | lossless |
+
+**This refines the 2026-08-04 figure.** The coarse doubling ladder put USART5's ceiling at
+230400 with 460800 "marginal"; the finer rungs show it is in fact **lossless through
+403200**, with a hard break at 460800. Nothing changed on the bench -- the earlier ladder
+simply had no rungs between 230400 and 460800.
+
+Two things fall out of the numbers. The loss is a clean gradient, not a cliff, and at
+921600 USART5 receives **exactly half** the bytes -- the signature of servicing one byte
+per two character times. And `actual` diverges from `requested` because `BRR` is an integer
+divisor: at 64 MHz, 921600 lands on BRR=69 for a true 927536, **+0.64%**. Harmless in
+self-loopback, where both ends share the divisor, but it eats into the budget when a UART
+talks to an external device.
+
+A sweep needs no loopback probe: the slowest rung *is* the wiring test, since no FIFO
+effect exists at 9600. Loss at every rung including the slowest means the jumper; loss only
+above some rate means the ceiling. That distinction cost real bench time on 2026-08-09 --
+the `U` command's 8-byte probe drops bytes at 921600 on a FIFO-less instance and reports
+`LOOP` (no loopback), pointing at wiring that was never at fault.
+
 ### UART performance envelope — measured 2026-08-04
 
 The `U` command loopback-tests any bindable UART. Results on this bench, 64 B to
@@ -369,8 +404,8 @@ The `U` command loopback-tests any bindable UART. Results on this bench, 64 B to
 | LPUART2 | yes | 921600 | lossless, 88 kB/s — 96% |
 | USART3 | yes | 115200 | lossless — 99% |
 | USART4 | **no** | 115200 | lossless — 99% |
-| USART5 | **no** | 921600 | **fails**; clean at ≤230400, marginal at 460800 |
-| USART6 | no | — | not jumpered |
+| USART5 | **no** | 921600 | **fails**; see the baud sweep above |
+| USART6 | **no** | 921600 | **fails**; jumpered since 2026-08-09 |
 
 **USART4/5/6 have no hardware FIFO** on this part — only USART1/2/3 and
 LPUART1/2 do, which is why CubeMX emits `HAL_UARTEx_Set*FifoThreshold()` for

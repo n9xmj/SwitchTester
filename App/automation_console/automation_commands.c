@@ -412,6 +412,85 @@ static void v_acon_op_errors(char c_op, char *pc_line)
  * polling task is deliberately not pumped meanwhile. A host must allow for that;
  * the ordinary command timeout will not be enough.
  */
+/*
+ * B - baud sweep. B,<idx>[,<rate>...]
+ *
+ * With no rates, walks the module's built-in ladder; with rates, walks exactly
+ * those, in the order given -- so a host can bisect a knee without a reflash.
+ * Reports loss per rung rather than pass/fail: a marginal rate is not a
+ * boolean, and the ceiling is the host's call from the figures.
+ */
+static void v_acon_op_baud_sweep(char c_op, char *pc_line)
+{
+    char *ap_c_arg[ACON_MAX_ARGS];
+    uint8_t u8_argc = u8_acon_args(pc_line, ap_c_arg, ACON_MAX_ARGS);
+    static uart_stress_rung_t ax_rung[UART_STRESS_MAX_RUNGS];
+    static uint32_t au32_rates[UART_STRESS_MAX_RUNGS];
+    uart_stress_result_t x_result;
+    uint32_t u32_index;
+    uint8_t u8_rates = 0U;
+    uint8_t u8_rungs = 0U;
+    uint8_t u8_i;
+    char ac_op[4];
+
+    if ((u8_argc < 1u) || !b_acon_arg_u32(ap_c_arg[0], &u32_index))
+    {
+        v_acon_err(c_op, ACON_ERR_ARGS);
+        return;
+    }
+    if (u32_index > 0xFFuL)
+    {
+        v_acon_err(c_op, ACON_ERR_RANGE);
+        return;
+    }
+
+    for (u8_i = 1U; (u8_i < u8_argc) && (u8_rates < UART_STRESS_MAX_RUNGS); u8_i++)
+    {
+        if (!b_acon_arg_u32(ap_c_arg[u8_i], &au32_rates[u8_rates]))
+        {
+            v_acon_err(c_op, ACON_ERR_ARGS);
+            return;
+        }
+        u8_rates++;
+    }
+
+    x_result = x_uart_stress_sweep((uint8_t) u32_index,
+                                   (u8_rates != 0U) ? au32_rates : NULL,
+                                   u8_rates,
+                                   ax_rung, (uint8_t) UART_STRESS_MAX_RUNGS,
+                                   &u8_rungs);
+
+    if (x_result != UART_STRESS_OK)
+    {
+        static const char *apc_why[] =
+            { "OK", "ARG", "CONS", "BUSY", "MEM", "LOOP" };
+        v_acon_emit(ACON_SIG_ERR, "%s,%s,I%lX",
+                    pc_acon_op_name(c_op, ac_op),
+                    apc_why[(unsigned) x_result],
+                    (unsigned long) u32_index);
+        return;
+    }
+
+    v_acon_emit(ACON_SIG_OK, "%s,K%X,I%lX,Z%X",
+                pc_acon_op_name(c_op, ac_op),
+                (unsigned) u8_rungs,
+                (unsigned long) u32_index,
+                (unsigned) UART_STRESS_SWEEP_BYTES);
+
+    for (u8_i = 0U; u8_i < u8_rungs; u8_i++)
+    {
+        const uart_stress_rung_t *p_x = &ax_rung[u8_i];
+
+        v_acon_emit(ACON_SIG_PAYLOAD, "D%lX,A%lX,T%lX,R%lX,X%lX,E%lX",
+                    (unsigned long) p_x->u32_requested,
+                    (unsigned long) p_x->u32_actual,
+                    (unsigned long) p_x->u32_sent,
+                    (unsigned long) p_x->u32_received,
+                    (unsigned long) p_x->u32_mismatch,
+                    (unsigned long) p_x->u32_errors);
+    }
+}
+
 static void v_acon_op_uart_stress(char c_op, char *pc_line)
 {
     char *ap_c_arg[ACON_MAX_ARGS];
@@ -574,6 +653,7 @@ const acon_op_t g_x_acon_command[] =
     { 'P', v_acon_op_persist,     "persist params to NVM"        },
     { 'E', v_acon_op_errors,      "transport error count"        },
     { 'U', v_acon_op_uart_stress, "uart loopback stress: idx[,first,last,bursts]" },
+    { 'B', v_acon_op_baud_sweep,  "baud sweep: idx[,rate...] (default ladder)" },
     { '@', v_acon_op_echo_args,   "echo args as CSV (example)"   },
     { '$', v_acon_op_echo_raw,    "echo raw text (example)"      },
 };

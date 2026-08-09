@@ -36,6 +36,11 @@
 #define UART_STRESS_MAX_STEPS           12u
 
 /* Default progression when the caller does not name one. */
+/* Baud sweep. UART_STRESS_SWEEP_BYTES is one burst per rung -- enough to show
+ * loss without making a 9600 rung take a second. */
+#define UART_STRESS_MAX_RUNGS           16u
+#define UART_STRESS_SWEEP_BYTES         512u
+
 #define UART_STRESS_DEFAULT_FIRST       64u
 #define UART_STRESS_DEFAULT_LAST        8192u
 #define UART_STRESS_DEFAULT_BURSTS      4u
@@ -63,6 +68,23 @@ typedef struct
 }
 uart_stress_step_t;
 
+/*
+ * One rung of a baud sweep. Statistics rather than pass/fail on purpose: a
+ * marginal rate passes or fails run to run, so a boolean is both unstable and
+ * uninformative exactly where the interesting break point is. The host decides
+ * what counts as the ceiling from the loss figures.
+ */
+typedef struct
+{
+    uint32_t    u32_requested;      /* rate asked for                         */
+    uint32_t    u32_actual;         /* rate the BRR divisor actually produced */
+    uint32_t    u32_sent;           /* bytes accepted by the TX ring          */
+    uint32_t    u32_received;       /* bytes read back                        */
+    uint32_t    u32_mismatch;       /* bytes that came back with wrong value  */
+    uint32_t    u32_errors;         /* uart_stream error-count delta          */
+}
+uart_stress_rung_t;
+
 /**
  * @brief Run the loopback progression on one target UART.
  *
@@ -86,6 +108,30 @@ extern uart_stress_result_t x_uart_stress_run(uint8_t u8_index,
 
 /** @brief Configured baud of a target, or 0 if the index is out of range. */
 extern uint32_t u32_uart_stress_baud(uint8_t u8_index);
+
+/**
+ * @brief Sweep a UART's loopback across a ladder of baud rates.
+ *
+ * One short burst per rate, recording loss at each. Unlike x_uart_stress_run()
+ * this does NOT probe for a loopback first: the slowest rung *is* the wiring
+ * test, since no FIFO effect exists down there. Loss at every rung including
+ * the slowest means the jumper; loss only above some rate means you have found
+ * the ceiling.
+ *
+ * The instance's original baud rate is restored on every exit path.
+ *
+ * @param p_u32_rates   Rates to test, or @c NULL to use the built-in ladder.
+ * @param u8_rate_count Number of entries in @p p_u32_rates; ignored if NULL.
+ * @param p_x_rungs     Caller storage, at least @p u8_max_rungs entries.
+ * @param p_u8_rungs_done Rungs actually written.
+ * @return UART_STRESS_OK, or the same refusals as x_uart_stress_run().
+ */
+extern uart_stress_result_t x_uart_stress_sweep(uint8_t u8_index,
+                                               const uint32_t *p_u32_rates,
+                                               uint8_t u8_rate_count,
+                                               uart_stress_rung_t *p_x_rungs,
+                                               uint8_t u8_max_rungs,
+                                               uint8_t *p_u8_rungs_done);
 
 /** @brief Short name of a target ("U1", "LPU2", ...), or "?" if out of range. */
 extern const char * pc_uart_stress_name(uint8_t u8_index);

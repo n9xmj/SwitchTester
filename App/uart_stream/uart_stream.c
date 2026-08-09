@@ -462,6 +462,123 @@ void v_uart_stream_tx_flush(uart_stream_h_t h_stream)
     v_uart_stream_tx_flush_timeout(h_stream, UART_STREAM_FLUSH_DRAIN_TIMEOUT_MS);
 }
 
+/*
+ * Which kernel clock feeds this instance. This is a FAMILY SEAM of the same
+ * class as the register surface in v_uart_stream_service: instances with an
+ * independent clock mux are asked via HAL_RCCEx_GetPeriphCLKFreq, and the rest
+ * run from PCLK1. A port to another family revisits the selector list only.
+ */
+static uint32_t u32_uart_stream_kernel_clock(USART_TypeDef *p_x_reg)
+{
+    uint32_t u32_sel = 0U;
+
+    if (p_x_reg == USART1)              { u32_sel = RCC_PERIPHCLK_USART1;  }
+    else if (p_x_reg == USART2)         { u32_sel = RCC_PERIPHCLK_USART2;  }
+#if defined(USART3)
+    else if (p_x_reg == USART3)         { u32_sel = RCC_PERIPHCLK_USART3;  }
+#endif
+#if defined(LPUART1)
+    else if (p_x_reg == LPUART1)        { u32_sel = RCC_PERIPHCLK_LPUART1; }
+#endif
+#if defined(LPUART2)
+    else if (p_x_reg == LPUART2)        { u32_sel = RCC_PERIPHCLK_LPUART2; }
+#endif
+    else                                { u32_sel = 0U;                   }
+
+    return (u32_sel != 0U) ? HAL_RCCEx_GetPeriphCLKFreq(u32_sel)
+                           : HAL_RCC_GetPCLK1Freq();
+}
+
+uint32_t u32_uart_stream_get_baud(uart_stream_h_t h_stream)
+{
+    uart_stream_instance_t *p_x_inst = p_x_uart_stream_valid(h_stream);
+    USART_TypeDef *p_x_reg;
+    uint32_t u32_fck;
+    uint32_t u32_brr;
+    uint32_t u32_div;
+
+    if (p_x_inst == NULL)
+    {
+        return 0U;
+    }
+    p_x_reg = p_x_inst->p_x_huart->Instance;
+    u32_brr = p_x_reg->BRR;
+    if (u32_brr == 0U)
+    {
+        return 0U;
+    }
+    u32_fck = u32_uart_stream_kernel_clock(p_x_reg);
+
+    if (IS_LPUART_INSTANCE(p_x_reg))
+    {
+        /* LPUARTDIV is fixed-point: baud = 256 * fck / BRR. */
+        return (uint32_t) (((uint64_t) u32_fck * 256U) / u32_brr);
+    }
+    if ((p_x_reg->CR1 & USART_CR1_OVER8) != 0U)
+    {
+        /* Oversampling by 8 parks USARTDIV[3:1] in BRR[2:0]. */
+        u32_div = (u32_brr & 0xFFF0U) | ((u32_brr & 0x0007U) << 1U);
+        return (u32_div != 0U) ? ((2U * u32_fck) / u32_div) : 0U;
+    }
+    return u32_fck / u32_brr;
+}
+
+uint32_t u32_uart_stream_set_baud(uart_stream_h_t h_stream, uint32_t u32_baud)
+{
+    uart_stream_instance_t *p_x_inst = p_x_uart_stream_valid(h_stream);
+    USART_TypeDef *p_x_reg;
+    uint32_t u32_fck;
+    uint32_t u32_div;
+    uint32_t u32_brr;
+    uint32_t u32_cr1;
+
+    if ((p_x_inst == NULL) || (u32_baud == 0U))
+    {
+        return 0U;
+    }
+    p_x_reg = p_x_inst->p_x_huart->Instance;
+    u32_fck = u32_uart_stream_kernel_clock(p_x_reg);
+
+    if (IS_LPUART_INSTANCE(p_x_reg))
+    {
+        u32_brr = (uint32_t) ((((uint64_t) u32_fck * 256U) + (u32_baud / 2U))
+                              / u32_baud);
+        if (u32_brr < 0x300U)       /* LPUART floor, per the reference manual */
+        {
+            return 0U;
+        }
+    }
+    else if ((p_x_reg->CR1 & USART_CR1_OVER8) != 0U)
+    {
+        u32_div = ((2U * u32_fck) + (u32_baud / 2U)) / u32_baud;
+        u32_brr = (u32_div & 0xFFF0U) | ((u32_div & 0x000FU) >> 1U);
+    }
+    else
+    {
+        u32_brr = (u32_fck + (u32_baud / 2U)) / u32_baud;
+        if (u32_brr < 16U)          /* USARTDIV must be >= 16 */
+        {
+            return 0U;
+        }
+    }
+    if (u32_brr > 0xFFFFU)
+    {
+        return 0U;                  /* rate unreachable on this clock */
+    }
+
+    /* Unguarded: see the header. UE drops only because BRR does not take
+     * effect while enabled; CR1's interrupt arming is restored with it. */
+    u32_cr1 = p_x_reg->CR1;
+    p_x_reg->CR1 = u32_cr1 & ~USART_CR1_UE;
+    p_x_reg->BRR = u32_brr;
+    p_x_reg->CR1 = u32_cr1;
+
+    /* Keep the HAL's cached view honest for anything that still reads it. */
+    p_x_inst->p_x_huart->Init.BaudRate = u32_baud;
+
+    return u32_uart_stream_get_baud(h_stream);
+}
+
 /*==============================================================================
  * Receive
  *============================================================================*/

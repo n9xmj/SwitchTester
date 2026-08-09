@@ -417,4 +417,42 @@ bool b_uart_stream_is_tx_busy(uart_stream_h_t h_stream);
  */
 uart_stream_instance_t *p_x_uart_stream_get_instance(uart_stream_h_t h_stream);
 
+/**
+ * @brief Read the baud rate the hardware is ACTUALLY running.
+ *
+ * Derived from @c BRR and the peripheral's kernel clock, not from the HAL's
+ * cached @c Init.BaudRate -- that only records what was last requested, and
+ * @c BRR is an integer divisor, so the two differ. At 64 MHz a requested
+ * 921600 lands on BRR=69, i.e. 927536 (+0.64%).
+ *
+ * Handles LPUART's 256x fixed-point divisor and USART oversampling-by-8 as
+ * well as the ordinary case.
+ *
+ * @param h_stream Handle to query.
+ * @return Achieved baud rate, or 0 if @p h_stream is invalid.
+ */
+uint32_t u32_uart_stream_get_baud(uart_stream_h_t h_stream);
+
+/**
+ * @brief Set the baud rate; returns what the hardware actually achieved.
+ *
+ * @warning UNGUARDED BY DESIGN. No TX drain, no RX flush. @c BRR must not
+ *          change mid-character, so a caller that cares calls
+ *          v_uart_stream_tx_flush_timeout() first -- and should discard the RX
+ *          ring afterwards, since bytes received at the old rate are framing
+ *          garbage once the divisor moves. Doing that here would force a
+ *          policy on callers that may want an on-the-fly change.
+ *
+ * @c UE is dropped across the @c BRR write because the new divisor does not
+ * take effect while the peripheral is enabled. @c CR1's interrupt arming is
+ * preserved, so the ISR wiring is undisturbed.
+ *
+ * @param h_stream Handle to retune.
+ * @param u32_baud Requested rate.
+ * @return Achieved rate (see u32_uart_stream_get_baud), or 0 if the request
+ *         is unreachable on this instance/clock or @p h_stream is invalid --
+ *         in which case the rate is left untouched.
+ */
+uint32_t u32_uart_stream_set_baud(uart_stream_h_t h_stream, uint32_t u32_baud);
+
 #endif /* UART_STREAM_H_ */

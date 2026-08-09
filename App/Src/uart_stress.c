@@ -263,3 +263,148 @@ uart_stress_result_t x_uart_stress_run(uint8_t u8_index,
     v_uart_stream_deinit(h_stream);
     return UART_STRESS_OK;
 }
+
+/*==============================================================================
+ * BAUD SWEEP
+ *============================================================================*/
+
+/*
+ * Default ladder. Deliberately not a strict doubling: the steps bunch up above
+ * 230400 because that is where the FIFO-less instances on this bench give out,
+ * and a knee is only locatable if there are rungs either side of it.
+ */
+static const uint32_t s_au32_sweep_default[] =
+{
+     9600U,  19200U,  38400U,  57600U, 115200U,
+   230400U, 288000U, 345600U, 403200U, 460800U,
+   691200U, 921600U
+};
+
+/* Worst-case time to shift a full TX ring out at u32_baud, plus slack. Used as
+ * the drain bound so the bottom of the ladder is not truncated: a 1024-byte
+ * ring at 9600 takes over a second. */
+static uint32_t u32_sweep_drain_ms(uint32_t u32_baud)
+{
+    if (u32_baud == 0U)
+    {
+        return 100U;
+    }
+    return ((UART_STRESS_RING_SIZE * 10U * 1000U) / u32_baud) + 20U;
+}
+
+static void v_sweep_rx_discard(uart_stream_h_t h_stream)
+{
+    /* Bytes received at the previous rate are framing garbage once the divisor
+     * moves; left in the ring they would be charged against the next rung. */
+    while (u16_uart_stream_rx_multi(h_stream, s_au8_rx_chunk,
+                                    (uint16_t) sizeof(s_au8_rx_chunk)) != 0U)
+    {
+        /* discard */
+    }
+}
+
+uart_stress_result_t x_uart_stress_sweep(uint8_t u8_index,
+                                        const uint32_t *p_u32_rates,
+                                        uint8_t u8_rate_count,
+                                        uart_stress_rung_t *p_x_rungs,
+                                        uint8_t u8_max_rungs,
+                                        uint8_t *p_u8_rungs_done)
+{
+    UART_HandleTypeDef *p_x_huart;
+    uart_stream_h_t h_stream;
+    uint32_t u32_entry_baud;
+    uint8_t u8_rung = 0U;
+    uint8_t u8_i;
+
+    *p_u8_rungs_done = 0U;
+
+    if (u8_index >= g_u8_uart_stream_target_count)
+    {
+        return UART_STRESS_BAD_INDEX;
+    }
+    p_x_huart = g_x_uart_stream_target[u8_index].p_x_huart;
+
+    if (p_x_huart == &DEBUG_UART_HANDLE)
+    {
+        return UART_STRESS_IS_CONSOLE;      /* retuning the console cuts the reply off */
+    }
+    if (p_x_huart->gState == HAL_UART_STATE_BUSY)
+    {
+        return UART_STRESS_IN_USE;
+    }
+
+    if ((p_u32_rates == NULL) || (u8_rate_count == 0U))
+    {
+        p_u32_rates   = s_au32_sweep_default;
+        u8_rate_count = (uint8_t) (sizeof(s_au32_sweep_default)
+                                   / sizeof(s_au32_sweep_default[0]));
+    }
+    if (u8_rate_count > u8_max_rungs)
+    {
+        u8_rate_count = u8_max_rungs;
+    }
+
+    h_stream = x_uart_stream_init(p_x_huart,
+                                  UART_STRESS_RING_SIZE, NULL,
+                                  UART_STRESS_RING_SIZE, NULL);
+    if (h_stream == UART_STREAM_HANDLE_INVALID)
+    {
+        return UART_STRESS_BIND_FAILED;
+    }
+
+    u32_entry_baud = u32_uart_stream_get_baud(h_stream);
+
+    for (u8_i = 0U; u8_i < u8_rate_count; u8_i++)
+    {
+        uart_stress_rung_t *p_x = &p_x_rungs[u8_rung];
+        uart_stress_step_t  x_step;
+        uint32_t u32_err_before;
+
+        /* Drain at the CURRENT rate before retuning -- the setter is unguarded
+         * and a character still shifting would finish at the wrong divisor. */
+        v_uart_stream_tx_flush_timeout(h_stream,
+                                       u32_sweep_drain_ms(u32_uart_stream_get_baud(h_stream)));
+
+        p_x->u32_requested = p_u32_rates[u8_i];
+        p_x->u32_actual    = u32_uart_stream_set_baud(h_stream, p_u32_rates[u8_i]);
+        if (p_x->u32_actual == 0U)
+        {
+            /* Unreachable on this clock: record it and move on rather than
+             * abandoning the rest of the ladder. */
+            p_x->u32_sent = 0U;
+            p_x->u32_received = 0U;
+            p_x->u32_mismatch = 0U;
+            p_x->u32_errors = 0U;
+            u8_rung++;
+            continue;
+        }
+
+        v_sweep_rx_discard(h_stream);
+        u32_err_before = u32_uart_stream_get_error_count(h_stream);
+
+        x_step.u16_size     = (uint16_t) UART_STRESS_SWEEP_BYTES;
+        x_step.u16_bursts   = 1U;
+        x_step.u32_sent     = 0U;
+        x_step.u32_received = 0U;
+        x_step.u32_mismatch = 0U;
+        x_step.u32_errors   = 0U;
+        x_step.u32_elapsed_ms = 0U;
+
+        v_stress_burst(h_stream, (uint16_t) UART_STRESS_SWEEP_BYTES, &x_step);
+
+        p_x->u32_sent     = x_step.u32_sent;
+        p_x->u32_received = x_step.u32_received;
+        p_x->u32_mismatch = x_step.u32_mismatch;
+        p_x->u32_errors   = u32_uart_stream_get_error_count(h_stream) - u32_err_before;
+        u8_rung++;
+    }
+
+    /* Put the instance back the way it was found, on every path. */
+    v_uart_stream_tx_flush_timeout(h_stream,
+                                   u32_sweep_drain_ms(u32_uart_stream_get_baud(h_stream)));
+    (void) u32_uart_stream_set_baud(h_stream, u32_entry_baud);
+    v_uart_stream_deinit(h_stream);
+
+    *p_u8_rungs_done = u8_rung;
+    return UART_STRESS_OK;
+}
