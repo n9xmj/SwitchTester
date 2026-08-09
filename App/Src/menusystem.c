@@ -7,7 +7,7 @@
 #include <string.h>
 #include <stdbool.h>
 
-#include "ansi.h"
+#include "ANSI.h"
 #include "menusystem.h"
 
 /******************************************************************************

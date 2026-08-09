@@ -4,7 +4,7 @@
  * Utility functions that do not fall under any major operational category.
  ******************************************************************************/
 
-#include "device_config.h"              // Includes debug_config.h, main.h, platform.h
+#include "device_config.h"              // Includes logging_config.h, main.h, platform.h
 #include "stdio_retarget.h"
 #include "utils.h"
 //#include <time.h>                       // For v_get_rtc_time; uses mktime()
