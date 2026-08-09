@@ -3,7 +3,7 @@
  *
  * Application bridge for the vendored logging module.
  *
- * APPLICATION-OWNED SEAM. Created by copying
+ * APPLICATION-OWNED PORT FILE. Created by copying
  * App/logging/logging_port_template.c into App/Src/. Edit it freely; never
  * edit the files under App/logging/.
  *

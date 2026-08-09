@@ -10,7 +10,7 @@
  *   automation_commands.c  -- the application's command handlers and the
  *                             g_x_acon_command[] table the core dispatches into.
  *
- *   The seam is g_x_acon_command[] (below), exactly as uart_stream takes its
+ *   The port point is g_x_acon_command[] (below), exactly as uart_stream takes its
  *   per-target UART table from the application. The core owns the builtins
  *   (quit / list / version / no-op) and guarantees they are always present, so
  *   a command module carries only its own domain ops.
@@ -168,7 +168,7 @@ acon_sigil_t;
 #endif
 
 /*----------------------------------------------------------------------------
- * Command table -- the application-owned seam.
+ * Command table -- the application-owned port point.
  *
  * A handler receives the opcode and the whole raw line (opcode at [0]). It owns
  * its own parsing: call u8_acon_args() to split comma fields, or read the line

@@ -113,7 +113,7 @@ static inline void v_uart_stream_tx_arm(uart_stream_instance_t *p_x_inst)
  *       byte would stall higher-priority interrupts.
  */
 /*
- * PORTING SEAM -- family-specific register surface.
+ * PORT BOUNDARY -- family-specific register surface.
  *
  * Everything below assumes the FIFO-capable USART IP (see uart_stream.h,
  * "STM32-family portability"). A port to a legacy USARTv1 family (F1/F2/F4/F7/
@@ -463,7 +463,7 @@ void v_uart_stream_tx_flush(uart_stream_h_t h_stream)
 }
 
 /*
- * Which kernel clock feeds this instance. This is a FAMILY SEAM of the same
+ * Which kernel clock feeds this instance. This is a FAMILY PORT BOUNDARY of the same
  * class as the register surface in v_uart_stream_service: instances with an
  * independent clock mux are asked via HAL_RCCEx_GetPeriphCLKFreq, and the rest
  * run from PCLK1. A port to another family revisits the selector list only.

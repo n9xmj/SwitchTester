@@ -639,7 +639,7 @@ static void v_acon_op_echo_raw(char c_op, char *pc_line)
 }
 
 /*============================================================================
- * COMMAND TABLE  (the application-owned seam; core dispatches into this)
+ * COMMAND TABLE  (the application-owned port point; core dispatches into this)
  *==========================================================================*/
 
 const acon_op_t g_x_acon_command[] =

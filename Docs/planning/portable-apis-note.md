@@ -18,7 +18,7 @@ is the exact failure the vendoring model exists to prevent.
 | `uart_stream` | `App/uart_stream/` | renamed from `uart-stream/` 2026-08-09 |
 | `automation_console` | `App/automation_console/` | renamed from `automation-console/` 2026-08-09 |
 
-Seams (edit these, never the module directories):
+Port files (edit these, never the module directories):
 
 | Module | Config header | Port source |
 |---|---|---|
