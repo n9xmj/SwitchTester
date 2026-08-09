@@ -23,6 +23,7 @@
 #include "dac.h"
 #include "usart.h"
 #include "rtc.h"
+#include "spi.h"
 #include "tim.h"
 #include "gpio.h"
 
@@ -113,6 +114,7 @@ int main(void)
   MX_USART4_UART_Init();
   MX_USART5_UART_Init();
   MX_USART6_UART_Init();
+  MX_SPI3_Init();
   /* USER CODE BEGIN 2 */
 
   v_stdio_retarget(&DEBUG_UART_HANDLE);

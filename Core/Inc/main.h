@@ -64,6 +64,8 @@ extern UART_HandleTypeDef huart2;
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define SPIFLASH_MOSI_Pin GPIO_PIN_12
+#define SPIFLASH_MOSI_GPIO_Port GPIOC
 #define NUCLEO_BUTTON_Pin GPIO_PIN_13
 #define NUCLEO_BUTTON_GPIO_Port GPIOC
 #define NUCLEO_BUTTON_EXTI_IRQn EXTI4_15_IRQn
@@ -71,8 +73,6 @@ extern UART_HandleTypeDef huart2;
 #define RTC_OSC32_IN_GPIO_Port GPIOC
 #define RTC_OSC32_OUT_Pin GPIO_PIN_15
 #define RTC_OSC32_OUT_GPIO_Port GPIOC
-#define SENSE_D_Pin GPIO_PIN_0
-#define SENSE_D_GPIO_Port GPIOA
 #define SENSE_A_Pin GPIO_PIN_1
 #define SENSE_A_GPIO_Port GPIOA
 #define DEBUG_TX_Pin GPIO_PIN_2
@@ -81,6 +81,8 @@ extern UART_HandleTypeDef huart2;
 #define DEBUG_RX_GPIO_Port GPIOA
 #define NUCLEO_LED_Pin GPIO_PIN_5
 #define NUCLEO_LED_GPIO_Port GPIOA
+#define SENSE_D_Pin GPIO_PIN_7
+#define SENSE_D_GPIO_Port GPIOA
 #define SWITCH_A_Pin GPIO_PIN_4
 #define SWITCH_A_GPIO_Port GPIOC
 #define SWITCH_B_Pin GPIO_PIN_5
@@ -95,7 +97,13 @@ extern UART_HandleTypeDef huart2;
 #define SWDIO_GPIO_Port GPIOA
 #define SWCLK_Pin GPIO_PIN_14
 #define SWCLK_GPIO_Port GPIOA
-#define SENSE_B_Pin GPIO_PIN_4
+#define SPIFLASH_NCS_Pin GPIO_PIN_15
+#define SPIFLASH_NCS_GPIO_Port GPIOA
+#define SPIFLASH_SCK_Pin GPIO_PIN_3
+#define SPIFLASH_SCK_GPIO_Port GPIOB
+#define SPIFLASH_MISO_Pin GPIO_PIN_4
+#define SPIFLASH_MISO_GPIO_Port GPIOB
+#define SENSE_B_Pin GPIO_PIN_6
 #define SENSE_B_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */

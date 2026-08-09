@@ -40,7 +40,7 @@ void MX_COMP1_Init(void)
 
   /* USER CODE END COMP1_Init 1 */
   hcomp1.Instance = COMP1;
-  hcomp1.Init.InputPlus = COMP_INPUT_PLUS_IO3;
+  hcomp1.Init.InputPlus = COMP_INPUT_PLUS_IO2;
   hcomp1.Init.InputMinus = COMP_INPUT_MINUS_DAC1_CH1;
   hcomp1.Init.OutputPol = COMP_OUTPUTPOL_NONINVERTED;
   hcomp1.Init.WindowOutput = COMP_WINDOWOUTPUT_EACH_COMP;
@@ -70,7 +70,7 @@ void MX_COMP2_Init(void)
 
   /* USER CODE END COMP2_Init 1 */
   hcomp2.Instance = COMP2;
-  hcomp2.Init.InputPlus = COMP_INPUT_PLUS_IO1;
+  hcomp2.Init.InputPlus = COMP_INPUT_PLUS_IO2;
   hcomp2.Init.InputMinus = COMP_INPUT_MINUS_DAC1_CH2;
   hcomp2.Init.OutputPol = COMP_OUTPUTPOL_NONINVERTED;
   hcomp2.Init.WindowOutput = COMP_WINDOWOUTPUT_EACH_COMP;
@@ -150,7 +150,7 @@ void HAL_COMP_MspInit(COMP_HandleTypeDef* compHandle)
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
     /**COMP2 GPIO Configuration
-    PB4     ------> COMP2_INP
+    PB6     ------> COMP2_INP
     */
     GPIO_InitStruct.Pin = SENSE_B_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
@@ -207,7 +207,7 @@ void HAL_COMP_MspDeInit(COMP_HandleTypeDef* compHandle)
   /* USER CODE END COMP2_MspDeInit 0 */
 
     /**COMP2 GPIO Configuration
-    PB4     ------> COMP2_INP
+    PB6     ------> COMP2_INP
     */
     HAL_GPIO_DeInit(SENSE_B_GPIO_Port, SENSE_B_Pin);
 
