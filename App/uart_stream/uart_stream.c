@@ -430,6 +430,8 @@ void v_uart_stream_tx_flush_timeout(uart_stream_h_t h_stream,
     uart_stream_instance_t *p_x_inst = p_x_uart_stream_valid(h_stream);
     USART_TypeDef *p_x_reg;
     uint32_t       u32_start;
+    uint32_t       u32_baud;
+    uint32_t       u32_tc_timeout_ms;
 
     if (p_x_inst == NULL)
     {
@@ -446,10 +448,31 @@ void v_uart_stream_tx_flush_timeout(uart_stream_h_t h_stream,
         v_uart_stream_tx_arm(p_x_inst);
     }
 
-    /* Shift register drain - at most a byte time away once the ring is empty. */
+    /* Shift register drain - at most one character time away once the ring is
+     * empty, so DERIVE the bound from the rate actually in effect rather than
+     * trusting a fixed constant. 12 bit-times covers 8N1 plus parity/2-stop;
+     * +2 ms absorbs tick granularity. UART_STREAM_FLUSH_TC_TIMEOUT_MS remains
+     * the floor, and the fallback when the rate cannot be read.
+     *
+     * A fixed constant is wrong at both ends: 2 ms is ~184 character times at
+     * 921600 (harmlessly generous) but SHORTER than one character below about
+     * 4800 baud, where it would return with a character still shifting and let
+     * a following BRR change clip it. */
+    u32_tc_timeout_ms = UART_STREAM_FLUSH_TC_TIMEOUT_MS;
+    u32_baud = u32_uart_stream_get_baud(h_stream);
+    if (u32_baud != 0U)
+    {
+        uint32_t u32_calc = ((12U * 1000U) / u32_baud) + 2U;
+
+        if (u32_calc > u32_tc_timeout_ms)
+        {
+            u32_tc_timeout_ms = u32_calc;
+        }
+    }
+
     u32_start = HAL_GetTick();
     while (((p_x_reg->ISR & USART_ISR_TC) == 0U)
-           && ((HAL_GetTick() - u32_start) < UART_STREAM_FLUSH_TC_TIMEOUT_MS))
+           && ((HAL_GetTick() - u32_start) < u32_tc_timeout_ms))
     {
         /* spin */
     }

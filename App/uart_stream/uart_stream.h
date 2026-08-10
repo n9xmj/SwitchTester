@@ -117,7 +117,15 @@
 #define UART_STREAM_FLUSH_DRAIN_TIMEOUT_MS  50U
 #endif
 
-/** @brief Internal bound (ms) on waiting for hardware TC once the ring drains. */
+/**
+ * @brief FLOOR (ms) on waiting for hardware TC once the ring drains.
+ *
+ * The actual bound is computed per flush from the rate in effect
+ * (12 bit-times + 2 ms; see v_uart_stream_tx_flush_timeout), so this is the
+ * minimum and the fallback used when the rate cannot be read. There is no need
+ * to raise it for slow instances -- the calculation already covers them, down
+ * to 1200 baud and below.
+ */
 #ifndef UART_STREAM_FLUSH_TC_TIMEOUT_MS
 #define UART_STREAM_FLUSH_TC_TIMEOUT_MS     2U
 #endif

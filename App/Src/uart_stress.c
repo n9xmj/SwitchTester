@@ -57,6 +57,7 @@ static uint8_t s_au8_rx_chunk[STRESS_CHUNK];
  * neither ring can overrun regardless of u16_len.
  */
 static void v_stress_burst(uart_stream_h_t h_stream, uint16_t u16_len,
+                           uint32_t u32_timeout_ms,
                            uart_stress_step_t *p_x_step)
 {
     uint32_t u32_tx_done = 0U;
@@ -97,7 +98,7 @@ static void v_stress_burst(uart_stream_h_t h_stream, uint16_t u16_len,
             u32_rx_done++;
         }
 
-        if (ELAPSED_TIME(u32_t0) >= STRESS_BURST_TIMEOUT_MS)
+        if (ELAPSED_TIME(u32_t0) >= u32_timeout_ms)
         {
             break;      /* short receive is the finding; record and move on */
         }
@@ -243,7 +244,8 @@ uart_stress_result_t x_uart_stress_run(uint8_t u8_index,
 
         for (u8_burst = 0U; u8_burst < u8_bursts; u8_burst++)
         {
-            v_stress_burst(h_stream, (uint16_t) u32_size, p_x_step);
+            v_stress_burst(h_stream, (uint16_t) u32_size,
+                           STRESS_BURST_TIMEOUT_MS, p_x_step);
 
             /* Spaced, so each burst starts from a quiet line. */
             uint32_t u32_gap = SYSTEM_TICK();
@@ -290,6 +292,17 @@ static uint32_t u32_sweep_drain_ms(uint32_t u32_baud)
         return 100U;
     }
     return ((UART_STRESS_RING_SIZE * 10U * 1000U) / u32_baud) + 20U;
+}
+
+/* Time to shift UART_STRESS_SWEEP_BYTES at u32_baud, doubled for the
+ * interleaved read-back, plus slack. */
+static uint32_t u32_sweep_burst_ms(uint32_t u32_baud)
+{
+    if (u32_baud == 0U)
+    {
+        return STRESS_BURST_TIMEOUT_MS;
+    }
+    return (((UART_STRESS_SWEEP_BYTES * 10U * 1000U) / u32_baud) * 2U) + 200U;
 }
 
 static void v_sweep_rx_discard(uart_stream_h_t h_stream)
@@ -390,7 +403,11 @@ uart_stress_result_t x_uart_stress_sweep(uint8_t u8_index,
         x_step.u32_errors   = 0U;
         x_step.u32_elapsed_ms = 0U;
 
-        v_stress_burst(h_stream, (uint16_t) UART_STRESS_SWEEP_BYTES, &x_step);
+        /* Derive the burst bound from the rate: 512 bytes at 1200 baud needs
+         * 4.3 s to shift, so a fixed 3 s cap would truncate the transfer and
+         * report LOSS on a link that is actually perfect -- a lying rung. */
+        v_stress_burst(h_stream, (uint16_t) UART_STRESS_SWEEP_BYTES,
+                       u32_sweep_burst_ms(p_x->u32_actual), &x_step);
 
         p_x->u32_sent     = x_step.u32_sent;
         p_x->u32_received = x_step.u32_received;
