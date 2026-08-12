@@ -61,7 +61,8 @@
 //
 // RX has to cover what arrives while the application is not calling _read().
 //
-// It MUST also be comfortably larger than ACON_LINE_MAX: the automation
+// It MUST also be comfortably larger than ACON_LINE_MAX (defined in
+// automation_console_config.h): the automation
 // console reads one byte per main-loop pass through newlib's getchar(), which
 // cannot keep up with a sustained 921600-baud stream, so a whole command line
 // has to be able to sit in the ring while the console drains it. Raised from
@@ -89,32 +90,11 @@
 
 #define ACON_MIN_CYCLE_PERIOD_US                                           50000
 
-// Host command line, bytes. Sized well above today's commands so that a future
-// bulk push -- an edge-time sequence for a DMA-driven waveform, say -- is a
-// constant change rather than a redesign. RAM is not tight here.
-//
-// Keep DEV_CONFIG_CONSOLE_RX_BUF_SIZE comfortably above this. A line longer
-// than the RX ring cannot be received at all, however the console handles it.
-
-#define ACON_LINE_MAX                                                        512
-
-// Response frame assembly buffer, bytes. Responses are bounded by the frame
-// grammar rather than by input size; the longest is the parameter getter with
-// every field at full hex width, at 53 bytes.
-
-#define ACON_EMIT_MAX                                                        128
-
-// Idle timeout. Applies in SCRIPT mode only -- human mode has an operator at
-// the terminal rather than a host that can die. Reset by ANY received byte, so
-// a keep-alive works even mid-line.
-
-#define ACON_IDLE_TIMEOUT_MS                                               15000
-
-// Deadline for pushing one frame into the TX ring. Mirrors the stdio path's
-// figure and is sized well above the ~11 ms to drain a full 1 kB ring at
-// 921600 baud; a 53-byte frame into that ring never blocks in practice.
-
-#define ACON_TX_TIMEOUT_MS                                                   100
+// The console core's own settings -- build switch, ACON_MAX_ARGS, buffer sizes,
+// timeouts -- are NOT here. It is a vendored module and owns a settings file:
+// App/Inc/automation_console_config.h, copied from the template in
+// App/automation_console/. ACON_MIN_CYCLE_PERIOD_US above is different in kind:
+// it is an application command's limit, not the module's, so it stays here.
 
 //------------------------------------------------------------------------------
 // Misc

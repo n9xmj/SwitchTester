@@ -33,33 +33,49 @@
  *==========================================================================*/
 
 #include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-#include "device_config.h"          /* stdint/stdio/stdlib/string, main.h, platform.h,
-                                     * ACON_* tunables, PRODUCT_NAME et al. */
-#include "utils.h"                  /* i_getline (human-mode reader) */
+#include "automation_console.h"      /* pulls automation_console_config.h */
+#include "utils.h"                   /* i_getline (human-mode reader) */
 #include "uart_stream.h"
-#include "stdio_retarget.h"         /* h_stdio_retarget_get_stream */
-#include "automation_console.h"
+#include "stdio_retarget.h"          /* h_stdio_retarget_get_stream */
 
 #if ACON_ENABLED
 
 /*============================================================================
- * STANDALONE FALLBACK
+ * PLATFORM HOOKS -- and what happens when a config header omits one
  *
- * platform.h normally supplies PUMP_POLLING_TASK(). This keeps the module
- * compiling where it is absent -- lifted into another project, or built
- * deliberately without that dependency.
+ * Both are normally defined in automation_console_config.h, which maps them
+ * onto whatever the project already has (platform.h's SYSTEM_TICK() and
+ * PUMP_POLLING_TASK() here). These fallbacks keep the module compiling where
+ * they are absent -- lifted into another project, or built deliberately without
+ * that dependency.
  *
- * The #warning is the point: compiling the pump out is a legitimate choice but
- * a terrible accident. Without it a forgotten include silently turns the SCRIPT
- * reader into one that services nothing while it waits, and the symptom is a
- * board that appears to hang.
+ * The #warnings are the point: compiling either out is a legitimate choice but
+ * a terrible accident.
+ *
+ *   No pump -- the SCRIPT reader services nothing while it waits, and the
+ *              symptom is a board that appears to hang.
+ *   No tick -- elapsed time is permanently zero, so the SCRIPT-mode idle
+ *              timeout never fires and a host that dies mid-session wedges the
+ *              console until someone power-cycles the board.
  *==========================================================================*/
 
-#ifndef PUMP_POLLING_TASK
-#warning "platform.h not included: PUMP_POLLING_TASK() compiled out, the console will not pump the main loop"
-#define PUMP_POLLING_TASK()     do { } while (0)
+#ifndef ACON_PUMP
+#warning "ACON_PUMP() not configured: the console will not pump the main loop while it waits"
+#define ACON_PUMP()             do { } while (0)
 #endif
+
+#ifndef ACON_TICK_MS
+#warning "ACON_TICK_MS() not configured: the SCRIPT-mode idle timeout is disabled"
+#define ACON_TICK_MS()          0u
+#endif
+
+/* Unsigned wrap does the right thing at rollover, so no special case. */
+#define ACON_ELAPSED_MS(ts)     (ACON_TICK_MS() - (ts))
 
 /*============================================================================
  * PROTOCOL CONSTANTS (core-owned)
@@ -264,7 +280,8 @@ static void v_acon_builtin_version(char c_op, char *pc_line)
 {
     (void) pc_line;
     v_acon_emit(ACON_SIG_OK, "%c,%s,%s,%s,%s", c_op,
-                PRODUCT_NAME, PLATFORM_NAME, FIRMWARE_VERSION, BUILD_CONFIG);
+                ACON_ID_PRODUCT, ACON_ID_PLATFORM,
+                ACON_ID_FIRMWARE, ACON_ID_BUILD);
 }
 
 /* Q / Ctrl-C -- leave the session. */
@@ -413,13 +430,13 @@ static acon_line_t x_acon_read_script(void)
     uart_stream_h_t h_stream = h_stdio_retarget_get_stream();
     uint16_t u16_len = 0;
     uint8_t u8_overflow = 0;
-    uint32_t u32_t0 = SYSTEM_TICK();
+    uint32_t u32_t0 = ACON_TICK_MS();
 
     for (;;)
     {
         int16_t i16_ch;
 
-        PUMP_POLLING_TASK();
+        ACON_PUMP();
 
         /* Drain everything the ISR has already captured before pumping again.
          * The pump is the expensive part of this loop, so paying it once per
@@ -428,7 +445,7 @@ static acon_line_t x_acon_read_script(void)
          * bytes are actually waiting, and it exits at the terminator. */
         while ((i16_ch = i16_acon_rx_byte(h_stream)) >= 0)
         {
-            u32_t0 = SYSTEM_TICK();
+            u32_t0 = ACON_TICK_MS();
 
             if ((uint8_t) i16_ch == ACON_EXIT)
             {
@@ -456,7 +473,7 @@ static acon_line_t x_acon_read_script(void)
             }
         }
 
-        if (ELAPSED_TIME(u32_t0) >= ACON_IDLE_TIMEOUT_MS)
+        if (ACON_ELAPSED_MS(u32_t0) >= ACON_IDLE_TIMEOUT_MS)
         {
             return ACON_LINE_TIMEOUT;
         }

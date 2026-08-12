@@ -9,6 +9,10 @@
  *   automation_console.c   -- this core. Portable; no application dependencies.
  *   automation_commands.c  -- the application's command handlers and the
  *                             g_x_acon_command[] table the core dispatches into.
+ *   automation_console_config_template.h
+ *                          -- copy to App/Inc/automation_console_config.h and
+ *                             edit. Buffer sizes, timeouts, identity strings and
+ *                             the two platform hooks all live there.
  *
  *   The port point is g_x_acon_command[] (below), exactly as uart_stream takes its
  *   per-target UART table from the application. The core owns the builtins
@@ -62,17 +66,24 @@
 
 #include <stdint.h>
 
-#include "device_config.h"          /* optional DEV_CONFIG_ENABLE_AUTOMATION_CONSOLE */
+/* The adopter's copy of automation_console_config_template.h, on the include
+ * path under this exact name. Every knob the module has lives there, and it is
+ * also where the application wires in its tick source, its polling pump and its
+ * identity strings. Same contract FatFs uses for ffconf.h. */
+#include "automation_console_config.h"
 
 /*----------------------------------------------------------------------------
- * Build switch. A project may set DEV_CONFIG_ENABLE_AUTOMATION_CONSOLE to 0 in
- * device_config.h to compile the console out entirely -- the two .c bodies drop
- * to nothing and the public entry points below become inert inline stubs, so no
- * call site needs an #ifdef. Absent means enabled, so a project that never
- * mentions the flag (e.g. SwitchTester) is unaffected.
+ * Build switch. A project may set ACON_ENABLE to 0 in
+ * automation_console_config.h to compile the console out entirely -- the two .c
+ * bodies drop to nothing and the public entry points below become inert inline
+ * stubs, so no call site needs an #ifdef. Absent means enabled.
  *--------------------------------------------------------------------------*/
 
-#if !defined(DEV_CONFIG_ENABLE_AUTOMATION_CONSOLE) || (DEV_CONFIG_ENABLE_AUTOMATION_CONSOLE != 0)
+#ifndef ACON_ENABLE
+#define ACON_ENABLE             1
+#endif
+
+#if (ACON_ENABLE != 0)
 #define ACON_ENABLED 1
 #else
 #define ACON_ENABLED 0
@@ -140,20 +151,27 @@ acon_sigil_t;
 #define ACON_ERR_RANGE          "RNG"       /* parsed, but outside limits      */
 #define ACON_ERR_OVERFLOW       "OVF"       /* line or frame too long          */
 
-/* Maximum comma-separated fields u8_acon_args() will split out. */
+/*----------------------------------------------------------------------------
+ * Tunables -- SET THESE IN automation_console_config.h, not here.
+ *
+ * What follows are fallbacks only, so the module still builds if a config
+ * header omits a knob. automation_console_config.h is included above, so a
+ * value defined there always wins. Every one is documented in
+ * automation_console_config_template.h.
+ *
+ *   ACON_MAX_ARGS        comma-separated fields u8_acon_args() will split out
+ *   ACON_LINE_MAX        longest input line; must not exceed the console RX ring
+ *   ACON_EMIT_MAX        longest response frame
+ *   ACON_IDLE_TIMEOUT_MS SCRIPT-mode dead-host timeout
+ *   ACON_TX_TIMEOUT_MS   per-frame transmit bound
+ *
+ * ACON_LINE_MAX and ACON_EMIT_MAX are static buffers in the core, so they are
+ * the module's whole RAM cost.
+ *--------------------------------------------------------------------------*/
+
 #ifndef ACON_MAX_ARGS
 #define ACON_MAX_ARGS           6u
 #endif
-
-/*----------------------------------------------------------------------------
- * Buffer and timing tunables.
- *
- * Fallbacks so the module builds standalone; a project overrides any of them in
- * device_config.h (included ahead of this header in the core .c, so its value
- * wins). ACON_EMIT_MAX bounds one response frame; ACON_LINE_MAX bounds one
- * input line and must not exceed the console RX ring.
- *--------------------------------------------------------------------------*/
-
 #ifndef ACON_LINE_MAX
 #define ACON_LINE_MAX           512
 #endif
@@ -165,6 +183,25 @@ acon_sigil_t;
 #endif
 #ifndef ACON_TX_TIMEOUT_MS
 #define ACON_TX_TIMEOUT_MS      100
+#endif
+
+/*----------------------------------------------------------------------------
+ * Identity, reported verbatim by the V builtin. The application owns these
+ * strings; the config header maps them onto whatever the project already calls
+ * them. Unset is legal and simply reports "?".
+ *--------------------------------------------------------------------------*/
+
+#ifndef ACON_ID_PRODUCT
+#define ACON_ID_PRODUCT         "?"
+#endif
+#ifndef ACON_ID_PLATFORM
+#define ACON_ID_PLATFORM        "?"
+#endif
+#ifndef ACON_ID_FIRMWARE
+#define ACON_ID_FIRMWARE        "?"
+#endif
+#ifndef ACON_ID_BUILD
+#define ACON_ID_BUILD           "?"
 #endif
 
 /*----------------------------------------------------------------------------
