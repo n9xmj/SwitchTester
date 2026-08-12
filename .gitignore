@@ -6,8 +6,15 @@
 #  add them here.
 # ============================================================================
 
-# --- Per-user IDE workspace settings (not project settings) ---
-/.settings/
+# --- Per-user IDE workspace settings ---
+# Exclude the DIRECTORY CONTENTS, not the directory itself: git cannot
+# re-include a file whose parent directory is excluded, so "/.settings/" would
+# make the exceptions below impossible. Those two ARE project settings, not
+# per-user ones -- text encoding and line delimiter decide how the tree renders
+# and how new files are written, so they belong to the project.
+/.settings/*
+!/.settings/org.eclipse.core.resources.prefs
+!/.settings/org.eclipse.core.runtime.prefs
 *.metadata
 
 # --- Build output directories ---
@@ -22,7 +29,6 @@
 *.list
 *.map
 *.mk
-makefile
 objects.list
 
 # --- CubeMX backups (common when regenerating) ---
@@ -35,6 +41,14 @@ desktop.ini
 *~
 *.swp
 *.tmp
+
+# --- Merge / rebase leftovers ---
+*.orig
+*.rej
+
+# --- Other editors ---
+.vscode/
+.idea/
 
 # --- Python caches (in case bench scripts get added later) ---
 __pycache__/

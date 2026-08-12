@@ -1,0 +1,64 @@
+# ============================================================================
+#  SwitchTester — .gitattributes
+# ----------------------------------------------------------------------------
+#  Line-ending policy. Without this file the behaviour depends on each machine's
+#  core.autocrlf — set to `true` by the Git for Windows installer, in the SYSTEM
+#  config — which is why "LF will be replaced by CRLF" warnings appear and why
+#  tool-edited files drift into mixed endings.
+#
+#  Policy: LF in the repository AND in the working tree.
+#
+#  LF is chosen over the Windows CRLF convention for a practical reason, not an
+#  aesthetic one. Four things write these files: git checkout, the CubeIDE
+#  editor, agent tooling, and CubeMX codegen. Only CubeMX cannot be told to emit
+#  LF — and its output is bounded to Core/ and normalised on commit anyway.
+#  Agent tooling cannot be told to emit CRLF at all, and it edits everywhere.
+#
+#  Companion settings — neither is carried by this file:
+#    - core.autocrlf=false, set LOCALLY. Never --global: other repos on this
+#      machine rely on the system value.
+#    - CubeIDE: Project > Properties > Resource > New text file line delimiter
+#      = Unix. Project-scoped — NOT the workspace preference of the same name,
+#      which would reach every project in the workspace. Eclipse PRESERVES an
+#      existing file's delimiter and only imposes one on files it creates, so
+#      once the tree is LF, hand edits keep it LF indefinitely.
+#
+#  Audit:  git ls-files --eol | awk '{print $2}' | sort | uniq -c
+#          A clean tree reads w/lf throughout, except w/-text binaries.
+# ============================================================================
+
+# Default: detect text vs binary, normalise text to LF in the repo and on disk.
+*               text=auto eol=lf
+
+# --- Sources and build inputs (stated rather than left to detection) ---
+*.c             text
+*.h             text
+*.s             text
+*.ld            text
+
+# --- Docs, data, host-side scripts ---
+*.md            text
+*.txt           text
+*.json          text
+*.py            text
+*.ps1           text
+
+# --- CubeIDE / CubeMX project files ---
+# Tracked deliberately (see .gitignore) and kept text so diffs stay readable.
+*.ioc           text
+*.project       text
+*.cproject      text
+*.mxproject     text
+*.launch        text
+
+# --- Must be CRLF wherever they land ---
+# cmd.exe can mis-parse labels and goto in an LF-only batch file.
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# --- Never converted, never diffed as text ---
+*.pdf           binary
+*.bin           binary
+*.elf           binary
+*.hex           binary
+*.a             binary
