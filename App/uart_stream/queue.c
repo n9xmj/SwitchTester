@@ -13,8 +13,12 @@
 
 #include <string.h>
 
-#include "main.h"           /* CMSIS intrinsics via the family header CubeMX picked:
-                             * __get_PRIMASK, __set_PRIMASK, __disable_irq */
+/* For the CMSIS core intrinsics only -- __get_PRIMASK, __set_PRIMASK,
+ * __disable_irq -- which arrive with the family header this module's config
+ * header names. queue.{c,h} are otherwise pure C and know nothing about UARTs;
+ * they share uart_stream's config header because they ship inside the module,
+ * not because they need anything else from it. */
+#include "uart_stream_config.h"
 
 /*==============================================================================
  * Critical section helpers

@@ -10,11 +10,10 @@
 # Exclude the DIRECTORY CONTENTS, not the directory itself: git cannot
 # re-include a file whose parent directory is excluded, so "/.settings/" would
 # make the exceptions below impossible. Those two ARE project settings, not
-# per-user ones -- text encoding and line delimiter decide how the tree renders
-# and how new files are written, so they belong to the project.
+# per-user one -- text encoding decides how the tree renders
+# for every reader, so it belongs to the project.
 /.settings/*
 !/.settings/org.eclipse.core.resources.prefs
-!/.settings/org.eclipse.core.runtime.prefs
 *.metadata
 
 # --- Build output directories ---

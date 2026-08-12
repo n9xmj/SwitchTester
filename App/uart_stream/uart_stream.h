@@ -97,14 +97,19 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "main.h"               /* CubeMX indirection to the right family header:
-                                 * UART_HandleTypeDef, USART_TypeDef, IRQn_Type.
-                                 * Do NOT include a family-specific header here --
-                                 * that would tie the module to one STM32 series. */
+/* The adopter's copy of uart_stream_config_template.h, on the include path
+ * under this exact name. It names the STM32 family header this module's types
+ * and HAL calls come from, and carries every knob below. Same contract FatFs
+ * uses for ffconf.h. */
+#include "uart_stream_config.h"
 #include "queue.h"
 
 /*==============================================================================
  * Configuration
+ *
+ * Fallbacks only -- SET THESE IN uart_stream_config.h, which is included above
+ * so a value defined there always wins. Each is documented at length in
+ * uart_stream_config_template.h.
  *============================================================================*/
 
 /** @brief Maximum number of simultaneously bound UARTs. */

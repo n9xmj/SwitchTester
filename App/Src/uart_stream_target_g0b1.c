@@ -39,7 +39,8 @@
  *   USART3_4_5_6_LPUART1_IRQn   USART3, USART4, USART5, USART6, LPUART1
  ******************************************************************************/
 
-#include "uart_stream.h"   /* pulls in main.h -> UART_HandleTypeDef, IRQn_Type */
+#include "uart_stream.h"   /* -> uart_stream_config.h -> the family header:
+                            * UART_HandleTypeDef, IRQn_Type */
 
 /* Weak handle references -- see header comment. A UART this build does not
  * provision resolves to NULL at link time rather than failing the link. */
