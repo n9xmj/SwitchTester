@@ -17,6 +17,7 @@ is the exact failure the vendoring model exists to prevent.
 | `logging` | `App/logging/` | migrated 2026-08-09, verbosity levels, bench-verified |
 | `uart_stream` | `App/uart_stream/` | renamed from `uart-stream/` 2026-08-09 |
 | `automation_console` | `App/automation_console/` | renamed from `automation-console/` 2026-08-09 |
+| `menusystem` | `App/menusystem/` | vendored 2026-08-13 (canonical `item_type`/`key` for now); LED_Strip-baseline reconciliation deferred — see below |
 
 Port files (edit these, never the module directories):
 
@@ -33,6 +34,13 @@ repo is the intended home for the **W25Q128 SPI flash driver** that will exercis
 pluggable storage-driver layer — the core chip driver from `LED_Strip_Controller_G474`
 only, not the partition or VFS layers. Rationale is in Skeleton's
 `improvements-backlog.md` under item 3.
+
+`menusystem` was vendored 2026-08-13 (packaging/organization; all three projects now use
+`App/menusystem/`). Its code is NOT yet the final canonical — SwitchTester + Skeleton carry
+`item_type`/`key`, LED_Strip its fuller `x_type`/`c_key` fork. The deferred reconciliation
+will make **LED_Strip's the baseline** and rename SwitchTester+Skeleton's menu defs to it
+(the cheaper direction). Full plan and rationale in Skeleton's `improvements-backlog.md`,
+item 5.
 
 ## Note on the older plan documents
 
