@@ -632,71 +632,71 @@ static void v_debug_soft_reset(void)
 static const menu_item_t x_switch_menu[] =
 {
     {
-        .item_type = MENU_ITEM_HELP_TEXT_FIXED,
-        .key = 0,
-        .text = "\r\n--- Switch outputs (SWITCH_A..D, active high) ---\r\n"
+        .x_type = MENU_ITEM_HELP_TEXT_FIXED,
+        .c_key = 0,
+        .p_c_text = "\r\n--- Switch outputs (SWITCH_A..D, active high) ---\r\n"
                 "[a b c d]  Force OFF          A..D\r\n"
                 "[A B C D]  Force ON           A..D\r\n"
                 "[1 2 3 4]  Pulse ON for [w]   A..D\r\n"
                 "[! @ # $]  Toggle             A..D\r\n"
     },
     {
-        .item_type = MENU_ITEM_HELP,
-        .key = '?',
-        .text = NULL
+        .x_type = MENU_ITEM_HELP,
+        .c_key = '?',
+        .p_c_text = NULL
     },
     {
-        .item_type = MENU_ITEM_HELP_HIDDEN,
-        .key = '\r',
-        .text = NULL
+        .x_type = MENU_ITEM_HELP_HIDDEN,
+        .c_key = '\r',
+        .p_c_text = NULL
     },
     {
-        .item_type = MENU_ITEM_KEY_LIST_FUNCTION,
-        .key_list = "abcd",
-        .key_list_function = v_switch_key_off
+        .x_type = MENU_ITEM_KEY_LIST_FUNCTION,
+        .p_c_key_list = "abcd",
+        .pfn_key_list_function = v_switch_key_off
     },
     {
-        .item_type = MENU_ITEM_KEY_LIST_FUNCTION,
-        .key_list = "ABCD",
-        .key_list_function = v_switch_key_on
+        .x_type = MENU_ITEM_KEY_LIST_FUNCTION,
+        .p_c_key_list = "ABCD",
+        .pfn_key_list_function = v_switch_key_on
     },
     {
-        .item_type = MENU_ITEM_KEY_LIST_FUNCTION,
-        .key_list = "1234",
-        .key_list_function = v_switch_key_pulse
+        .x_type = MENU_ITEM_KEY_LIST_FUNCTION,
+        .p_c_key_list = "1234",
+        .pfn_key_list_function = v_switch_key_pulse
     },
     {
-        .item_type = MENU_ITEM_KEY_LIST_FUNCTION,
-        .key_list = "!@#$",
-        .key_list_function = v_switch_key_toggle
+        .x_type = MENU_ITEM_KEY_LIST_FUNCTION,
+        .p_c_key_list = "!@#$",
+        .pfn_key_list_function = v_switch_key_toggle
     },
     {
-        .item_type = MENU_ITEM_FUNCTION,
-        .key = 'w',
-        .text = "Set pulse width",
-        .function = v_switch_set_pulse_width
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = 'w',
+        .p_c_text = "Set pulse width",
+        .pfn_function = v_switch_set_pulse_width
     },
     {
-        .item_type = MENU_ITEM_FUNCTION,
-        .key = 's',
-        .text = "Show switch output state",
-        .function = v_switch_show_state
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = 's',
+        .p_c_text = "Show switch output state",
+        .pfn_function = v_switch_show_state
     },
     {
-        .item_type = MENU_ITEM_FUNCTION,
-        .key = '0',
-        .text = "All switch outputs OFF",
-        .function = v_switch_all_off
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = '0',
+        .p_c_text = "All switch outputs OFF",
+        .pfn_function = v_switch_all_off
     },
     {
         /* ESC is the canonical return-from-submenu key throughout. The framework
-         * already renders 0x1B as "ESC" via p_c_char_to_str(). */
-        .item_type = MENU_ITEM_RETURN_TO_PREVIOUS_MENU,
-        .key = 0x1B,
-        .text = "Return to previous menu"
+         * already renders 0x1B as "ESC" via pc_char_to_str(). */
+        .x_type = MENU_ITEM_RETURN_TO_PREVIOUS_MENU,
+        .c_key = 0x1B,
+        .p_c_text = "Return to previous menu"
     },
     {
-        .item_type = MENU_ITEM_END_OF_LIST,
+        .x_type = MENU_ITEM_END_OF_LIST,
     }
 };
 
@@ -708,134 +708,134 @@ static const menu_item_t x_switch_menu[] =
 static const menu_item_t x_cycle_menu[] =
 {
     {
-        .item_type = MENU_ITEM_HELP_TEXT_FIXED,
-        .key = 0,
-        .text = "\r\n--- Switch cycling (SWITCH_A..D) ---"
+        .x_type = MENU_ITEM_HELP_TEXT_FIXED,
+        .c_key = 0,
+        .p_c_text = "\r\n--- Switch cycling (SWITCH_A..D) ---"
     },
     {
-        .item_type = MENU_ITEM_HELP_TEXT_VARIABLE,
-        .key = 0,
-        .text = NULL,
-        .help_text_function = v_cycle_help_text
+        .x_type = MENU_ITEM_HELP_TEXT_VARIABLE,
+        .c_key = 0,
+        .p_c_text = NULL,
+        .pfn_help_text_function = v_cycle_help_text
     },
     {
-        .item_type = MENU_ITEM_HELP,
-        .key = '?',
-        .text = NULL
+        .x_type = MENU_ITEM_HELP,
+        .c_key = '?',
+        .p_c_text = NULL
     },
     {
-        .item_type = MENU_ITEM_HELP_HIDDEN,
-        .key = '\r',
-        .text = NULL
+        .x_type = MENU_ITEM_HELP_HIDDEN,
+        .c_key = '\r',
+        .p_c_text = NULL
     },
     {
-        .item_type = MENU_ITEM_KEY_LIST_FUNCTION,
-        .key_list = CYCLE_PARAM_KEYS,
-        .key_list_function = v_cycle_key_param
+        .x_type = MENU_ITEM_KEY_LIST_FUNCTION,
+        .p_c_key_list = CYCLE_PARAM_KEYS,
+        .pfn_key_list_function = v_cycle_key_param
     },
     {
-        .item_type = MENU_ITEM_KEY_LIST_FUNCTION,
-        .key_list = CYCLE_RUN_KEYS,
-        .key_list_function = v_cycle_key_startstop
+        .x_type = MENU_ITEM_KEY_LIST_FUNCTION,
+        .p_c_key_list = CYCLE_RUN_KEYS,
+        .pfn_key_list_function = v_cycle_key_startstop
     },
     {
-        .item_type = MENU_ITEM_FUNCTION,
-        .key = '0',
-        .text = "Stop all cycling",
-        .function = v_cycle_stop_all
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = '0',
+        .p_c_text = "Stop all cycling",
+        .pfn_function = v_cycle_stop_all
     },
     {
-        .item_type = MENU_ITEM_RETURN_TO_PREVIOUS_MENU,
-        .key = 0x1B,
-        .text = "Return to previous menu"
+        .x_type = MENU_ITEM_RETURN_TO_PREVIOUS_MENU,
+        .c_key = 0x1B,
+        .p_c_text = "Return to previous menu"
     },
     {
-        .item_type = MENU_ITEM_END_OF_LIST,
+        .x_type = MENU_ITEM_END_OF_LIST,
     }
 };
 
 static const menu_item_t x_debug_top_menu[] =
 {
     {
-        .item_type = MENU_ITEM_HELP_TEXT_FIXED,
-        .key = 0,
-        .text = "\r\n--- " PRODUCT_NAME " v" FIRMWARE_VERSION " Main Menu ---\r\n"
+        .x_type = MENU_ITEM_HELP_TEXT_FIXED,
+        .c_key = 0,
+        .p_c_text = "\r\n--- " PRODUCT_NAME " v" FIRMWARE_VERSION " Main Menu ---\r\n"
     },
     {
-        .item_type = MENU_ITEM_HELP,
-        .key = '?',
-        .text = NULL
+        .x_type = MENU_ITEM_HELP,
+        .c_key = '?',
+        .p_c_text = NULL
     },
     {
         /* Bare <Enter> re-prints the menu without logging an unknown key. */
-        .item_type = MENU_ITEM_HELP_HIDDEN,
-        .key = '\r',
-        .text = NULL
+        .x_type = MENU_ITEM_HELP_HIDDEN,
+        .c_key = '\r',
+        .p_c_text = NULL
     },
     {
-        .item_type = MENU_ITEM_FUNCTION,
-        .key = '!',
-        .text = "Soft reset (system)",
-        .function = v_debug_soft_reset
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = '!',
+        .p_c_text = "Soft reset (system)",
+        .pfn_function = v_debug_soft_reset
     },
     {
-        .item_type = MENU_ITEM_FUNCTION,
-        .key = 'n',
-        .text = "NVM pool dump",
-        .function = v_debug_nvm_dump
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = 'n',
+        .p_c_text = "NVM pool dump",
+        .pfn_function = v_debug_nvm_dump
     },
     {
-        .item_type = MENU_ITEM_FUNCTION,
-        .key = 'N',
-        .text = "NVM pool ERASE + reset (defaults)",
-        .function = v_debug_nvm_erase
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = 'N',
+        .p_c_text = "NVM pool ERASE + reset (defaults)",
+        .pfn_function = v_debug_nvm_erase
     },
     {
-        .item_type = MENU_ITEM_CALL_MENU,
-        .key = 's',
-        .text = "Switch outputs (SWITCH_A..D)",
-        .menu = x_switch_menu
+        .x_type = MENU_ITEM_CALL_MENU,
+        .c_key = 's',
+        .p_c_text = "Switch outputs (SWITCH_A..D)",
+        .p_x_menu = x_switch_menu
     },
     {
-        .item_type = MENU_ITEM_CALL_MENU,
-        .key = 'c',
-        .text = "Switch cycling (SWITCH_A..D)",
-        .menu = x_cycle_menu
+        .x_type = MENU_ITEM_CALL_MENU,
+        .c_key = 'c',
+        .p_c_text = "Switch cycling (SWITCH_A..D)",
+        .p_x_menu = x_cycle_menu
     },
     {
-        .item_type = MENU_ITEM_FUNCTION,
-        .key = 'a',
-        .text = "Automation console (human-driven)",
-        .function = v_debug_automation_console
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = 'a',
+        .p_c_text = "Automation console (human-driven)",
+        .pfn_function = v_debug_automation_console
     },
     {
-        .item_type = MENU_ITEM_FUNCTION,
-        .key = 'W',
-        .text = "RTC wake-up timer sleep test",
-        .function = v_debug_wakeup_sleep_test
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = 'W',
+        .p_c_text = "RTC wake-up timer sleep test",
+        .pfn_function = v_debug_wakeup_sleep_test
     },
     {
-        .item_type = MENU_ITEM_FUNCTION,
-        .key = 'q',
-        .text = "Quick test function 1",
-        .function = v_debug_quick_test_1
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = 'q',
+        .p_c_text = "Quick test function 1",
+        .pfn_function = v_debug_quick_test_1
     },
     {
-        .item_type = MENU_ITEM_FUNCTION,
-        .key = 'Q',
-        .text = "Quick test function 2",
-        .function = v_debug_quick_test_2
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = 'Q',
+        .p_c_text = "Quick test function 2",
+        .pfn_function = v_debug_quick_test_2
     },
     {
         /* Hidden: ESC at the top level has nowhere to pop. menusystem replies
          * "[At top-level menu]" on an empty-stack return, so a spammed ESC
          * confirms you are fully backed out -- no custom function needed. */
-        .item_type = MENU_ITEM_RETURN_TO_PREVIOUS_MENU,
-        .key = 0x1B,
-        .text = NULL
+        .x_type = MENU_ITEM_RETURN_TO_PREVIOUS_MENU,
+        .c_key = 0x1B,
+        .p_c_text = NULL
     },
     {
-        .item_type = MENU_ITEM_END_OF_LIST,
+        .x_type = MENU_ITEM_END_OF_LIST,
     }
 };
 
@@ -860,7 +860,7 @@ void v_debug_menu_init(void)
 
 static void v_debug_menu_exec(char c_key)
 {
-    if (x_debug_menu_control.menu_stack == NULL)
+    if (x_debug_menu_control.pap_x_menu == NULL)
     {
         v_debug_menu_init();
     }
@@ -901,7 +901,7 @@ void v_debug_menu_service(void)
             continue;
         }
 
-        p_c_char_to_str((char) i_key, str_key);
+        pc_char_to_str((char) i_key, str_key);
         printf("Cmd [%s]\r\n", str_key);
         v_debug_menu_exec((char) i_key);
     }
