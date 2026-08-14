@@ -61,10 +61,11 @@ static const menu_item_t x_example_menu[] =
         .text      = "Example command",
         .function  = v_example_command
     },
-    {   /* ESC returns to the parent menu (submenus only -- see note) */
+    {   /* ESC returns to the parent. Canonical text so the copies fold in
+           .rodata (see note); use .text = NULL instead to hide the entry. */
         .item_type = MENU_ITEM_RETURN_TO_PREVIOUS_MENU,
         .key       = 0x1B,
-        .text      = NULL
+        .text      = "Return to previous menu"
     },
     {   /* Sentinel -- MUST be last */
         .item_type = MENU_ITEM_END_OF_LIST
@@ -72,9 +73,17 @@ static const menu_item_t x_example_menu[] =
 };
 ```
 
-**Home menu vs submenu.** The `RETURN_TO_PREVIOUS_MENU` entry only makes sense in
-a submenu. Your *home* menu omits it — there is nowhere to return to — and ends
-straight at the sentinel.
+**Home menu vs submenu.** A submenu's `RETURN_TO_PREVIOUS_MENU` pops back up. The
+home menu has nowhere to pop — but you can still include a return there: on an
+empty stack the framework prints `[At top-level menu]` (handy for confirming
+you've backed all the way out) and reprints the menu. Give that home-menu entry
+`.text = NULL` so it stays **off** the listing while still working — a NULL-text
+return is hidden, exactly as a NULL-text `FUNCTION` is.
+
+**Return-text convention.** A *visible* return supplies its own text, and every
+one should use the identical canonical string **`"Return to previous menu"`**
+verbatim. Identical `const` strings fold to a single `.rodata` copy at link time,
+so repeating the phrase across every submenu costs nothing.
 
 **A submenu is just an item that points at another menu array:**
 

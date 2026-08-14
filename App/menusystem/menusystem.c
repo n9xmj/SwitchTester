@@ -231,9 +231,14 @@ void v_menu_help(const menu_item_t *p_x_menu_list)
                 break;
 
             case MENU_ITEM_RETURN_TO_PREVIOUS_MENU:
+                /* NULL text hides the entry (as FUNCTION does), so a home-menu
+                 * ESC can back out with feedback yet stay off the listing. A
+                 * VISIBLE return supplies its own text -- use the canonical
+                 * "Return to previous menu" verbatim so the copies fold to one
+                 * string in .rodata. */
                 if (p_x_entry->text == NULL)
                 {
-                    p_c_text = "Return to previous menu";
+                    b_print_entry = false;
                 }
                 break;
 
@@ -401,7 +406,7 @@ void v_menu_exec(menu_control_t *p_x_menu_control, char c_key)
                     }
                     else
                     {
-                        printf("WARNING: Menu stack empty\r\n");
+                        printf("\r\n[At top-level menu]\r\n");
                     }
                     v_menu_help(p_x_menu_control->menu_stack[p_x_menu_control->menu_stack_index]);
                     break;
