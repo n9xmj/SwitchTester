@@ -40,11 +40,11 @@ struct menu_item_s
     menu_item_type_t    item_type;  // Should be 8-bit value
     char                key;
     uint8_t             not_implemented;
-    uint8_t             _reserved;  // Fill (for alignment)
+    uint8_t             no_newline; // Suppress the trailing CR/LF after this item
     union
     {
-        char            *text;
-        char            *key_list;
+        const char      *text;
+        const char      *key_list;
     };
     union
     {

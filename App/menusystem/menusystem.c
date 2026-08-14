@@ -7,7 +7,6 @@
 #include <string.h>
 #include <stdbool.h>
 
-#include "ANSI.h"
 #include "menusystem.h"
 
 /******************************************************************************
@@ -113,9 +112,7 @@ bool b_menu_key_conflict_check(const menu_item_t *menu)
                         {
                             p_c_text_inner = p_c_no_description;
                         }
-                        printf(ANSI_FG_YELLOW
-                               "WARNING: Menu items share the same key definition [%c]:\r\n"
-                               ANSI_DEFAULT_COLOR
+                        printf("WARNING: Menu items share the same key definition [%c]:\r\n"
                                "%s\r\n"
                                "%s\r\n",
                                menu[u16_outer_index].key,
@@ -133,13 +130,27 @@ bool b_menu_key_conflict_check(const menu_item_t *menu)
 }
 
 /******************************************************************************
+ * Emit CR/LF unless the item asked to suppress it (no_newline), so consecutive
+ * items can be rendered on one line.
+ ******************************************************************************/
+
+static void v_menu_newline(uint8_t u8_no_newline)
+{
+    if (!u8_no_newline)
+    {
+        putchar('\r');
+        putchar('\n');
+    }
+}
+
+/******************************************************************************
  *
  ******************************************************************************/
 
 void v_menu_help(const menu_item_t *p_x_menu_list)
 {
     const menu_item_t *p_x_entry;
-    char *p_c_text;
+    const char *p_c_text;
     bool b_print_entry;
     char str_key[4];
 
@@ -161,7 +172,8 @@ void v_menu_help(const menu_item_t *p_x_menu_list)
                 b_print_entry = false;
                 if (p_x_entry->text != NULL)
                 {
-                    printf("%s\r\n", p_c_text);
+                    printf("%s", p_c_text);
+                    v_menu_newline(p_x_entry->no_newline);
                 }
                 break;
 
@@ -169,7 +181,8 @@ void v_menu_help(const menu_item_t *p_x_menu_list)
                 b_print_entry = false;
                 if (p_x_entry->text != NULL)
                 {
-                    printf("%s\r\n", p_c_text);
+                    printf("%s", p_c_text);
+                    v_menu_newline(p_x_entry->no_newline);
                 }
                 if (p_x_entry->help_text_function != NULL)
                 {
@@ -239,7 +252,8 @@ void v_menu_help(const menu_item_t *p_x_menu_list)
 
         if (b_print_entry)
         {
-            printf("[%s] %s\r\n", str_key, p_c_text);
+            printf("[%s] %s", str_key, p_c_text);
+            v_menu_newline(p_x_entry->no_newline);
         }
 
         p_x_entry++;
