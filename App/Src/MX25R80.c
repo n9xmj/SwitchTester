@@ -41,8 +41,9 @@ typedef enum PACKED
     MX_CMD_SBL                  = 0xC0, // Set Burst Length
     MX_CMD_RDFSR                = 0x44, // Read Factory Status Register
 
-    MX_CMD_RDID                 = 0x9E, // Read Identification
-    MX_CMD_RDID2                = 0x9F,
+    MX_CMD_RDID                 = 0x9F, // Read Identification (JEDEC standard)
+    MX_CMD_RDID_ALT             = 0x9E, // Macronix-specific alias; NOT answered by
+                                        // non-Macronix JEDEC parts (W25Q, SST, ...)
     MX_CMD_RDP                  = 0xAB, // Release from Deep Power Down mode
     MX_CMD_REMS                 = 0x90, // Read Electronic Manufacturer & Device ID
     MX_CMD_ENSO                 = 0xB1, // Enter Secured OTP
@@ -292,9 +293,7 @@ uint8_t u8_spiflash_read_id(spiflash_id_t *p_x_id)
     do
     {
         v_spiflash_select();
-        u8_data = MX_CMD_RDID2;     /* 0x9F: JEDEC-standard Read ID. 0x9E is a
-                                     * Macronix-specific alias that W25Q/SST parts
-                                     * do not answer -- use 0x9F for portability. */
+        u8_data = MX_CMD_RDID;      /* 0x9F, JEDEC standard (see enum) */
         x_status = HAL_SPI_Transmit(p_x_spiflash_hspi, &u8_data, 1, SPIFLASH_TIMEOUT);
         if (x_status != HAL_OK) break;
 

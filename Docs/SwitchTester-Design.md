@@ -22,7 +22,7 @@ tool for exercising/validating external switching hardware.
 | Switch out C | SWITCH_C | PB10 | TIM2_CH3 | |
 | Switch out D | SWITCH_D | PB11 | TIM2_CH4 | |
 | Sense A | SENSE_A | PA1 | COMP1 (+) via IO3 | threshold = DAC1_CH1 (dedicated, adjustable) |
-| Sense B | SENSE_B | PB4 | COMP2 (+) via IO1 | threshold = DAC1_CH2 (adjustable) |
+| Sense B | SENSE_B | PB6 | COMP2 (+) via IO2 | threshold = DAC1_CH2 (adjustable); moved off PB4 (now SPI3_MISO) |
 | Sense C | SENSE_C | PB0 | COMP3 (+) via IO1 | threshold = **½·VREFINT** (fixed, ≈0.6 V) — see note |
 | Sense D | SENSE_D | PA0 | ADC1_IN0 | analog read; ADC also samples VREFINT |
 | DAC ref 1 | — | PA4 | DAC1_CH1 | buffered, ext (PA4) + internal → COMP1 (−) |
@@ -32,7 +32,9 @@ tool for exercising/validating external switching hardware.
 | Console | DEBUG_TX/RX | PA2/PA3 | USART2 | 921600 |
 
 COMP input assignments verified against `stm32g0xx_hal_comp.h`: COMP1_INP IO3 =
-PA1, COMP2_INP IO1 = PB4, COMP3_INP IO1 = PB0. All three match.
+PA1, COMP2_INP IO2 = PB6, COMP3_INP IO1 = PB0. All three match. (Sense B was on
+PB4/IO1 until the SPI-flash testbed took PB4 for SPI3_MISO; PB6/IO2 is the
+equivalent COMP2 input.)
 
 ## External hardware
 
@@ -440,7 +442,7 @@ module lands. See `G0B1_Skeleton/Docs/planning/nvmparams-plan.md` phase 2.
 | Function | Net label | Pin | Peripheral | Notes |
 |---|---|---|---|---|
 | Flash SCK | SPIFLASH_SCK | PB3 | SPI3_SCK (AF9) | mode 0, 8 MHz |
-| Flash MISO | SPIFLASH_MISO | PB4 | SPI3_MISO (AF9) | **shared with Sense B (COMP2)** — testbed repurposes PB4 |
+| Flash MISO | SPIFLASH_MISO | PB4 | SPI3_MISO (AF9) | PB4 freed for this by moving Sense B to PB6 (COMP2 IO2) |
 | Flash MOSI | SPIFLASH_MOSI | PC12 | SPI3_MOSI (AF4) | |
 | Flash CS | SPIFLASH_NCS | PA15 | GPIO out, push-pull | moved off hardware NSS so CS holds low across a multi-phase command |
 | Test sense | TEST_INPUT | PC3 | GPIO in, pull-up | temporary probe lead for the loopback checks below |
