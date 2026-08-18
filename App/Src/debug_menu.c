@@ -21,7 +21,8 @@
 #include "utils.h"                   /* RTC wakeup + hour-time helpers under test */
 #include "rtc.h"                     /* hrtc, for post-STOP HAL_RTC_WaitForSynchro */
 #include "switch_out.h"              /* SWITCH_A..D drive control */
-#include "nvmparams.h"               /* NVM pool dump / erase diagnostics */
+#include "nvmparams.h"               /* NVM pool erase diagnostics */
+#include "nvm_list.h"                /* x_nvm_list() pool dump -- not part of the module */
 #include "globals.h"                 /* g_x_nvm_param */
 #include "automation_console.h"      /* Host/script command interface */
 

@@ -48,6 +48,7 @@
 									<listOptionValue builtIn="false" value="../App/Inc"/>
 									<listOptionValue builtIn="false" value="../App/uart_stream"/>
 									<listOptionValue builtIn="false" value="../App/logging"/>
+									<listOptionValue builtIn="false" value="../App/nvmparams"/>
 									<listOptionValue builtIn="false" value="../App/common"/>
 									<listOptionValue builtIn="false" value="../App/automation_console"/>
 									<listOptionValue builtIn="false" value="../App/menusystem"/>
@@ -132,6 +133,7 @@
 									<listOptionValue builtIn="false" value="../App/Inc"/>
 									<listOptionValue builtIn="false" value="../App/uart_stream"/>
 									<listOptionValue builtIn="false" value="../App/logging"/>
+									<listOptionValue builtIn="false" value="../App/nvmparams"/>
 									<listOptionValue builtIn="false" value="../App/common"/>
 									<listOptionValue builtIn="false" value="../App/automation_console"/>
 									<listOptionValue builtIn="false" value="../App/menusystem"/>

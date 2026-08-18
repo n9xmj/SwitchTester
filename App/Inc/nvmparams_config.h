@@ -18,7 +18,7 @@
 #ifndef NVMPARAMS_CONFIG_H
 #define NVMPARAMS_CONFIG_H
 
-#include "logging.h"
+#include "logging_config.h"     /* LOG_NVM class + LOGCT() */
 
 /*=============================================================================
  * 1. POOL GEOMETRY

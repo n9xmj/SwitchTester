@@ -5,12 +5,16 @@
  ******************************************************************************/
 
 #include <string.h>
-#if NVM_ENABLE_INTERNAL_MALLOC
-#include <stdlib.h>
-#endif
 
 #include "nvmparams.h"
 #include "nvmparams_internal.h"
+
+// AFTER nvmparams.h, deliberately: NVM_ENABLE_INTERNAL_MALLOC comes from the
+// adopter's config header, which nvmparams.h pulls in. Testing it any earlier
+// silently reads as 0 and drops the allocator declarations.
+#if NVM_ENABLE_INTERNAL_MALLOC
+#include <stdlib.h>
+#endif
 
 //------------------------------------------------------------------------------
 
@@ -676,7 +680,6 @@ nvm_error_t x_nvm_pool_init(nvm_pool_t *p_x_pool, const nvm_pool_config_t *p_x_c
 /******************************************************************************
  *
  ******************************************************************************/
- ******************************************************************************/
 
 nvm_error_t x_nvm_pool_release(nvm_pool_t *p_x_pool)
 {
@@ -969,69 +972,6 @@ nvm_error_t x_nvm_set_unchecked(nvm_pool_t *p_x_pool, nvm_param_id_t x_id, const
         p_x_pool->u8_need_commit = 1;
         p_x_pool->u16_commit_timer = 0;
     }
-
-    return NVM_ERROR_NONE;
-}
-
-/******************************************************************************
- *
- ******************************************************************************/
-
-nvm_error_t x_nvm_list(nvm_pool_t *p_x_pool)
-{
-#if DEBUG_MENU
-    nvm_header_t *p_x_nvm_header = (nvm_header_t *) p_x_pool->p_v_data;
-    nvm_object_t *p_x_nvm_object;
-    uint32_t u32_object_index;
-    uint16_t u16_data_index;
-    uint16_t u16_object_count;
-
-    if (p_x_pool == NULL)
-    {
-        return NVM_ERROR_PARAMETER;
-    }
-
-    printf("\r\n"
-            "Label     : \"%.16s\"\r\n"
-            "DeviceID  : %u\r\n"
-            "Size      : %lu (malloc:%u)\r\n"
-            "Signature : 0x%08lX\r\n"
-            "CRC       : 0x%08lX\r\n"
-            "WriteCnt  : %lu\r\n"
-            "NeedCommit: %u\r\n\n",
-            p_x_nvm_header->c_label,
-            p_x_pool->x_device,
-            p_x_pool->u32_size, p_x_pool->u8_internal_malloc,
-            p_x_nvm_header->u32_signature,
-            p_x_nvm_header->u32_crc,
-            p_x_nvm_header->u32_write_count,
-            p_x_pool->u8_need_commit
-            );
-
-    p_x_nvm_object = (nvm_object_t *) (((uint8_t *) p_x_pool->p_v_data) + sizeof(nvm_header_t));
-    u32_object_index = sizeof(nvm_header_t);
-    u16_object_count = 0;
-
-    printf("ID      Offset  Size   Data\r\n");
-    while ((p_x_nvm_object->x_id != NVM_PARAM_END_OF_DATA) && (u32_object_index < p_x_pool->u32_size))
-    {
-        printf("0x%04X  0x%04lX  %-5u ", p_x_nvm_object->x_id, u32_object_index, p_x_nvm_object->u16_size);
-        for (u16_data_index = 0; u16_data_index < p_x_nvm_object->u16_size; u16_data_index++)
-        {
-            printf(" %02X", p_x_nvm_object->u8_data[u16_data_index]);
-        }
-        printf("\r\n");
-        u32_object_index += sizeof(nvm_object_t) + ROUNDUP4(p_x_nvm_object->u16_size);
-        p_x_nvm_object = (nvm_object_t *) (((uint8_t *) p_x_pool->p_v_data) + u32_object_index);
-        u16_object_count++;
-    }
-
-    if (p_x_nvm_object->x_id == NVM_PARAM_END_OF_DATA)
-    {
-        u32_object_index += sizeof(nvm_object_t);
-    }
-    printf("\r\n%u objects, %lu of %lu bytes used\r\n", u16_object_count, u32_object_index, p_x_pool->u32_size);
-#endif
 
     return NVM_ERROR_NONE;
 }

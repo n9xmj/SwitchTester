@@ -111,6 +111,64 @@ typedef int16_t nvm_error_t;
 #define NVM_DATA_SIGNATURE          0x5AA5A55Au
 #define NVM_CRC_PLACEHOLDER         0xDEADC0DEu
 
+/*----------------------------------------------------------------------------
+ * What a storage driver is given.
+ *
+ * The driver moves u32_size bytes between p_v_data and ux_address. That is the
+ * whole contract:
+ *
+ *   - The driver validates its own parameters and reports PHYSICAL DEVICE
+ *     ACCESS ERRORS ONLY. It performs no integrity checking -- deciding whether
+ *     data is valid is this module's job.
+ *   - The driver knows nothing about wear levelling. ux_address is the final
+ *     effective address, already resolved by the module.
+ *   - Return NVM_ERROR_NONE on success. Positive values are yours to define as
+ *     device-specific error codes and reach the caller unchanged.
+ *
+ * ux_address is deliberately an integer, not a pointer: it is a memory address
+ * for internal flash, a byte offset for SPI flash, and an lseek()/fseek()
+ * offset for a file-backed driver.
+ *--------------------------------------------------------------------------*/
+
+typedef struct
+{
+    uintptr_t   ux_address;     /* Effective device address, module-computed */
+    uint32_t    u32_size;       /* Bytes to transfer */
+    void       *p_v_data;       /* RAM pool: source for write, destination for read */
+    void       *p_v_context;    /* Driver's own; e.g. a file path or bus handle */
+}
+nvm_media_t;
+
+typedef nvm_error_t (*pfn_nvm_read_t) (const nvm_media_t *p_x_media);
+typedef nvm_error_t (*pfn_nvm_write_t)(const nvm_media_t *p_x_media);
+typedef uint32_t    (*pfn_nvm_crc_t)  (const void *p_v_data, uint32_t u32_size);
+
+/*----------------------------------------------------------------------------
+ * What x_nvm_pool_init() does when the media does not hold a valid pool.
+ *
+ * A driver that returns an error is a fourth case, distinct from all of these:
+ * the module then knows nothing about the contents and ALWAYS aborts, under
+ * every policy. Writing to a device you could not read is how a transient fault
+ * becomes permanent data loss.
+ *--------------------------------------------------------------------------*/
+
+typedef enum
+{
+    /* Format blank media; abort on corrupt. The safe default. */
+    NVM_INIT_FORMAT_IF_BLANK = 0,
+
+    /* Format blank media; reformat corrupt media, destroying its contents.
+     * Reported as NVM_ERROR_POOL_REFORMATTED. */
+    NVM_INIT_FORMAT_IF_INVALID,
+
+    /* Never write. Abort on anything but a valid pool, blank included.
+     * For pools that must have been provisioned beforehand -- factory
+     * calibration, serial numbers -- where silently manufacturing defaults
+     * would hide a production fault. */
+    NVM_INIT_REQUIRE_VALID
+}
+nvm_init_policy_t;
+
 /*=============================================================================
  * The adopter's control panel.
  *===========================================================================*/
@@ -174,64 +232,6 @@ _Static_assert(NVM_POOL_SIZE_DEFAULT >= NVM_POOL_SIZE_MIN,
 
 _Static_assert((NVM_POOL_SIZE_DEFAULT % 4) == 0,
                "NVM_POOL_SIZE_DEFAULT must be a multiple of 4");
-
-/*----------------------------------------------------------------------------
- * What a storage driver is given.
- *
- * The driver moves u32_size bytes between p_v_data and ux_address. That is the
- * whole contract:
- *
- *   - The driver validates its own parameters and reports PHYSICAL DEVICE
- *     ACCESS ERRORS ONLY. It performs no integrity checking -- deciding whether
- *     data is valid is this module's job.
- *   - The driver knows nothing about wear levelling. ux_address is the final
- *     effective address, already resolved by the module.
- *   - Return NVM_ERROR_NONE on success. Positive values are yours to define as
- *     device-specific error codes and reach the caller unchanged.
- *
- * ux_address is deliberately an integer, not a pointer: it is a memory address
- * for internal flash, a byte offset for SPI flash, and an lseek()/fseek()
- * offset for a file-backed driver.
- *--------------------------------------------------------------------------*/
-
-typedef struct
-{
-    uintptr_t   ux_address;     /* Effective device address, module-computed */
-    uint32_t    u32_size;       /* Bytes to transfer */
-    void       *p_v_data;       /* RAM pool: source for write, destination for read */
-    void       *p_v_context;    /* Driver's own; e.g. a file path or bus handle */
-}
-nvm_media_t;
-
-typedef nvm_error_t (*pfn_nvm_read_t) (const nvm_media_t *p_x_media);
-typedef nvm_error_t (*pfn_nvm_write_t)(const nvm_media_t *p_x_media);
-typedef uint32_t    (*pfn_nvm_crc_t)  (const void *p_v_data, uint32_t u32_size);
-
-/*----------------------------------------------------------------------------
- * What x_nvm_pool_init() does when the media does not hold a valid pool.
- *
- * A driver that returns an error is a fourth case, distinct from all of these:
- * the module then knows nothing about the contents and ALWAYS aborts, under
- * every policy. Writing to a device you could not read is how a transient fault
- * becomes permanent data loss.
- *--------------------------------------------------------------------------*/
-
-typedef enum
-{
-    /* Format blank media; abort on corrupt. The safe default. */
-    NVM_INIT_FORMAT_IF_BLANK = 0,
-
-    /* Format blank media; reformat corrupt media, destroying its contents.
-     * Reported as NVM_ERROR_POOL_REFORMATTED. */
-    NVM_INIT_FORMAT_IF_INVALID,
-
-    /* Never write. Abort on anything but a valid pool, blank included.
-     * For pools that must have been provisioned beforehand -- factory
-     * calibration, serial numbers -- where silently manufacturing defaults
-     * would hide a production fault. */
-    NVM_INIT_REQUIRE_VALID
-}
-nvm_init_policy_t;
 
 /*----------------------------------------------------------------------------
  * Pool configuration, supplied by the application to x_nvm_pool_init().
