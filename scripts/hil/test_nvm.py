@@ -576,6 +576,8 @@ def main():
     ap.add_argument('--baud', type=int, default=DEFAULT_BAUD)
     ap.add_argument('--trace', action='store_true', help='dump the wire traffic')
     ap.add_argument('-k', dest='filter', default=None, help='substring filter')
+    ap.add_argument('--backend', choices=['ram', 'flash'], default='ram',
+                    help='RAM-backed pool (default) or the SPI-flash-backed pool')
     args = ap.parse_args()
 
     global ARGS
@@ -587,7 +589,7 @@ def main():
         print("no tests selected")
         return 1
 
-    print("nvmparams -- HIL suite (RAM-backed test pool)")
+    print("nvmparams -- HIL suite (%s-backed test pool)" % args.backend.upper())
     print("port %s @ %d, %d test(s)\n" % (args.port, args.baud, len(selected)))
 
     passed = failed = 0
@@ -603,6 +605,11 @@ def main():
 
     try:
         con.enter()
+        if args.backend == 'flash':
+            f = nvm(con, 'P', '1')      # select the SPI-flash-backed pool
+            if f is None or not f.ok or f.tokens.get('B') != 1:
+                print("could not select flash backend: %r" % (f.raw if f else None))
+                return 2
         for name, fn in selected:
             sys.stdout.write("  %-62s " % name)
             sys.stdout.flush()

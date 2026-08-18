@@ -53,18 +53,27 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(NUCLEO_LED_GPIO_Port, NUCLEO_LED_Pin, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(SPIFLASH_NCS_GPIO_Port, SPIFLASH_NCS_Pin, GPIO_PIN_SET);
+
   /*Configure GPIO pin : NUCLEO_BUTTON_Pin */
   GPIO_InitStruct.Pin = NUCLEO_BUTTON_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(NUCLEO_BUTTON_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : NUCLEO_LED_Pin */
-  GPIO_InitStruct.Pin = NUCLEO_LED_Pin;
+  /*Configure GPIO pin : TEST_INPUT_Pin */
+  GPIO_InitStruct.Pin = TEST_INPUT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(TEST_INPUT_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : NUCLEO_LED_Pin SPIFLASH_NCS_Pin */
+  GPIO_InitStruct.Pin = NUCLEO_LED_Pin|SPIFLASH_NCS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(NUCLEO_LED_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI4_15_IRQn, 3, 0);

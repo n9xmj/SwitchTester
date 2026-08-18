@@ -34,6 +34,7 @@ static void v_debug_wakeup_sleep_test(void);
 static void v_debug_automation_console(void);
 static void v_debug_quick_test_1(void);
 static void v_debug_quick_test_2(void);
+static void v_debug_spi_pin_probe(void);   /* TEMP: SPI flash wiring probe */
 static void v_debug_menu_exec(char c_key);
 
 static void v_switch_key_off(char c_key, uint8_t u8_index);
@@ -205,6 +206,81 @@ static void v_debug_quick_test_1(void)
 static void v_debug_quick_test_2(void)
 {
     printf("Quick test function 2 (stub)\r\n");
+}
+
+/* ---------------------------------------------------------------------------
+ * SPI pin probe monitor  (TEMPORARY -- MX25R80 bring-up, removal-slated).
+ *
+ * Reconfigures the SPI-flash lines to plain GPIO, toggles MOSI/SCK/NCS together
+ * at ~1 Hz, and after each edge reads every line back via IDR -- the real pad
+ * level, not what the STM commanded -- plus MISO (input, pull-down) and
+ * TEST_INPUT (PC3). Lets you hold probe wires on the board and watch levels
+ * track hands-free until ESC. Throw-away: not tidy, not re-entrant.
+ * ------------------------------------------------------------------------- */
+static void v_debug_spi_pin_probe(void)
+{
+    GPIO_InitTypeDef x_gpio = {0};
+    uint8_t u8_level = 1u;
+
+    printf("\r\n--- SPI pin probe: MOSI/SCK/NCS out, MISO in (pull-down), TEST in.\r\n");
+    printf("    Toggling ~1 Hz; IDR readback each edge. ESC to quit.\r\n");
+
+    /* MOSI (PC12) and SCK (PB3) -> GPIO push-pull output; NCS is already one. */
+    x_gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    x_gpio.Pull  = GPIO_NOPULL;
+    x_gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    x_gpio.Pin   = SPIFLASH_MOSI_Pin;
+    HAL_GPIO_Init(SPIFLASH_MOSI_GPIO_Port, &x_gpio);
+    x_gpio.Pin   = SPIFLASH_SCK_Pin;
+    HAL_GPIO_Init(SPIFLASH_SCK_GPIO_Port, &x_gpio);
+
+    /* MISO (PB4) -> GPIO input, pull-down so an undriven line reads 0. */
+    x_gpio.Mode  = GPIO_MODE_INPUT;
+    x_gpio.Pull  = GPIO_PULLDOWN;
+    x_gpio.Pin   = SPIFLASH_MISO_Pin;
+    HAL_GPIO_Init(SPIFLASH_MISO_GPIO_Port, &x_gpio);
+
+    for (;;)
+    {
+        if (getchar() == 0x1B) { break; }       /* ESC -- getchar is non-blocking here */
+
+        HAL_GPIO_WritePin(SPIFLASH_MOSI_GPIO_Port, SPIFLASH_MOSI_Pin,
+                          (u8_level != 0u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(SPIFLASH_SCK_GPIO_Port, SPIFLASH_SCK_Pin,
+                          (u8_level != 0u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(SPIFLASH_NCS_GPIO_Port, SPIFLASH_NCS_Pin,
+                          (u8_level != 0u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+        HAL_Delay(10u);     /* let levels settle before the readback */
+
+        printf("OutLvl:%u Test:%u SCK:%u MOSI:%u MISO:%u NCS:%u\r\n",
+               (unsigned) u8_level,
+               (unsigned) HAL_GPIO_ReadPin(TEST_INPUT_GPIO_Port,    TEST_INPUT_Pin),
+               (unsigned) HAL_GPIO_ReadPin(SPIFLASH_SCK_GPIO_Port,  SPIFLASH_SCK_Pin),
+               (unsigned) HAL_GPIO_ReadPin(SPIFLASH_MOSI_GPIO_Port, SPIFLASH_MOSI_Pin),
+               (unsigned) HAL_GPIO_ReadPin(SPIFLASH_MISO_GPIO_Port, SPIFLASH_MISO_Pin),
+               (unsigned) HAL_GPIO_ReadPin(SPIFLASH_NCS_GPIO_Port,  SPIFLASH_NCS_Pin));
+
+        HAL_Delay(500u);    /* ~500 ms per level -> ~1 Hz square wave */
+        u8_level ^= 1u;
+    }
+
+    /* Restore SPI alternate functions (MOSI=AF4, SCK/MISO=AF9); park NCS high. */
+    x_gpio.Mode      = GPIO_MODE_AF_PP;
+    x_gpio.Pull      = GPIO_NOPULL;
+    x_gpio.Speed     = GPIO_SPEED_FREQ_LOW;
+    x_gpio.Alternate = GPIO_AF4_SPI3;
+    x_gpio.Pin       = SPIFLASH_MOSI_Pin;
+    HAL_GPIO_Init(SPIFLASH_MOSI_GPIO_Port, &x_gpio);
+    x_gpio.Alternate = GPIO_AF9_SPI3;
+    x_gpio.Pin       = SPIFLASH_SCK_Pin;
+    HAL_GPIO_Init(SPIFLASH_SCK_GPIO_Port, &x_gpio);
+    x_gpio.Pin       = SPIFLASH_MISO_Pin;
+    HAL_GPIO_Init(SPIFLASH_MISO_GPIO_Port, &x_gpio);
+
+    HAL_GPIO_WritePin(SPIFLASH_NCS_GPIO_Port, SPIFLASH_NCS_Pin, GPIO_PIN_SET);
+
+    printf("--- SPI pin probe ended.\r\n");
 }
 
 /* ---------------------------------------------------------------------------
@@ -827,6 +903,12 @@ static const menu_item_t x_debug_top_menu[] =
         .c_key = 'Q',
         .p_c_text = "Quick test function 2",
         .pfn_function = v_debug_quick_test_2
+    },
+    {
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = 'p',
+        .p_c_text = "SPI pin probe monitor (temp)",
+        .pfn_function = v_debug_spi_pin_probe
     },
     {
         /* Hidden: ESC at the top level has nowhere to pop. menusystem replies

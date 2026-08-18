@@ -28,6 +28,7 @@
 #include "nvmparams.h"
 #include "globals.h"          /* g_x_nvm_param */
 #include "nvm_test.h"         /* v_acon_op_nvm_test -- SwitchTester-only NVM suite */
+#include "MX25R80.h"          /* TEMP: SPI flash bring-up probe (Y) -- removal-slated */
 #include "uart_stress.h"
 #include "automation_console.h"
 
@@ -640,6 +641,309 @@ static void v_acon_op_echo_raw(char c_op, char *pc_line)
     v_acon_emit(ACON_SIG_OK, "%s", pc_line);
 }
 
+/*
+ * Y -- SPI flash wiring / presence probe. TEMPORARY, MX25R80 bring-up only;
+ * removed when the vendorable spiflash module lands.
+ *
+ *   Y[,I]   read JEDEC ID    -> =Y,<mfg>,<type>,<density>,<verdict>
+ *   Y,S     read status reg  -> =Y,S,<sr>
+ *
+ * The ID probe is pure blocking SPI (no DMA), so it is the right first check
+ * that CS / SCK / MOSI / MISO are wired and the part answers. Verdict:
+ *   OK     Macronix (0xC2) answered (expected MX25R80xx)
+ *   OTHER  something answered, but not the expected manufacturer
+ *   NONE   all 0x00 / all 0xFF -> MISO stuck: no part / no power / bad wiring
+ * A failed SPI transaction returns "!Y,FAIL,<hal>" instead.
+ */
+static void v_acon_op_spiflash(char c_op, char *pc_line)
+{
+    char *ap_c_arg[ACON_MAX_ARGS];
+    uint8_t u8_argc = u8_acon_args(pc_line, ap_c_arg, ACON_MAX_ARGS);
+    char ac_op[4];
+    char c_sub = (u8_argc >= 1u) ? ap_c_arg[0][0] : 'I';
+
+    /* Y,L -- raw full-duplex loopback, bypassing the driver entirely. With MOSI
+     * (PC12) shorted to MISO (PB4) and the Click disconnected, every byte clocked
+     * out must come back in. PASS proves MOSI/MISO/SCK are real and correctly
+     * mapped on the Nucleo; CS and the Click are out of the path. Reports
+     * PASS/FAIL plus the tx and rx byte strings so a mismatch is visible. */
+    if (c_sub == 'L')
+    {
+        static const uint8_t au8_tx[8] =
+            { 0x9Fu, 0xA5u, 0x5Au, 0x00u, 0xFFu, 0x12u, 0x34u, 0xC2u };
+        uint8_t au8_rx[8] = { 0 };
+        char ac_tx[20];
+        char ac_rx[20];
+        uint8_t u8_hal;
+        uint8_t u8_i;
+        uint8_t u8_ok = 1u;
+
+        u8_hal = (uint8_t) HAL_SPI_TransmitReceive(&hspi3, (uint8_t *) au8_tx,
+                            au8_rx, (uint16_t) sizeof(au8_tx), SPIFLASH_TIMEOUT);
+        if (u8_hal != HAL_OK)
+        {
+            v_acon_emit(ACON_SIG_ERR, "%s,L,FAIL,%X",
+                        pc_acon_op_name(c_op, ac_op), (unsigned) u8_hal);
+            return;
+        }
+
+        ac_tx[0] = '\0';
+        ac_rx[0] = '\0';
+        for (u8_i = 0u; u8_i < (uint8_t) sizeof(au8_tx); u8_i++)
+        {
+            char ac_b[4];
+            (void) snprintf(ac_b, sizeof(ac_b), "%02X", (unsigned) au8_tx[u8_i]);
+            (void) strcat(ac_tx, ac_b);
+            (void) snprintf(ac_b, sizeof(ac_b), "%02X", (unsigned) au8_rx[u8_i]);
+            (void) strcat(ac_rx, ac_b);
+            if (au8_rx[u8_i] != au8_tx[u8_i]) { u8_ok = 0u; }
+        }
+
+        v_acon_emit(ACON_SIG_OK, "%s,L,%s,%s,%s", pc_acon_op_name(c_op, ac_op),
+                    u8_ok ? "PASS" : "FAIL", ac_tx, ac_rx);
+        return;
+    }
+
+    /* Y,N -- NCS loopback. CS (PA15) is jumpered to TEST_INPUT (PC3, input +
+     * pull-up). Drive CS low then high, sense PC3 each time: it must track. PASS
+     * proves PA15 actually drives and the jumper is good; reports the two sensed
+     * levels as L<lo>,H<hi> so a stuck/broken line is visible. */
+    if (c_sub == 'N')
+    {
+        GPIO_PinState x_lo;
+        GPIO_PinState x_hi;
+        uint8_t u8_ok;
+
+        HAL_GPIO_WritePin(SPIFLASH_NCS_GPIO_Port, SPIFLASH_NCS_Pin, GPIO_PIN_RESET);
+        HAL_Delay(1u);
+        x_lo = HAL_GPIO_ReadPin(TEST_INPUT_GPIO_Port, TEST_INPUT_Pin);
+
+        HAL_GPIO_WritePin(SPIFLASH_NCS_GPIO_Port, SPIFLASH_NCS_Pin, GPIO_PIN_SET);
+        HAL_Delay(1u);
+        x_hi = HAL_GPIO_ReadPin(TEST_INPUT_GPIO_Port, TEST_INPUT_Pin);
+
+        u8_ok = ((x_lo == GPIO_PIN_RESET) && (x_hi == GPIO_PIN_SET)) ? 1u : 0u;
+
+        v_acon_emit(ACON_SIG_OK, "%s,N,%s,L%u,H%u", pc_acon_op_name(c_op, ac_op),
+                    u8_ok ? "PASS" : "FAIL",
+                    (unsigned) x_lo, (unsigned) x_hi);
+        return;
+    }
+
+    /* Y,J -- SCK loopback. Momentarily reconfigures SCK (PB3) from its SPI3
+     * alternate function to a GPIO push-pull output, drives it low then high,
+     * senses PC3, then restores AF9. Jumper the PC3 sense lead onto the SCK net
+     * (its device-plug end, mirroring Y,N) first. PASS proves the SCK lead is on
+     * the right Nucleo pin and continuous to the device -- the one lead never
+     * yet verified. */
+    if (c_sub == 'J')
+    {
+        GPIO_InitTypeDef x_gpio = {0};
+        GPIO_PinState x_lo;
+        GPIO_PinState x_hi;
+        uint8_t u8_ok;
+
+        x_gpio.Pin   = SPIFLASH_SCK_Pin;
+        x_gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+        x_gpio.Pull  = GPIO_NOPULL;
+        x_gpio.Speed = GPIO_SPEED_FREQ_LOW;
+        HAL_GPIO_Init(SPIFLASH_SCK_GPIO_Port, &x_gpio);
+
+        HAL_GPIO_WritePin(SPIFLASH_SCK_GPIO_Port, SPIFLASH_SCK_Pin, GPIO_PIN_RESET);
+        HAL_Delay(1u);
+        x_lo = HAL_GPIO_ReadPin(TEST_INPUT_GPIO_Port, TEST_INPUT_Pin);
+
+        HAL_GPIO_WritePin(SPIFLASH_SCK_GPIO_Port, SPIFLASH_SCK_Pin, GPIO_PIN_SET);
+        HAL_Delay(1u);
+        x_hi = HAL_GPIO_ReadPin(TEST_INPUT_GPIO_Port, TEST_INPUT_Pin);
+
+        /* Restore PB3 -> SPI3 SCK (AF9). */
+        x_gpio.Pin       = SPIFLASH_SCK_Pin;
+        x_gpio.Mode      = GPIO_MODE_AF_PP;
+        x_gpio.Pull      = GPIO_NOPULL;
+        x_gpio.Speed     = GPIO_SPEED_FREQ_LOW;
+        x_gpio.Alternate = GPIO_AF9_SPI3;
+        HAL_GPIO_Init(SPIFLASH_SCK_GPIO_Port, &x_gpio);
+
+        u8_ok = ((x_lo == GPIO_PIN_RESET) && (x_hi == GPIO_PIN_SET)) ? 1u : 0u;
+        v_acon_emit(ACON_SIG_OK, "%s,J,%s,L%u,H%u", pc_acon_op_name(c_op, ac_op),
+                    u8_ok ? "PASS" : "FAIL",
+                    (unsigned) x_lo, (unsigned) x_hi);
+        return;
+    }
+
+    /* Y,C[,<0|1>] -- park the CS pin (PA15) static so it can be metered end to
+     * end to the Click CS. Default 1 (idle/high). CS stays parked until the next
+     * Y,I re-drives it. */
+    if (c_sub == 'C')
+    {
+        uint32_t u32_lvl = 1u;
+        if (u8_argc >= 2u) { (void) b_acon_arg_u32(ap_c_arg[1], &u32_lvl); }
+        HAL_GPIO_WritePin(SPIFLASH_NCS_GPIO_Port, SPIFLASH_NCS_Pin,
+                          (u32_lvl != 0u) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+        v_acon_emit(ACON_SIG_OK, "%s,C,%u", pc_acon_op_name(c_op, ac_op),
+                    (unsigned) ((u32_lvl != 0u) ? 1u : 0u));
+        return;
+    }
+
+    /* Y,K -- clock-activity burst: hold CS low and stream 0xA5 for ~2 s so SCK
+     * and MOSI carry traffic for a scope/DMM. Blocks for the duration; the host
+     * must allow a >2 s read timeout. Reports the burst count in hex. */
+    if (c_sub == 'K')
+    {
+        static const uint8_t au8_pat[32] = {
+            0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,
+            0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,
+            0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,
+            0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,0xA5u,0xA5u };
+        uint32_t u32_t0 = HAL_GetTick();
+        uint32_t u32_bursts = 0u;
+
+        SPI_FLASH_SELECT();
+        while ((HAL_GetTick() - u32_t0) < 2000u)
+        {
+            (void) HAL_SPI_Transmit(&hspi3, (uint8_t *) au8_pat,
+                                    (uint16_t) sizeof(au8_pat), SPIFLASH_TIMEOUT);
+            u32_bursts++;
+        }
+        SPI_FLASH_DESELECT();
+
+        v_acon_emit(ACON_SIG_OK, "%s,K,%lX", pc_acon_op_name(c_op, ac_op),
+                    (unsigned long) u32_bursts);
+        return;
+    }
+
+    /* Y,T -- DMA round-trip smoke test (DESTRUCTIVE to sector 0). Erase 4 KB,
+     * blank-check via RX DMA, write a 256-byte incrementing pattern via TX DMA,
+     * read back via RX DMA, verify. Exercises erase + both DMA directions -- the
+     * exact ops the nvmparams glue will call. BL/VF report FFFFFFFF on success or
+     * the first failing byte index. */
+    if (c_sub == 'T')
+    {
+        static uint8_t au8_w[256];
+        static uint8_t au8_r[256];
+        const uint32_t u32_addr = 0x000000u;
+        spiflash_id_t x_id;
+        uint16_t u16_i;
+        uint8_t  u8_hal;
+        int32_t  i32_blank = -1;    /* first non-0xFF after erase; -1 = clean   */
+        int32_t  i32_diff  = -1;    /* first readback mismatch;   -1 = matches  */
+
+        (void) u8_spiflash_read_id(&x_id);
+
+        /* 1) erase sector 0, then wait generously for WIP to clear (the driver's
+         * own 100 ms wait can be short of a worst-case sector-erase time). */
+        u8_hal = u8_spiflash_sector_erase(u32_addr);
+        (void) u8_spiflash_write_wait(1000u);
+        if (u8_hal != HAL_OK)
+        {
+            v_acon_emit(ACON_SIG_ERR, "%s,T,FAIL,ERASE,%X",
+                        pc_acon_op_name(c_op, ac_op), (unsigned) u8_hal);
+            return;
+        }
+
+        /* 2) blank-check via RX DMA -- expect all 0xFF */
+        u8_hal = u8_spiflash_read(au8_r, u32_addr, 256u);
+        if (u8_hal != HAL_OK)
+        {
+            v_acon_emit(ACON_SIG_ERR, "%s,T,FAIL,READ1,%X",
+                        pc_acon_op_name(c_op, ac_op), (unsigned) u8_hal);
+            return;
+        }
+        for (u16_i = 0u; u16_i < 256u; u16_i++)
+        {
+            if (au8_r[u16_i] != 0xFFu) { i32_blank = (int32_t) u16_i; break; }
+        }
+
+        /* 3) fill + program one page via TX DMA */
+        for (u16_i = 0u; u16_i < 256u; u16_i++) { au8_w[u16_i] = (uint8_t) u16_i; }
+        u8_hal = u8_spiflash_write_page(au8_w, u32_addr, 256u);
+        if (u8_hal != HAL_OK)
+        {
+            v_acon_emit(ACON_SIG_ERR, "%s,T,FAIL,WRITE,%X",
+                        pc_acon_op_name(c_op, ac_op), (unsigned) u8_hal);
+            return;
+        }
+
+        /* 4) read back via RX DMA + verify */
+        memset(au8_r, 0, sizeof(au8_r));
+        u8_hal = u8_spiflash_read(au8_r, u32_addr, 256u);
+        if (u8_hal != HAL_OK)
+        {
+            v_acon_emit(ACON_SIG_ERR, "%s,T,FAIL,READ2,%X",
+                        pc_acon_op_name(c_op, ac_op), (unsigned) u8_hal);
+            return;
+        }
+        for (u16_i = 0u; u16_i < 256u; u16_i++)
+        {
+            if (au8_r[u16_i] != au8_w[u16_i]) { i32_diff = (int32_t) u16_i; break; }
+        }
+
+        {
+            uint8_t u8_ok = ((i32_blank < 0) && (i32_diff < 0)) ? 1u : 0u;
+            v_acon_emit(ACON_SIG_OK, "%s,T,%s,ID%02X,BL%lX,VF%lX",
+                        pc_acon_op_name(c_op, ac_op),
+                        u8_ok ? "PASS" : "FAIL",
+                        (unsigned) x_id.u8_manufacturer_id,
+                        (unsigned long) ((i32_blank < 0) ? 0xFFFFFFFFuL : (uint32_t) i32_blank),
+                        (unsigned long) ((i32_diff  < 0) ? 0xFFFFFFFFuL : (uint32_t) i32_diff));
+        }
+        return;
+    }
+
+    if (c_sub == 'S')
+    {
+        spiflash_status_reg_t x_sr;
+        uint8_t u8_hal = u8_spiflash_read_status(&x_sr);
+
+        if (u8_hal != HAL_OK)
+        {
+            v_acon_emit(ACON_SIG_ERR, "%s,S,FAIL,%X",
+                        pc_acon_op_name(c_op, ac_op), (unsigned) u8_hal);
+            return;
+        }
+        v_acon_emit(ACON_SIG_OK, "%s,S,%02X",
+                    pc_acon_op_name(c_op, ac_op), (unsigned) x_sr.all);
+        return;
+    }
+
+    /* Default sub-op: JEDEC ID probe. */
+    {
+        spiflash_id_t x_id;
+        uint8_t u8_hal = u8_spiflash_read_id(&x_id);
+        const char *pc_verdict;
+
+        if (u8_hal != HAL_OK)
+        {
+            v_acon_emit(ACON_SIG_ERR, "%s,FAIL,%X",
+                        pc_acon_op_name(c_op, ac_op), (unsigned) u8_hal);
+            return;
+        }
+
+        if (((x_id.u8_manufacturer_id == 0x00u) && (x_id.u8_memory_type == 0x00u) &&
+             (x_id.u8_memory_density == 0x00u)) ||
+            ((x_id.u8_manufacturer_id == 0xFFu) && (x_id.u8_memory_type == 0xFFu) &&
+             (x_id.u8_memory_density == 0xFFu)))
+        {
+            pc_verdict = "NONE";        /* MISO stuck low/high: part not answering */
+        }
+        else
+        {
+            /* Any coherent JEDEC id means a device answered. Part-agnostic:
+             * 0xC2 Macronix, 0xEF Winbond (W25Q), 0xBF SST, ... the raw bytes
+             * name it; the wiring check only cares that something replied. */
+            pc_verdict = "OK";
+        }
+
+        v_acon_emit(ACON_SIG_OK, "%s,%02X,%02X,%02X,%s",
+                    pc_acon_op_name(c_op, ac_op),
+                    (unsigned) x_id.u8_manufacturer_id,
+                    (unsigned) x_id.u8_memory_type,
+                    (unsigned) x_id.u8_memory_density,
+                    pc_verdict);
+    }
+}
+
 /*============================================================================
  * COMMAND TABLE  (the application-owned port point; core dispatches into this)
  *==========================================================================*/
@@ -655,6 +959,7 @@ const acon_op_t g_x_acon_command[] =
     { 'P', v_acon_op_persist,     "persist params to NVM"        },
     { 'E', v_acon_op_errors,      "transport error count"        },
     { 'N', v_acon_op_nvm_test,    "nvm test: sub[,args]"         },
+    { 'Y', v_acon_op_spiflash,    "spi flash probe: [I=id,S=status,T=dma rw test,L=loopback,N=ncs lb,J=sck lb,C[,0|1]=park cs,K=clock burst] (temp)" },
     { 'U', v_acon_op_uart_stress, "uart loopback stress: idx[,first,last,bursts]" },
     { 'B', v_acon_op_baud_sweep,  "baud sweep: idx[,rate...] (default ladder)" },
     { '@', v_acon_op_echo_args,   "echo args as CSV (example)"   },

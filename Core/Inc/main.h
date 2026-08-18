@@ -61,6 +61,8 @@ extern TIM_HandleTypeDef htim14;
 
 extern UART_HandleTypeDef huart2;
 
+extern SPI_HandleTypeDef hspi3;         /* SPI flash bus (temporary; MX25R80 bring-up) */
+
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
@@ -73,6 +75,8 @@ extern UART_HandleTypeDef huart2;
 #define RTC_OSC32_IN_GPIO_Port GPIOC
 #define RTC_OSC32_OUT_Pin GPIO_PIN_15
 #define RTC_OSC32_OUT_GPIO_Port GPIOC
+#define TEST_INPUT_Pin GPIO_PIN_3
+#define TEST_INPUT_GPIO_Port GPIOC
 #define SENSE_A_Pin GPIO_PIN_1
 #define SENSE_A_GPIO_Port GPIOA
 #define DEBUG_TX_Pin GPIO_PIN_2

@@ -428,6 +428,48 @@ Going faster on a FIFO-less instance means DMA rather than tuning — the techni
 is banked in [`UART-DMA-Streaming.md`](UART-DMA-Streaming.md). **Not planned**;
 nothing needs it today.
 
+### SPI flash testbed — bench-verified 2026-08-18
+
+Testbed for the nvmparams SPI-flash driver (the mirror project is migrating NVM
+from STM32 internal flash to SPI NOR). **Temporary** — the driver graft and the
+`Y`/`p` console hooks are slated for removal once the vendorable `spiflash`
+module lands. See `G0B1_Skeleton/Docs/planning/nvmparams-plan.md` phase 2.
+
+**Pins — SPI3 + CS + a sense lead:**
+
+| Function | Net label | Pin | Peripheral | Notes |
+|---|---|---|---|---|
+| Flash SCK | SPIFLASH_SCK | PB3 | SPI3_SCK (AF9) | mode 0, 8 MHz |
+| Flash MISO | SPIFLASH_MISO | PB4 | SPI3_MISO (AF9) | **shared with Sense B (COMP2)** — testbed repurposes PB4 |
+| Flash MOSI | SPIFLASH_MOSI | PC12 | SPI3_MOSI (AF4) | |
+| Flash CS | SPIFLASH_NCS | PA15 | GPIO out, push-pull | moved off hardware NSS so CS holds low across a multi-phase command |
+| Test sense | TEST_INPUT | PC3 | GPIO in, pull-up | temporary probe lead for the loopback checks below |
+
+SPI3 has **TX/RX DMA** (DMA1 Ch1 RX, Ch2 TX, linear mode); the driver's
+read/write use `HAL_SPI_*_DMA` and depend on the channel IRQ handlers.
+
+**Driver.** The legacy `MX25R80.c` (the user's own code) was grafted in with its
+pseudo-filesystem/directory support stripped — not the `ee_fw-lib` template,
+which is a non-functional stub. `App/Src/nvm_driver_spiflash.c` is the minimal
+nvmparams storage driver over it; `nvm_test.c` gains a flash-backed pool and an
+`N,P` backend selector so the existing HIL suite runs on flash.
+
+**Console hooks (temporary).** `Y` sub-ops for bring-up: `I` JEDEC id, `S`
+status, `T` DMA erase/write/read round-trip, `L` MOSI↔MISO loopback, `N` CS
+loopback (via PC3), `J` SCK loopback, `C` park CS, `K` clock burst. Debug-menu
+`p` is a hands-free pin monitor (IDR readback of all lines while toggling).
+
+**Verification.** nvmparams HIL **28/28 on real SPI flash** (`test_nvm.py
+--backend flash` — fault injection, corrupt/blank, full lifecycle) plus
+`test_nvm_persist.py`, which proves a committed value survives a **hardware
+reset**. Bench part: Winbond **W25Q128** (`EF 40 18`).
+
+**Gotcha banked — RDID opcode.** The legacy `read_id` sent `0x9E`, a
+Macronix-specific alias; JEDEC-standard Read-ID is **`0x9F`**. `0x9E` reads
+`00 00 00` on W25Q/SST parts, looking exactly like dead wiring — it cost a long
+bench session before the transmitted opcode was checked. The vendorable module
+must use `0x9F`.
+
 ## Banked for later — each gets its own planning pass
 
 ### 1. Automation console, phase 2 — async events

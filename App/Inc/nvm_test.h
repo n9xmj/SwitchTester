@@ -38,6 +38,10 @@
 
 extern nvm_pool_t g_x_nvm_test;
 
+/* The SPI-flash-backed test pool. Same 'N' ops act on it once N,P,1 selects it;
+ * unlike g_x_nvm_test it persists across a reset. */
+extern nvm_pool_t g_x_nvm_flash;
+
 /*----------------------------------------------------------------------------
  * Bring the test pool up. Called once during application init. Safe to call
  * when the RAM driver is not present in the build -- it simply does nothing.
@@ -52,6 +56,7 @@ extern void v_nvm_test_init(void);
  * The op is sub-commanded rather than consuming a dozen single-character op
  * codes:  N,<sub>[,args]
  *
+ *   N,P[,<0|1>]       select backend: 0 RAM (default), 1 SPI flash (persists)
  *   N,I               pool info: signature, write count, dirty flag, geometry
  *   N,L               list objects: id/size pairs
  *   N,C,<id>,<val>    create a uint32 object with default <val>
