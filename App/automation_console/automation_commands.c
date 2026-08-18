@@ -26,6 +26,7 @@
 #include "stdio_retarget.h"         /* h_stdio_retarget_get_stream (E) */
 #include "switch_out.h"
 #include "nvmparams.h"
+#include "globals.h"          /* g_x_nvm_param */
 #include "uart_stress.h"
 #include "automation_console.h"
 

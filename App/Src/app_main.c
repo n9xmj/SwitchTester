@@ -61,9 +61,145 @@ void v_print_startup_banner(void)
 
 uint32_t u32_test_param_1;
 
+/* The application's parameter pool. Owned here, exported via globals.h.
+ * nvmparams no longer pre-declares a pool of its own -- see D5/I4. */
+nvm_pool_t g_x_nvm_param;
+
+/*----------------------------------------------------------------------------
+ * Pool configuration.
+ *
+ * const, so it lives in flash: nvmparams never writes to it, and does not
+ * retain the pointer once init returns -- it copies what it needs.
+ *
+ * The base address comes from the linker script rather than from a buffer
+ * declared with __attribute__((section(".nvmdata"))). See the NVM_FLASH region
+ * and the .nvmdata section in STM32G0B1RETX_FLASH.ld.
+ *
+ * Every field left unset is a deliberate default: no CRC (signature-only
+ * validation, the legacy behaviour), no wear levelling, internally allocated
+ * RAM buffer, and NVM_INIT_FORMAT_IF_BLANK -- format virgin media, refuse to
+ * silently destroy a corrupt pool.
+ *--------------------------------------------------------------------------*/
+
+extern uint32_t _nvm_start;         /* provided by the linker script */
+
+static const nvm_pool_config_t x_nvm_param_config =
+{
+    /* Stored in the pool header. Informational only -- nvmparams never makes a
+     * decision on it. Shows up in the debug-menu pool dump. */
+    .p_c_label       = "PARAMS",
+
+    /* Storage driver, read half: fills the RAM pool from the device at init. */
+    .pfn_read        = x_nvm_drv_stm_flash_read,
+
+    /* Storage driver, write half: writes the RAM pool out on commit. */
+    .pfn_write       = x_nvm_drv_stm_flash_write,
+
+    /* Where the pool lives on the device. Supplied by the linker script rather
+     * than by a __attribute__((section)) buffer -- see NVM_FLASH / .nvmdata in
+     * STM32G0B1RETX_FLASH.ld. For a SPI or file backend this same field would
+     * be a byte offset instead of an address. */
+    .ux_base_address = (uintptr_t) &_nvm_start,
+
+    /* Pool size in bytes. Must be a multiple of 4 and at least
+     * NVM_POOL_SIZE_MIN; init rejects anything smaller. */
+    .u32_size        = NVM_POOL_SIZE_DEFAULT,
+
+    /* The device's erase granularity -- one 2 KB page on the STM32G0. Only
+     * used to space wear-level blocks, so it is inert until wear levelling
+     * exists, but supplying it now costs nothing and documents the hardware. */
+    .u32_alloc_unit  = FLASH_PAGE_SIZE,
+
+    /* Reformat a corrupt pool rather than refusing to start. SwitchTester is
+     * bench tooling and its parameters are not precious -- losing them costs a
+     * re-entry in the debug menu, whereas refusing to boot costs the
+     * instrument. A product holding calibration or a serial number should NOT
+     * choose this; the default (FORMAT_IF_BLANK) refuses instead, and
+     * NVM_INIT_REQUIRE_VALID refuses even to format blank media. */
+    .x_init_policy   = NVM_INIT_FORMAT_IF_INVALID,
+
+    /* Not used in this project -- shown for reference. Each defaults to 0/NULL,
+     * and each zero value means the feature is simply off. */
+//  .pfn_crc         = NULL,                        /* signature-only validation */
+//  .p_v_ram_buffer  = NULL,                        /* allocate the pool internally */
+//  .p_v_context     = NULL,                        /* nothing to pass to the driver */
+//  .u8_wear_blocks  = 0,                           /* no wear levelling */
+};
+
+/*----------------------------------------------------------------------------
+ * Fallback configuration -- the null device.
+ *
+ * Identical to the real pool except that it has no storage driver, so the RAM
+ * buffer works normally and nothing is ever persisted. Used only if the flash
+ * pool cannot be brought up at all.
+ *--------------------------------------------------------------------------*/
+
+static const nvm_pool_config_t x_nvm_param_config_volatile =
+{
+    .p_c_label       = "PARAMS-RAM",
+    .u32_size        = NVM_POOL_SIZE_DEFAULT,
+    /* pfn_read / pfn_write deliberately NULL -- see nvmparams.h on the null
+     * device. Reads zero the buffer, writes report success and do nothing. */
+};
+
 void v_param_init(void)
 {
-    x_nvm_pool_init(&g_x_nvm_param, NVM_DEVICE_MCUFLASH, NULL, 0, "PARAMS");
+    nvm_error_t x_status = x_nvm_pool_init(&g_x_nvm_param, &x_nvm_param_config);
+
+    /* Test against NVM_ERROR_NONE, never against a list of known codes and
+     * never "< 0": a driver may return a positive device-specific value we
+     * have never heard of. */
+    switch (x_status)
+    {
+        case NVM_ERROR_NONE:
+            break;
+
+        case NVM_ERROR_POOL_FORMATTED:
+            /* Blank media. The normal first-boot path on a virgin board, and
+             * on any board whose NVM sector has been erased. Nothing lost. */
+            LOGCT(LOG_NVM, "pool formatted -- media was blank");
+            break;
+
+        case NVM_ERROR_POOL_REFORMATTED:
+            /* Media held something that was not a valid pool of ours. Logged
+             * at a higher volume than the blank case because parameters WERE
+             * destroyed -- most likely a foreign pool left in the NOLOAD
+             * sector by another project's firmware, which reflashing does not
+             * erase. */
+            LOGCT(LOG_NVM, "pool REFORMATTED -- previous contents were destroyed");
+            break;
+
+        default:
+            /* The flash pool could not be brought up even with reformatting
+             * allowed. Degrade to a volatile pool rather than refusing to run:
+             * this is a bench instrument, and one that boots with default
+             * parameters and a loud warning is still useful, whereas one that
+             * sits and spins is not.
+             *
+             * This is an APPLICATION policy decision, not the module's. A
+             * product holding calibration data would rightly choose otherwise. */
+            LOGCT(LOG_NVM, "pool init FAILED, status %d -- falling back to volatile",
+                  (int) x_status);
+
+            x_status = x_nvm_pool_init(&g_x_nvm_param, &x_nvm_param_config_volatile);
+            if (x_status != NVM_ERROR_NONE)
+            {
+                /* Nothing left to try. The volatile pool has no device to
+                 * fail on, so reaching here means a bad configuration or a
+                 * failed allocation -- a software fault, not a hardware one. */
+                LOGCT(LOG_NVM, "volatile fallback ALSO failed, status %d", (int) x_status);
+                break;
+            }
+
+            /* Flag the degradation where the rest of the system can see it.
+             * Necessary because the null device is deliberately transparent:
+             * x_nvm_commit() reports success and does nothing, so without this
+             * neither the operator nor a HIL run could tell that persistence
+             * had stopped working. */
+            g_x_nvm_param.u8_user1 = NVM_USER1_VOLATILE_FALLBACK;
+            LOGCT(LOG_NVM, "running on a VOLATILE pool -- settings will not persist");
+            break;
+    }
 
     /* Example persistent parameter. Replace / extend for real use. */
     u32_test_param_1 = 0xDEAD;

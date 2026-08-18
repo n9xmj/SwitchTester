@@ -1,0 +1,250 @@
+/******************************************************************************
+ * nvmparams_config.h
+ *
+ * ADOPTER-OWNED CONFIGURATION for the nvmparams module -- the "control panel".
+ *
+ * ****************************************************************************
+ * THIS FILE SHIPS AS nvmparams_config.h.example AND MUST BE RENAMED.
+ * ****************************************************************************
+ *
+ * Rename it to "nvmparams_config.h", either in place inside App/nvmparams/ or
+ * (preferred) after copying it into your own application include directory so
+ * that the vendored module directory stays pristine. Then edit the settings
+ * below to suit your project.
+ *
+ * DO NOT #include THIS FILE DIRECTLY. It is included for you, from the middle
+ * of nvmparams.h, which is the ONLY header your application needs to include.
+ * The guard immediately below enforces that.
+ *
+ * Everything in this file is owned by the application. Everything the module
+ * itself controls -- types, error codes, reserved IDs, function prototypes --
+ * lives in nvmparams.h and should not be edited.
+ ******************************************************************************/
+
+#ifndef NVMPARAMS_H_INSIDE
+#error "Do not include nvmparams_config.h directly -- include nvmparams.h instead."
+#endif
+
+#ifndef NVMPARAMS_CONFIG_H
+#define NVMPARAMS_CONFIG_H
+
+/*=============================================================================
+ * 1. POOL GEOMETRY
+ *===========================================================================*/
+
+/*----------------------------------------------------------------------------
+ * NVM_POOL_SIZE_DEFAULT -- the pool size this project normally uses, in bytes.
+ *
+ * This is a convenience constant for you to reference in your nvm_pool_config_t
+ * literal. It is NOT a fallback: u32_size must always be set explicitly, and
+ * nvmparams rejects a zero pool size rather than substituting anything.
+ *
+ * Must be a multiple of 4 and at least NVM_POOL_SIZE_MIN (48 bytes with the
+ * default label length). nvmparams static-asserts this value for you.
+ *
+ * Size it to hold every object you intend to create, plus the 28-byte pool
+ * header and a 4-byte end-of-list record. Each object costs 4 bytes of
+ * overhead plus its data rounded up to a multiple of 4.
+ *
+ * Typical: 0x200 (512) for a few dozen small parameters.
+ *--------------------------------------------------------------------------*/
+
+#define NVM_POOL_SIZE_DEFAULT               0x200
+
+/*----------------------------------------------------------------------------
+ * NVM_LABEL_MAX_LENGTH -- length of the human-readable label stored in the
+ * pool header.
+ *
+ * *** SET THIS ONCE, AT ADOPTION, AND NEVER CHANGE IT AGAIN. ***
+ *
+ * The label lives inside the pool header, so this value is part of the ON-MEDIA
+ * LAYOUT. Changing it after any pool has been written shifts every object in
+ * that pool. The existing data is not merely stale -- it is misread, and it is
+ * misread while still carrying a valid signature, so nothing detects the
+ * problem. Recovering means erasing the pool and losing its contents.
+ *
+ * Must be a multiple of 4, or the pool header stops being 32-bit aligned and
+ * every object after it inherits the misalignment. nvmparams static-asserts
+ * this.
+ *
+ * KEEPING THE 16-BYTE DEFAULT IS STRONGLY RECOMMENDED. Shrink it only if you
+ * are certain no pool has ever been written by this project, and only to
+ * reclaim header bytes on a very small pool.
+ *--------------------------------------------------------------------------*/
+
+#define NVM_LABEL_MAX_LENGTH                16
+
+/*=============================================================================
+ * 2. OPTIONAL FEATURES
+ *===========================================================================*/
+
+/*----------------------------------------------------------------------------
+ * NVM_ENABLE_INTERNAL_MALLOC -- may nvmparams allocate the pool RAM buffer?
+ *
+ *   1 = yes. Passing p_v_ram_buffer = NULL in the config asks x_nvm_pool_init()
+ *       to malloc() the buffer for you. Make sure your linker script reserves
+ *       enough heap.
+ *
+ *   0 = no. The malloc()/free() code is compiled out entirely, so this module
+ *       links no allocator at all -- useful for projects that deliberately have
+ *       no heap. In this mode you MUST supply p_v_ram_buffer yourself, and
+ *       passing NULL becomes a configuration ERROR that init rejects rather
+ *       than a request to allocate.
+ *
+ * Note this is the one setting that changes what a zero/NULL config field
+ * MEANS. Every other zero value in nvm_pool_config_t unconditionally selects a
+ * sane default; p_v_ram_buffer's meaning depends on this knob.
+ *--------------------------------------------------------------------------*/
+
+#define NVM_ENABLE_INTERNAL_MALLOC          1
+
+/*----------------------------------------------------------------------------
+ * NVM_LOG_ERROR -- optional logging hook.
+ *
+ * nvmparams has NO logging dependency. If you leave this undefined, every log
+ * site in the module compiles to nothing.
+ *
+ * If you want nvmparams to report problems -- a rejected reserved ID, a corrupt
+ * pool, a driver error, an allocation failure -- define it here and map it onto
+ * whatever logging you use. With this project's logging module that means
+ * defining a log class in logging_config.h and mapping to LOGCT():
+ *
+ *     #include "logging.h"
+ *     #define NVM_LOG_ERROR(fmt, ...)   LOGCT(LOG_NVM, fmt, ##__VA_ARGS__)
+ *
+ * With plain stdio:
+ *
+ *     #include <stdio.h>
+ *     #define NVM_LOG_ERROR(fmt, ...)   printf("[NVM] " fmt "\r\n", ##__VA_ARGS__)
+ *
+ * IMPORTANT: arguments must be free of side effects. When this macro is
+ * undefined the arguments are discarded entirely, so NVM_LOG_ERROR("%d", i++)
+ * would lose the increment in a build without logging.
+ *--------------------------------------------------------------------------*/
+
+/* #define NVM_LOG_ERROR(fmt, ...)   LOGCT(LOG_NVM, fmt, ##__VA_ARGS__) */
+
+/*=============================================================================
+ * 3. APPLICATION PARAMETER IDs
+ *===========================================================================*/
+
+/*----------------------------------------------------------------------------
+ * Declare one enum listing every object your application stores in NVM.
+ *
+ * RULES, all of which the pattern below satisfies:
+ *
+ *  - ANCHOR the first entry at NVM_ID_APP_FIRST. The remaining entries then
+ *    auto-increment, and IDs stay contiguous -- which matters if you compute
+ *    IDs arithmetically (see the cycling parameters below).
+ *
+ *  - END with a marker entry, and static-assert it against NVM_ID_APP_MAX.
+ *    That catches "too many parameters" at compile time.
+ *
+ *  - IDs 0xFF00..0xFFFF are RESERVED to nvmparams. 0x0000 is reserved as
+ *    NVM_PARAM_UNUSED. Everything from NVM_ID_APP_FIRST to NVM_ID_APP_MAX is
+ *    yours. Attempting to create, set or delete a reserved ID is rejected at
+ *    runtime with NVM_ERROR_ID_RESERVED; reads are permitted.
+ *
+ *  - ADD NEW PARAMETERS AT THE END. Inserting in the middle renumbers every
+ *    ID after the insertion point, which orphans the corresponding objects in
+ *    any pool already written.
+ *
+ *  - Pass these labels straight to the API. No cast is needed: the accessors
+ *    take a uint16_t and enum constants convert implicitly. If you store an ID
+ *    in a variable, type the variable nvm_param_id_t, not this enum.
+ *--------------------------------------------------------------------------*/
+
+typedef enum
+{
+    /* Factory / manufacturing data -- written once on the line. */
+    NVM_CONFIG_SERIAL_NUMBER = NVM_ID_APP_FIRST,
+    NVM_CONFIG_PRODUCT_ID,
+    NVM_CONFIG_SKU,
+
+    /* Switch outputs -- manual pulse width, milliseconds. */
+    NVM_PARAM_SWITCH_PULSE_MS,
+
+    /* Switch cycling parameters, three per channel.
+     * These MUST remain contiguous and in this order: the ID for a given
+     * (channel, parameter) pair is computed arithmetically as
+     *     NVM_PARAM_CYCLE_A_REPEAT + (channel * SWITCH_CYCLE_PARAM_COUNT) + parameter
+     * See x_switch_cycle_nvm_id() in switch_out.c, which guards the assumption
+     * with its own _Static_assert. */
+    NVM_PARAM_CYCLE_A_REPEAT,
+    NVM_PARAM_CYCLE_A_ON_US,
+    NVM_PARAM_CYCLE_A_OFF_US,
+    NVM_PARAM_CYCLE_B_REPEAT,
+    NVM_PARAM_CYCLE_B_ON_US,
+    NVM_PARAM_CYCLE_B_OFF_US,
+    NVM_PARAM_CYCLE_C_REPEAT,
+    NVM_PARAM_CYCLE_C_ON_US,
+    NVM_PARAM_CYCLE_C_OFF_US,
+    NVM_PARAM_CYCLE_D_REPEAT,
+    NVM_PARAM_CYCLE_D_ON_US,
+    NVM_PARAM_CYCLE_D_OFF_US,
+
+    /* Scratch values for test and debug. */
+    NVM_PARAM_TEST_1,
+    NVM_PARAM_TEST_2,
+    NVM_PARAM_TEST_3,
+
+    /* Marker -- not a parameter. Keep last. */
+    NVM_PARAM_APP_LAST
+}
+app_nvm_param_t;
+
+_Static_assert(NVM_PARAM_APP_LAST <= NVM_ID_APP_MAX,
+               "Too many application NVM parameter IDs -- the list has run into "
+               "the range reserved by nvmparams (see NVM_ID_APP_MAX).");
+
+/*=============================================================================
+ * 4. STORAGE DRIVERS
+ *===========================================================================*/
+
+/*----------------------------------------------------------------------------
+ * nvmparams contains NO hardware drivers. You supply read and write functions
+ * as pointers in nvm_pool_config_t, and the module calls them. A pool with
+ * both pointers left NULL is valid: its RAM buffer behaves normally and
+ * nothing is ever persisted.
+ *
+ * Example drivers ship alongside this file as *.c.example. They are NOT part
+ * of the module -- use one as-is, copy it into your own source directory and
+ * modify it, or delete it and write your own in any file you like. To use one,
+ * rename it to a plain .c, add it to your build, and declare it below.
+ *
+ * The prototypes below are commented out and are illustrative only. Uncomment
+ * and adjust the ones matching the drivers you actually build. If you modify a
+ * driver's signature or name, this is where your version gets declared -- you
+ * never need to edit a file in the module directory.
+ *--------------------------------------------------------------------------*/
+
+/* nvm_driver_stm_flash.c.example -- STM32 internal flash */
+/* extern nvm_error_t x_nvm_drv_stm_flash_read (const nvm_media_t *p_x_media); */
+/* extern nvm_error_t x_nvm_drv_stm_flash_write(const nvm_media_t *p_x_media); */
+
+/* nvm_driver_ram.c.example -- RAM-backed emulation (test / demo) */
+/* extern nvm_error_t x_nvm_drv_ram_read (const nvm_media_t *p_x_media); */
+/* extern nvm_error_t x_nvm_drv_ram_write(const nvm_media_t *p_x_media); */
+
+/* nvm_driver_spiflash.c.example -- SPI NOR flash via a chip driver you supply */
+/* extern nvm_error_t x_nvm_drv_spiflash_read (const nvm_media_t *p_x_media); */
+/* extern nvm_error_t x_nvm_drv_spiflash_write(const nvm_media_t *p_x_media); */
+
+/*----------------------------------------------------------------------------
+ * CRC generation (optional).
+ *
+ * Leave pfn_crc NULL in your pool config and nvmparams validates pools by
+ * signature alone, exactly as it always has. Supply a function and it also
+ * checks a CRC-32 over the pool data.
+ *
+ * *** ENABLING A CRC ON A DEVICE THAT ALREADY HAS A POOL INVALIDATES IT. ***
+ * Pools written without a CRC carry a placeholder value, so the first boot
+ * afterwards sees a valid signature with a failing CRC -- which counts as
+ * CORRUPT, and the default init policy aborts on corrupt. Make that transition
+ * deliberately: one boot under NVM_INIT_FORMAT_IF_INVALID, or erase the pool.
+ *--------------------------------------------------------------------------*/
+
+/* extern uint32_t u32_nvm_crc32_sw(const void *p_v_data, uint32_t u32_size); */
+/* extern uint32_t u32_nvm_crc32_hw(const void *p_v_data, uint32_t u32_size); */
+
+#endif /* NVMPARAMS_CONFIG_H */

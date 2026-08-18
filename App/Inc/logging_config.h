@@ -79,6 +79,13 @@
 #define LOG_JOBS_TAG                    "JOB"
 #define LOG_JOBS_COLOR                  LOGC_WHITE
 
+// Non-volatile parameter store. Consumed by the vendored nvmparams module via
+// the NVM_LOG_ERROR shim in nvmparams_config.h -- the module itself has no
+// logging dependency, so leaving that shim undefined silences it entirely.
+#define LOG_NVM                         LOG_LEVEL_ERROR
+#define LOG_NVM_TAG                     "NVM"
+#define LOG_NVM_COLOR                   LOGC_BRIGHT_RED
+
 // EXTI interrupt reporting
 #define LOG_EXTI                        LOG_LEVEL_QUIET
 #define LOG_EXTI_TAG                    "EXTI"

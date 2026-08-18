@@ -22,6 +22,7 @@
 #include "rtc.h"                     /* hrtc, for post-STOP HAL_RTC_WaitForSynchro */
 #include "switch_out.h"              /* SWITCH_A..D drive control */
 #include "nvmparams.h"               /* NVM pool dump / erase diagnostics */
+#include "globals.h"                 /* g_x_nvm_param */
 #include "automation_console.h"      /* Host/script command interface */
 
 /*============================================================================
