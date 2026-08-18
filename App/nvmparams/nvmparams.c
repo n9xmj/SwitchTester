@@ -770,9 +770,20 @@ nvm_error_t x_nvm_create_unchecked(nvm_pool_t *p_x_pool, nvm_param_id_t x_id, ui
 
         p_x_pool->u8_need_commit = 1;
         p_x_pool->u16_commit_timer = 0;
+
+        return NVM_ERROR_NONE;
     }
 
-    return NVM_ERROR_NONE;
+    // The object was already present and has been left exactly as it was.
+    // Reported distinctly rather than as success so a caller can tell "I
+    // created it" from "it was already there" -- which is how an application
+    // detects a first boot, or whether a provisioning step has already run.
+    //
+    // NOT an error: the documented idiom is to call create unconditionally at
+    // startup for every parameter, so this is the expected result on every
+    // boot after the first. Callers that treat any non-zero return as failure
+    // must special-case it.
+    return NVM_ERROR_OBJECT_EXISTS;
 }
 
 /******************************************************************************

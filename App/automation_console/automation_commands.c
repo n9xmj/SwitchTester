@@ -27,6 +27,7 @@
 #include "switch_out.h"
 #include "nvmparams.h"
 #include "globals.h"          /* g_x_nvm_param */
+#include "nvm_test.h"         /* v_acon_op_nvm_test -- SwitchTester-only NVM suite */
 #include "uart_stress.h"
 #include "automation_console.h"
 
@@ -653,6 +654,7 @@ const acon_op_t g_x_acon_command[] =
     { 'X', v_acon_op_cycle_stop,  "stop cycling: mask"           },
     { 'P', v_acon_op_persist,     "persist params to NVM"        },
     { 'E', v_acon_op_errors,      "transport error count"        },
+    { 'N', v_acon_op_nvm_test,    "nvm test: sub[,args]"         },
     { 'U', v_acon_op_uart_stress, "uart loopback stress: idx[,first,last,bursts]" },
     { 'B', v_acon_op_baud_sweep,  "baud sweep: idx[,rate...] (default ladder)" },
     { '@', v_acon_op_echo_args,   "echo args as CSV (example)"   },

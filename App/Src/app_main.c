@@ -25,6 +25,7 @@
 #include "switch_out.h"
 #include "uart_stream.h"
 #include "stdio_retarget.h"
+#include "nvm_test.h"               /* RAM-backed test pool, SwitchTester only */
 
 /*============================================================================
  * STARTUP BANNER
@@ -252,6 +253,12 @@ static void v_console_stream_init(void)
 void v_hardware_init(void)
 {
     v_param_init();
+
+    /* Second pool, RAM-backed, for the host-driven nvmparams suite. Kept
+     * entirely separate from the flash pool above so tests can corrupt and
+     * fault-inject freely -- and it is the only thing in this project that
+     * exercises multi-pool operation. SwitchTester only; see nvm_test.h. */
+    v_nvm_test_init();
     v_console_stream_init();
     v_switch_out_init();
     HAL_TIM_Base_Start_IT(&PERIODIC_INT_TIMER_HANDLE);
