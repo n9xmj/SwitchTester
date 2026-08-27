@@ -59,6 +59,8 @@ extern void v_eventq_test_tick(void);
  *   F,G[,<cap>]            get one record into a <cap>-byte buffer (default
  *                          and maximum 0xC8, the hex-dump line budget);
  *                          reply carries the copied bytes as hex
+ *   F,K[,<cap>]            as F,G but PEEK -- the record is not consumed
+ *   F,Z                    flush: discard everything queued
  *   F,S,<id>,<len>[,<seed>] put one record with <len> pattern bytes generated
  *                          on-target: byte[i] = (seed + i) & 0xFF
  *   F,V[,<cap>[,<seed>]]   get one record into a <cap>-byte buffer (default

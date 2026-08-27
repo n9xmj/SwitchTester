@@ -324,7 +324,14 @@ drops the event and says so), positive = information (get-on-empty, truncated
 get), 0 = OK. `create` takes a `const` (ROM-able, C99-designated) config where
 every zero member is a sane default, and refuses an already-live handle.
 
-Bench validation is `test_eventq.py` (15/15) over acon op `F` — including a
+Same-day post-verification additions (user-directed): a non-multiple-of-4
+create size **rounds down** and reports `EQ_STATUS_SIZE_ROUNDED`;
+`EVENT_QUEUE_MALLOC/FREE` macros in the adoption header route internal
+allocation to an alternative (RTOS) allocator; `x_event_queue_peek`
+(non-consumptive get — a truncated peek discards nothing) and
+`x_event_queue_flush` (consumer-side drain-all, idempotent).
+
+Bench validation is `test_eventq.py` (17/17) over acon op `F` — including a
 true-ISR producer soak: the 1 ms tick callback (`v_eventq_test_tick()` in
 `app_main.c`) puts sequence-stamped events in interrupt context while the host
 drains concurrently, asserting a contiguous sequence and exact put+drop

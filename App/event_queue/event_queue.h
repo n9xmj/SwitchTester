@@ -255,6 +255,20 @@ extern event_queue_status_t x_event_queue_put(event_queue_handle_t *px_handle,
 extern event_queue_status_t x_event_queue_get(event_queue_handle_t *px_handle,
                                               event_queue_record_t *px_record);
 
+/* As x_event_queue_get, but non-consumptive: the record stays queued and the
+ * next get (or peek) sees it again. A truncated peek discards nothing -- a
+ * later get with a big enough buffer still retrieves the whole payload.
+ * Consumer-context only, like get. */
+extern event_queue_status_t x_event_queue_peek(event_queue_handle_t *px_handle,
+                                               event_queue_record_t *px_record);
+
+/* Discard every queued record. Consumer-context only: it drains through the
+ * same path as get, so the SPSC contract is untouched and a producer may keep
+ * putting concurrently (records committed after the flush passes them are
+ * kept). Returns EQ_OK once the queue is empty -- flushing an already-empty
+ * queue is success, not an error. */
+extern event_queue_status_t x_event_queue_flush(event_queue_handle_t *px_handle);
+
 /* Helpers. All tolerate NULL/uninitialised handles (empty / zero results).
  * is_empty and count are exact from the consumer context; free_space is exact
  * from the producer context -- from other contexts each is a snapshot that may

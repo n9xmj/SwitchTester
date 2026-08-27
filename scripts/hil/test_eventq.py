@@ -119,20 +119,28 @@ def info(con):
     return dict(frame.tokens)
 
 
-def get_frame(con, cap=None):
-    """F,G[,cap] -- returns (status, id, true_size, data_bytes).
+def extract_frame(con, sub, cap=None):
+    """F,G / F,K -- returns (status, id, true_size, data_bytes).
 
     A negative status comes back as a bare S-only reply (no I/Z/D fields)."""
-    frame = eq(con, 'G') if cap is None else eq(con, 'G', '%X' % cap)
+    frame = eq(con, sub) if cap is None else eq(con, sub, '%X' % cap)
     check(frame is not None and frame.ok,
-          "F,G failed: %r" % (frame.raw if frame else None))
+          "F,%s failed: %r" % (sub, frame.raw if frame else None))
     status = s32(frame.tokens['S'])
     if status < 0:
         return (status, 0, 0, b'')
     m = re.search(r',D([0-9A-Fa-f]*)$', frame.raw)
-    check(m is not None, "F,G reply %r has no D field" % frame.raw)
+    check(m is not None, "F,%s reply %r has no D field" % (sub, frame.raw))
     return (status, frame.tokens['I'], frame.tokens['Z'],
             bytes.fromhex(m.group(1)))
+
+
+def get_frame(con, cap=None):
+    return extract_frame(con, 'G', cap)
+
+
+def peek_frame(con, cap=None):
+    return extract_frame(con, 'K', cap)
 
 
 def put(con, ident, payload=b''):
@@ -287,6 +295,45 @@ def t_cap_zero(con):
     check((status, ident, size, got) == (EQ_STATUS_TRUNCATED, 0x66, 3, b''),
           "cap-0 get: %s,%X,%d,%s" % (name_of(status), ident, size, got.hex()))
     check(get_frame(con)[0] == EQ_STATUS_EMPTY, "record not consumed")
+
+
+@test("peek is non-consumptive; truncated peek discards nothing")
+def t_peek(con):
+    fresh(con)
+    check(peek_frame(con)[0] == EQ_STATUS_EMPTY, "peek on empty")
+    data = bytes(range(8))
+    check(put(con, 0x21, data) == EQ_OK, "put 1 failed")
+    check(put(con, 0x22, b'\x99') == EQ_OK, "put 2 failed")
+    status, ident, size, got = peek_frame(con)
+    check((status, ident, size, got) == (EQ_OK, 0x21, 8, data),
+          "peek mismatch: %s,%X,%d,%s" % (name_of(status), ident, size, got.hex()))
+    i = info(con)
+    check(i['N'] == 2, "peek consumed a record: count %d" % i['N'])
+    status, ident, size, got = peek_frame(con, cap=4)
+    check((status, size, got) == (EQ_STATUS_TRUNCATED, 8, data[:4]),
+          "truncated peek: %s,%d,%s" % (name_of(status), size, got.hex()))
+    status, ident, size, got = get_frame(con)
+    check((status, ident, got) == (EQ_OK, 0x21, data),
+          "get after truncated peek lost data: %s" % got.hex())
+    status, ident, size, got = get_frame(con)
+    check((ident, got) == (0x22, b'\x99'), "second record damaged")
+    check(get_frame(con)[0] == EQ_STATUS_EMPTY, "queue not empty")
+
+
+@test("flush empties the queue; idempotent; guarded when destroyed")
+def t_flush(con):
+    fresh(con)
+    for n in range(5):
+        check(put(con, 0x30 + n, bytes([n]) * (n * 3)) == EQ_OK,
+              "put %d failed" % n)
+    expect(con, EQ_OK, 'Z')
+    i = info(con)
+    check((i['N'], i['E'], i['F']) == (0, 1, 0x100 - HDR),
+          "flush left state %r" % i)
+    check(get_frame(con)[0] == EQ_STATUS_EMPTY, "flush left a record")
+    expect(con, EQ_OK, 'Z')                     # flushing empty is success
+    expect(con, EQ_OK, 'D')
+    expect(con, EQ_ERROR_NOT_INIT, 'Z')         # flush after destroy
 
 
 # ---------------------------------------------------------------------------

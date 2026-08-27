@@ -9,9 +9,11 @@ conventions). **Parent spec:** [`../SwitchTester-Design.md`](../SwitchTester-Des
 (sync after decisions land).
 
 **Status:** PHASE 1 IMPLEMENTED AND BENCH-VERIFIED (2026-08-27) — module built,
-flashed, `test_eventq.py` 15/15 with regression nets green (acon 47/47,
-nvm 28/28). T2 (adoption README) remains. **Working mode:** user relays design
-in chat; one question at a time; board holds everything else.
+flashed, `test_eventq.py` 17/17 with regression nets green (acon 47/47,
+nvm 28/28). Same-day additions: size round-down (EQ_STATUS_SIZE_ROUNDED),
+allocator macro seam, peek + flush (S7). T2 (adoption README) remains; W4
+deferred with a promotion draft. **Working mode:** user relays design in chat;
+one question at a time; board holds everything else.
 
 ---
 
@@ -48,6 +50,7 @@ First expected customer: automation-console phase-2 async events
 | S4 | 🟢 | Get truncation: copy what fits, discard rest, info code, true size always out |
 | S5 | 🟢 | Locking: per-queue fn pointers, put-path only, NULL = SPSC lock-free |
 | S6 | 🟢 | Destroy/guard detail: free owned buffer, reset state, init-magic on all ops |
+| S7 | 🟢 | Peek + flush shipped (promoted from W1/W2); consumer-context ops |
 | I1 | 🟢 | Monotonic internal byte counters — no head/tail ambiguity, no shared writes |
 | I2 | 🟢 | Buffer ownership flag; malloc behind `EVENT_QUEUE_ENABLE_MALLOC` (default on) |
 | I3 | 🟢 | `create` takes `const` config, copies into handle; config can live in flash |
@@ -61,10 +64,10 @@ First expected customer: automation-console phase-2 async events
 
 | ID | Subject |
 |----|---------|
-| W1 | Non-consumptive get (peek) — retrieve next event without consuming it *(user, phase-2 idea)* |
-| W2 | Consumer-side flush/drain-all (safe: consumer owns the read counters) |
-| W3 | C23 `enum : int16_t` spelling once the toolchain baseline moves |
-| W4 | Priority put — event jumps the line, consumed by the next get *(user, phase-2 idea; ring-insert-at-read-end vs. concurrent consumer needs design care)* |
+| W1 | ~~Non-consumptive get (peek)~~ — **IMPLEMENTED 2026-08-27**, see S7 |
+| W2 | ~~Consumer-side flush/drain-all~~ — **IMPLEMENTED 2026-08-27**, see S7 |
+| W3 | ~~C23 `enum : int16_t` spelling~~ — **DROPPED 2026-08-27** (user: the packed idiom is long-proven, and the sizeof static assert already trips if enum sizing is ever forced) |
+| W4 | Priority put — event jumps the line, consumed by the next get *(user, DEFERRED 2026-08-27; promotion draft below — see "W4 — promotion draft")* |
 
 ---
 
@@ -349,6 +352,31 @@ designated initializer that omits the size still yields a working queue.
 (S6); lock/unlock pointers (S5); `u32_bytes_written/read`, `u32_wr_idx/rd_idx`,
 record counters (I1). Exact layout settles during implementation.
 
+### S7 — Peek and flush *(resolved)*
+
+**Status:** 🟢 · **Needs user:** no
+
+**Resolution:** promoted from W1/W2 and implemented 2026-08-27 (user: "the
+other ones should be easy" — they were, both falling out of one refactor of
+get into a shared extract path with a consume flag).
+
+- `x_event_queue_peek(px_handle, px_record)` — identical contract to get
+  (record struct, truncation, EMPTY) but non-consumptive. A truncated peek
+  discards nothing: a later get with a big enough buffer still retrieves the
+  whole payload. Consumer-context only, like get.
+- `x_event_queue_flush(px_handle)` — discards every queued record by draining
+  through the get path, so the SPSC contract is untouched and concurrent puts
+  are safe (records committed after the flush passes them are kept). EQ_OK
+  once empty — flushing an already-empty queue is success. Consumer-context
+  only. A one-jump implementation (read-counter teleport to a write-counter
+  snapshot) was considered and rejected: snapshotting the byte and record
+  counters atomically against a live producer needs a retry loop, and the
+  drain loop is equally correct with none of that.
+
+Console: `F,K` (peek, shares the `F,G` handler) and `F,Z` (flush). HIL: two
+new tests (peek non-consumption incl. truncated-peek-keeps-data; flush
+idempotence and NOT_INIT guard) — suite now 17.
+
 ### T1 — Vendoring shape *(resolved)*
 
 **Status:** 🟢 · **Needs user:** no
@@ -378,6 +406,63 @@ Implies a small set of acon test commands (or debug hooks) to put/get/inspect fr
 the host; their shape settles during implementation. The full matrix — wrap splits,
 fill/drain patterns, truncation, full/empty edges, ISR-context puts, lock behavior —
 runs on real hardware through this path.
+
+---
+
+## W4 — promotion draft (priority put / put-to-front)
+
+Drafted 2026-08-27 at the user's request; not yet promoted to numbered rows.
+**Stated goal (user):** emulate FreeRTOS queue features at smaller scale --
+`xQueueSendToFront` / `SendToBack` are the model. Context worth pinning:
+FreeRTOS affords SendToFront cheaply because EVERY queue op runs in a critical
+section and items are fixed-size, so front-insert is one slot-pointer
+decrement under a mask already being paid. Phase 1's lock-free SPSC design is
+exactly what makes it non-trivial here: a front-put writes the READ end,
+breaking the single-writer-per-end property everything rests on.
+
+Issues a phase-2 design must resolve, in dependency order:
+
+1. **The architecture fork (Q -- needs user).** Two viable shapes:
+   - *(a) Full front-put, FreeRTOS-style:* real ring-insert before the read
+     position. Requires a lock covering BOTH ends -- see items 2-4. Per-queue
+     opt-in confines the cost to queues that want it.
+   - *(b) Front mailbox:* a single reserved priority slot (bounded payload)
+     checked by get before the ring. Producers fill it under the existing
+     producer lock; the consumer stays lock-free. Only one (or N, small)
+     pending priority event, but the "urgent event jumps the line" use case
+     is fully covered, and no phase-1 invariant is touched. Much lower risk.
+2. **Lock contract escalation (S).** For shape (a): put_front must exclude
+   producers AND the consumer. An ISR put_front preempting a main-loop get
+   mid-extraction corrupts read-side state (get holds a local rd_idx and
+   commits it after copying), so on a front-capable queue **get must take the
+   lock too** -- the consumer's zero-masking guarantee dies on those queues
+   (and only those). Likely rule: put_front is refused on a queue created
+   without a lock pair.
+3. **Free-space race from the other end (S).** A front-put allocates free
+   bytes from the opposite end to a normal put; both check the same free
+   count. Safe only if every space-consuming op on that queue runs under the
+   lock -- another reason shape (a) is a per-queue mode, not a universal add.
+4. **Counter-model bend (I).** Front-put moves the read side BACKWARD
+   (`u32_bytes_read -= space`, `u32_rd_idx -= space`, both under the lock).
+   The arithmetic (unsigned deltas) still holds, but "monotonic" stops being
+   literally true on the read side, and an UNLOCKED reader of free space could
+   momentarily OVERESTIMATE it -- fine only because item 2 forces all mutators
+   under the lock; helpers degrade to snapshots on front-capable queues.
+5. **Ordering among priority events (S).** FreeRTOS semantics: successive
+   SendToFront are LIFO among themselves (each lands in front of the last).
+   Adopt as-is, or document-and-accept? (Mailbox shape: define overwrite vs
+   refuse when the slot is full instead.)
+6. **Mechanics (I, low drama).** Insert address is (rd_idx - space) mod size;
+   the record may split backward across the wrap -- the same two-stage memcpy
+   computed from the other end. S1's rounding keeps alignment. Commit order
+   inside the lock still wants the compiler barrier before release.
+7. **HIL coverage (T).** New tests: front vs back ordering; front-put from
+   the tick ISR while the host drains (the get-preemption case item 2
+   exists for); LIFO stacking of multiple front-puts; front-put on a
+   lock-less queue refused.
+
+**Leaning:** none recorded -- the fork in item 1 is the user's call when
+phase 2 starts, and everything downstream reshapes around it.
 
 ---
 
@@ -421,9 +506,9 @@ for audit):
 - `ACON_EMIT_MAX` raised 128 → 512 (project config, user-approved) so `F,G`
   can echo up to 200 payload bytes as hex.
 
-**Plan status (2026-08-27):** 🟢 19 · 🟡 0 · 🔵 1 (T2) · 🔴 0 · W×4. Next IDs:
-D7, S7, I6, T4, W5. **Phase 1 complete: 15/15 HIL, regression nets green
-(acon 47/47, nvm 28/28), design doc synced
-(`../SwitchTester-Design.md` § "Event queue").**
+**Plan status (2026-08-27):** 🟢 20 · 🟡 0 · 🔵 1 (T2) · 🔴 0 · W: W4 deferred
+(W1/W2 implemented → S7, W3 dropped). Next IDs: D7, S8, I6, T4, W5. **Phase 1
+complete: 17/17 HIL, regression nets green (acon 47/47, nvm 28/28), design doc
+synced (`../SwitchTester-Design.md` § "Event queue").**
 
 **End of event-queue-plan.md**

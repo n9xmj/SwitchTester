@@ -284,8 +284,10 @@ void v_acon_op_eventq_test(char c_op, char *pc_line)
          * F,G[,<cap>] -- get, echoing the copied payload as hex so the host
          * verifies exact bytes. Cap defaults to (and may not exceed) the
          * hex-dump line budget; larger-payload tests use F,V instead.
+         * F,K[,<cap>] -- identical, but peeks (non-consumptive).
          *----------------------------------------------------------------*/
         case 'G':
+        case 'K':
         {
             static char s_ac_hex[(EQ_TEST_HEX_MAX * 2u) + 1u];
             event_queue_record_t x_record =
@@ -298,17 +300,19 @@ void v_acon_op_eventq_test(char c_op, char *pc_line)
             {
                 if (u32_a > EQ_TEST_HEX_MAX)
                 {
-                    v_acon_emit(ACON_SIG_ERR, "%s,G,%s",
-                                pc_acon_op_name(c_op, ac_op), ACON_ERR_ARGS);
+                    v_acon_emit(ACON_SIG_ERR, "%s,%c,%s",
+                                pc_acon_op_name(c_op, ac_op), c_sub, ACON_ERR_ARGS);
                     return;
                 }
                 x_record.u16_buf_size = (uint16_t) u32_a;
             }
 
-            x_status = x_event_queue_get(&s_x_eq_test, &x_record);
+            x_status = (c_sub == 'K')
+                     ? x_event_queue_peek(&s_x_eq_test, &x_record)
+                     : x_event_queue_get(&s_x_eq_test, &x_record);
             if (x_status < 0)
             {
-                v_eq_reply_status(c_op, 'G', x_status);
+                v_eq_reply_status(c_op, c_sub, x_status);
                 return;
             }
 
@@ -329,12 +333,20 @@ void v_acon_op_eventq_test(char c_op, char *pc_line)
                 v_eq_bytes_to_hex(s_au8_scratch, u16_copied, s_ac_hex);
             }
 
-            v_acon_emit(ACON_SIG_OK, "%s,G,S%lX,I%X,Z%X,D%s",
-                        pc_acon_op_name(c_op, ac_op),
+            v_acon_emit(ACON_SIG_OK, "%s,%c,S%lX,I%X,Z%X,D%s",
+                        pc_acon_op_name(c_op, ac_op), c_sub,
                         (unsigned long) (int32_t) x_status,
                         x_record.u16_id, x_record.u16_data_size, s_ac_hex);
             return;
         }
+
+        /*------------------------------------------------------------------
+         * F,Z -- flush (discard everything queued).
+         *----------------------------------------------------------------*/
+        case 'Z':
+            x_status = x_event_queue_flush(&s_x_eq_test);
+            v_eq_reply_status(c_op, 'Z', x_status);
+            return;
 
         /*------------------------------------------------------------------
          * F,S,<id>,<len>[,<seed>] -- put a pattern payload generated here,

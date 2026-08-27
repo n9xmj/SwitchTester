@@ -248,8 +248,10 @@ event_queue_status_t x_event_queue_put(event_queue_handle_t *px_handle,
     return EQ_OK;
 }
 
-event_queue_status_t x_event_queue_get(event_queue_handle_t *px_handle,
-                                       event_queue_record_t *px_record)
+/* Common consumer-side extraction: get consumes, peek does not. */
+static event_queue_status_t x_eq_extract(event_queue_handle_t *px_handle,
+                                         event_queue_record_t *px_record,
+                                         uint8_t u8_consume)
 {
     event_queue_header_t x_header;
     uint32_t             u32_space;
@@ -294,16 +296,52 @@ event_queue_status_t x_event_queue_get(event_queue_handle_t *px_handle,
     px_record->u16_id        = x_header.u16_id;
     px_record->u16_data_size = x_header.u16_data_size;
 
-    px_handle->u32_rd_idx = u32_eq_ring_advance(px_handle,
-                                                px_handle->u32_rd_idx, u32_space);
+    if (u8_consume)
+    {
+        px_handle->u32_rd_idx = u32_eq_ring_advance(px_handle,
+                                                    px_handle->u32_rd_idx,
+                                                    u32_space);
 
-    /* Release: the bytes must be fully copied out before the producer may
-     * reuse them. */
-    EQ_COMPILER_BARRIER();
-    px_handle->u32_bytes_read  += u32_space;
-    px_handle->u32_records_got += 1u;
+        /* Release: the bytes must be fully copied out before the producer
+         * may reuse them. */
+        EQ_COMPILER_BARRIER();
+        px_handle->u32_bytes_read  += u32_space;
+        px_handle->u32_records_got += 1u;
+    }
 
     return (u32_copy < x_header.u16_data_size) ? EQ_STATUS_TRUNCATED : EQ_OK;
+}
+
+event_queue_status_t x_event_queue_get(event_queue_handle_t *px_handle,
+                                       event_queue_record_t *px_record)
+{
+    return x_eq_extract(px_handle, px_record, 1u);
+}
+
+event_queue_status_t x_event_queue_peek(event_queue_handle_t *px_handle,
+                                        event_queue_record_t *px_record)
+{
+    return x_eq_extract(px_handle, px_record, 0u);
+}
+
+event_queue_status_t x_event_queue_flush(event_queue_handle_t *px_handle)
+{
+    event_queue_record_t x_discard;
+    event_queue_status_t x_status;
+
+    for (;;)
+    {
+        memset(&x_discard, 0, sizeof(x_discard));
+        x_status = x_eq_extract(px_handle, &x_discard, 1u);
+        if (x_status == EQ_STATUS_EMPTY)
+        {
+            return EQ_OK;               /* Idempotent: empty is the goal */
+        }
+        if (x_status < 0)
+        {
+            return x_status;
+        }
+    }
 }
 
 /*-----------------------------------------------------------------------------
