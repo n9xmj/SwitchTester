@@ -8,12 +8,12 @@ producers. Distinct from `uart_stream`'s byte-oriented `queue.c`.
 conventions). **Parent spec:** [`../SwitchTester-Design.md`](../SwitchTester-Design.md)
 (sync after decisions land).
 
-**Status:** PHASE 1 IMPLEMENTED AND BENCH-VERIFIED (2026-08-27) — module built,
-flashed, `test_eventq.py` 17/17 with regression nets green (acon 47/47,
-nvm 28/28). Same-day additions: size round-down (EQ_STATUS_SIZE_ROUNDED),
-allocator macro seam, peek + flush (S7). T2 (adoption README) remains; W4
-deferred with a promotion draft. **Working mode:** user relays design in chat;
-one question at a time; board holds everything else.
+**Status:** PHASE 1 COMPLETE (2026-08-27) — designed, implemented,
+bench-verified (`test_eventq.py` 17/17; acon 47/47, nvm 28/28) and documented
+(`README.md`, T2) in one day. Same-day additions: size round-down
+(EQ_STATUS_SIZE_ROUNDED), allocator macro seam, peek + flush (S7). Only W4
+(priority put) remains banked, with a promotion draft. **Working mode:** user
+relays design in chat; one question at a time; board holds everything else.
 
 ---
 
@@ -57,7 +57,7 @@ First expected customer: automation-console phase-2 async events
 | I4 | 🟢 | Create guards: min size = 2×sizeof(header); require 4-byte-aligned buffer |
 | I5 | 🟢 | Struct contents: agent's call, callers treat handle as read-only |
 | T1 | 🟢 | Vendoring shape: `App/event_queue/`, stdlib-only deps, config example header |
-| T2 | 🔵 | Adoption README — after implementation, test and debug |
+| T2 | 🟢 | Adoption README — written post-verification, example-first |
 | T3 | 🟢 | Testing via the automation console (HIL-style); no dedicated TEST build |
 
 ## Wish list (v2+)
@@ -386,11 +386,19 @@ per the portable-APIs conventions (Skeleton `Docs/planning/portable-apis-strateg
 Dependencies: C stdlib only. Adopter seam = config header (malloc switch; future
 knobs).
 
-### T2 — Adoption README *(deferred)*
+### T2 — Adoption README *(resolved)*
 
-**Status:** 🔵 — resolved and completed **after implementation, test and debug**
-(user, 2026-08-27). Matches the nvmparams/menusystem README pattern; must carry the
-S5 adopter lock contract.
+**Status:** 🟢 · **Needs user:** no
+
+**Resolution:** written 2026-08-27, after implementation/test/debug as
+scheduled. `App/event_queue/README.md`, following the nvmparams README pattern
+with the user's directive applied: **document-by-example first** — a "sixty
+seconds of usage" full integration leads, followed by static-ring and
+multi-producer variations, then the formal reference (config knobs, record
+format/space math, status-code table with the sign principle, API rest,
+gotchas). Carries the S5 adopter lock contract and an explicit note that the
+`< 0` triage idiom is the OPPOSITE of nvmparams' never-test-`< 0` convention,
+for adopters using both.
 
 ### T3 — Test approach *(resolved)*
 
@@ -506,9 +514,10 @@ for audit):
 - `ACON_EMIT_MAX` raised 128 → 512 (project config, user-approved) so `F,G`
   can echo up to 200 payload bytes as hex.
 
-**Plan status (2026-08-27):** 🟢 20 · 🟡 0 · 🔵 1 (T2) · 🔴 0 · W: W4 deferred
-(W1/W2 implemented → S7, W3 dropped). Next IDs: D7, S8, I6, T4, W5. **Phase 1
-complete: 17/17 HIL, regression nets green (acon 47/47, nvm 28/28), design doc
-synced (`../SwitchTester-Design.md` § "Event queue").**
+**Plan status (2026-08-27):** 🟢 21 · 🟡 0 · 🔵 0 · 🔴 0 · W: W4 deferred
+(W1/W2 implemented → S7, W3 dropped). Next IDs: D7, S8, I6, T4, W5. **Every
+board row closed. Phase 1 complete: 17/17 HIL, regression nets green (acon
+47/47, nvm 28/28), README written, design doc synced
+(`../SwitchTester-Design.md` § "Event queue").**
 
 **End of event-queue-plan.md**
