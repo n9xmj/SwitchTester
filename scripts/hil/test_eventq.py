@@ -41,6 +41,7 @@ EQ_ERROR_ALIGNMENT  = -5
 EQ_ERROR_SIZE       = -6
 EQ_STATUS_EMPTY     = 1
 EQ_STATUS_TRUNCATED = 2
+EQ_STATUS_SIZE_ROUNDED = 3
 
 CODE_NAME = {v: k for k, v in list(globals().items())
              if k.startswith(('EQ_ERROR_', 'EQ_STATUS_', 'EQ_OK'))}
@@ -188,11 +189,19 @@ def t_create_defaults(con):
           % (i['F'], 0x100 - HDR))
 
 
-@test("create rejects undersize and non-multiple-of-4 sizes")
+@test("create rejects undersize; odd sizes round down with a status")
 def t_create_size(con):
     eq(con, 'D')
     expect(con, EQ_ERROR_SIZE, 'C', '4')        # below two-header minimum
-    expect(con, EQ_ERROR_SIZE, 'C', '102')      # 0x102 = 258, not mult of 4
+    expect(con, EQ_ERROR_SIZE, 'C', '7')        # rounds down to 4, below min
+    expect(con, EQ_STATUS_SIZE_ROUNDED, 'C', '102')     # 258 -> 256, live
+    i = info(con)
+    check(i['Z'] == 0x100, "rounded ring size 0x%X, expected 0x100" % i['Z'])
+    check(put(con, 0x77, b'\x5A') == EQ_OK, "rounded queue not usable")
+    status, ident, size, data = get_frame(con)
+    check((status, ident, data) == (EQ_OK, 0x77, b'\x5A'),
+          "rounded queue round-trip failed")
+    expect(con, EQ_OK, 'D')
 
 
 @test("create rejects a misaligned caller buffer")

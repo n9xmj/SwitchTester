@@ -17,8 +17,10 @@
 #ifndef EVENT_QUEUE_CONFIG_H
 #define EVENT_QUEUE_CONFIG_H
 
-/* This project lets the module malloc() ring buffers on request (a NULL
- * pv_buffer in the create config). */
+/* This project lets the module allocate ring buffers on request (a NULL
+ * pv_buffer in the create config), through the default C-library malloc/free.
+ * EVENT_QUEUE_MALLOC / EVENT_QUEUE_FREE are deliberately left undefined --
+ * see the .example header for the alternate-allocator seam. */
 #define EVENT_QUEUE_ENABLE_MALLOC       1
 
 /* Default ring size for a zeroed/NULL create config. */

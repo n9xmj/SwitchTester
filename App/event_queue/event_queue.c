@@ -87,6 +87,7 @@ event_queue_status_t x_event_queue_create(event_queue_handle_t *px_handle,
 {
     static const event_queue_config_t x_defaults = { 0 };
     uint32_t u32_size;
+    uint32_t u32_requested;
     void    *pv_buffer;
 
     if (px_handle == NULL)
@@ -110,12 +111,13 @@ event_queue_status_t x_event_queue_create(event_queue_handle_t *px_handle,
         return EQ_ERROR_PARAMETER;
     }
 
-    u32_size = px_config->u32_size;
-    if (u32_size == 0u)
+    u32_requested = px_config->u32_size;
+    if (u32_requested == 0u)
     {
-        u32_size = EVENT_QUEUE_DEFAULT_SIZE;
+        u32_requested = EVENT_QUEUE_DEFAULT_SIZE;
     }
-    if ((u32_size < EVENT_QUEUE_SIZE_MIN) || ((u32_size % 4u) != 0u))
+    u32_size = u32_requested & ~3u;     /* Round DOWN to a multiple of 4 */
+    if (u32_size < EVENT_QUEUE_SIZE_MIN)
     {
         return EQ_ERROR_SIZE;
     }
@@ -131,7 +133,7 @@ event_queue_status_t x_event_queue_create(event_queue_handle_t *px_handle,
     else
     {
 #if EVENT_QUEUE_ENABLE_MALLOC
-        pv_buffer = malloc(u32_size);
+        pv_buffer = EVENT_QUEUE_MALLOC(u32_size);
         if (pv_buffer == NULL)
         {
             return EQ_ERROR_MEMORY;
@@ -149,7 +151,7 @@ event_queue_status_t x_event_queue_create(event_queue_handle_t *px_handle,
     px_handle->u8_owns_buffer = (px_config->pv_buffer == NULL);
     px_handle->u32_magic      = EQ_MAGIC;
 
-    return EQ_OK;
+    return (u32_size != u32_requested) ? EQ_STATUS_SIZE_ROUNDED : EQ_OK;
 }
 
 event_queue_status_t x_event_queue_destroy(event_queue_handle_t *px_handle)
@@ -166,7 +168,7 @@ event_queue_status_t x_event_queue_destroy(event_queue_handle_t *px_handle)
 #if EVENT_QUEUE_ENABLE_MALLOC
     if (px_handle->u8_owns_buffer)
     {
-        free(px_handle->pu8_buffer);
+        EVENT_QUEUE_FREE(px_handle->pu8_buffer);
     }
 #endif
     memset(px_handle, 0, sizeof(*px_handle));

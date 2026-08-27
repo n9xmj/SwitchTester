@@ -65,13 +65,15 @@ typedef enum __attribute__((packed))
     EQ_ERROR_FULL       = -3,       /* Put: no room; the event was NOT queued */
     EQ_ERROR_MEMORY     = -4,       /* Create: buffer allocation failed */
     EQ_ERROR_ALIGNMENT  = -5,       /* Create: caller buffer not 4-byte aligned */
-    EQ_ERROR_SIZE       = -6,       /* Create: size below minimum or not a multiple of 4 */
+    EQ_ERROR_SIZE       = -6,       /* Create: size below minimum after round-down */
 
     EQ_OK               = 0,        /* Success */
 
     EQ_STATUS_EMPTY     = 1,        /* Get: queue empty; nothing extracted */
     EQ_STATUS_TRUNCATED = 2,        /* Get: event consumed, payload larger than
                                      * the caller's buffer; overflow discarded */
+    EQ_STATUS_SIZE_ROUNDED = 3,     /* Create: size was not a multiple of 4 and
+                                     * was rounded DOWN; the queue is live */
 
     EQ_INFO_MAX         = 32767     /* Bounding value -- forces int16 range */
 }
@@ -138,7 +140,9 @@ typedef void (*pfn_event_queue_lock_t)(void);
 
 typedef struct
 {
-    uint32_t               u32_size;    /* Bytes; 0 = EVENT_QUEUE_DEFAULT_SIZE */
+    uint32_t               u32_size;    /* Bytes; 0 = EVENT_QUEUE_DEFAULT_SIZE.
+                                         * Rounded DOWN to a multiple of 4
+                                         * (EQ_STATUS_SIZE_ROUNDED reports it) */
     void                  *pv_buffer;   /* 4-byte aligned; NULL = allocate
                                          * internally, if enabled */
     pfn_event_queue_lock_t pfn_lock;    /* NULL = no locking (SPSC contract) */
@@ -157,6 +161,22 @@ event_queue_config_t;
 /*=============================================================================
  * PART B -- everything that depends on configuration values.
  *===========================================================================*/
+
+/*----------------------------------------------------------------------------
+ * Allocator seam. The adopter's configuration header may define
+ * EVENT_QUEUE_MALLOC(size) / EVENT_QUEUE_FREE(ptr) to route internal ring
+ * allocation through an alternative allocator (an RTOS heap, a pool
+ * allocator); any #includes that alternative needs belong in the config
+ * header too. Left undefined, they fall through to the C library.
+ * Irrelevant when EVENT_QUEUE_ENABLE_MALLOC is 0.
+ *--------------------------------------------------------------------------*/
+
+#ifndef EVENT_QUEUE_MALLOC
+#define EVENT_QUEUE_MALLOC(u32_size)    malloc(u32_size)
+#endif
+#ifndef EVENT_QUEUE_FREE
+#define EVENT_QUEUE_FREE(pv)            free(pv)
+#endif
 
 /*----------------------------------------------------------------------------
  * Smallest legal queue: two zero-payload records.
@@ -207,11 +227,15 @@ event_queue_handle_t;
  * Public API
  *===========================================================================*/
 
-/* Queue lifecycle. px_config may be NULL for an all-defaults queue. Creating
- * over a handle that is already live is refused (EQ_ERROR_PARAMETER) --
- * destroy it first. A handle in fresh (zeroed) storage is always accepted;
- * only stack garbage that happens to equal the internal magic could be
- * mistaken for a live queue, so give handles static or zeroed storage. */
+/* Queue lifecycle. px_config may be NULL for an all-defaults queue. A size
+ * that is not a multiple of 4 is rounded DOWN and reported with
+ * EQ_STATUS_SIZE_ROUNDED (the queue is live; the handle's u32_size holds the
+ * net size); EQ_ERROR_SIZE only when the net size falls below
+ * EVENT_QUEUE_SIZE_MIN. Creating over a handle that is already live is
+ * refused (EQ_ERROR_PARAMETER) -- destroy it first. A handle in fresh
+ * (zeroed) storage is always accepted; only stack garbage that happens to
+ * equal the internal magic could be mistaken for a live queue, so give
+ * handles static or zeroed storage. */
 extern event_queue_status_t x_event_queue_create (event_queue_handle_t *px_handle,
                                                   const event_queue_config_t *px_config);
 extern event_queue_status_t x_event_queue_destroy(event_queue_handle_t *px_handle);

@@ -20,12 +20,22 @@
  * 1. ALLOCATION
  *===========================================================================*/
 
-/* Allow x_event_queue_create() to malloc() the ring buffer when the config
+/* Allow x_event_queue_create() to allocate the ring buffer when the config
  * supplies pv_buffer = NULL. Set to 0 to compile the allocator out entirely
- * (the module then never references malloc/free and links without a heap);
+ * (the module then never references any allocator and links without a heap);
  * a NULL buffer becomes a configuration error instead, and every queue must
  * be given caller-owned storage. */
 #define EVENT_QUEUE_ENABLE_MALLOC       1
+
+/* Which allocator the internal-buffer path uses. Undefined here, the module
+ * falls through to the C library's malloc()/free(). To route it elsewhere --
+ * an RTOS heap, a pool allocator -- define both macros AND add whatever
+ * #include makes the alternative visible, e.g. for FreeRTOS:
+ *
+ *   #include "FreeRTOS.h"
+ *   #define EVENT_QUEUE_MALLOC(u32_size)    pvPortMalloc(u32_size)
+ *   #define EVENT_QUEUE_FREE(pv)            vPortFree(pv)
+ */
 
 /*=============================================================================
  * 2. GEOMETRY

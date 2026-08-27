@@ -405,8 +405,16 @@ for audit):
   console's builtin QUIT and builtins cannot be shadowed.
 - `create` on an already-live handle (magic present) is refused with
   `EQ_ERROR_PARAMETER`: re-creating would leak an owned malloc'd ring.
-- `u32_size` must also be a multiple of 4 (else `EQ_ERROR_SIZE`), preserving
-  S1's records-stay-4-aligned property across wraps.
+- A `u32_size` that is not a multiple of 4 is **rounded down** and reported
+  with the new positive `EQ_STATUS_SIZE_ROUNDED` (queue live, handle's
+  `u32_size` holds the net size); `EQ_ERROR_SIZE` only when the net size falls
+  below the minimum. (Initially implemented as a hard reject; changed to
+  round-down on user direction 2026-08-27, consistent with zero-means-default
+  KISS. Preserves S1's records-stay-4-aligned property across wraps.)
+- Allocator seam (user, 2026-08-27): the internal-buffer path allocates via
+  `EVENT_QUEUE_MALLOC(size)` / `EVENT_QUEUE_FREE(ptr)`, overridable in the
+  adoption header (adopter supplies any #includes); defaults to C-library
+  malloc/free.
 - The commit/release ordering (record bytes before counter advance) is held by
   a GCC compiler barrier (`asm volatile "" ::: "memory"`) — same GCC-extension
   precedent as D5's packed enum.
