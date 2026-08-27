@@ -26,6 +26,7 @@
 #include "uart_stream.h"
 #include "stdio_retarget.h"
 #include "nvm_test.h"               /* RAM-backed test pool, SwitchTester only */
+#include "eventq_test.h"            /* event_queue test harness, SwitchTester only */
 
 /*============================================================================
  * STARTUP BANNER
@@ -304,6 +305,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         v_periodic_int_test();
         v_timer_update();
         v_switch_out_tick();
+        v_eventq_test_tick();       /* ISR-producer test hook; no-op unless armed */
     }
 }
 

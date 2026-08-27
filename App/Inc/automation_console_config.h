@@ -63,11 +63,13 @@
 // above it. A line longer than the RX ring cannot be received at all, however
 // the console handles it.
 //
-// ACON_EMIT_MAX: the longest response today is the parameter getter with every
-// field at full hex width, at 53 bytes.
+// ACON_EMIT_MAX: raised from 128 (2026-08-27) for the event-queue test op's
+// F,G reply, which echoes up to 200 payload bytes as 400 hex characters plus
+// framing. 512 keeps it symmetric with ACON_LINE_MAX; the TX path drains at
+// ~92 chars/ms at 921600, so a full frame is ~5 ms of line time.
 
 #define ACON_LINE_MAX                   512
-#define ACON_EMIT_MAX                   128
+#define ACON_EMIT_MAX                   512
 
 //------------------------------------------------------------------------------
 // Timeouts, milliseconds

@@ -28,6 +28,7 @@
 #include "nvmparams.h"
 #include "globals.h"          /* g_x_nvm_param */
 #include "nvm_test.h"         /* v_acon_op_nvm_test -- SwitchTester-only NVM suite */
+#include "eventq_test.h"      /* v_acon_op_eventq_test -- SwitchTester-only queue suite */
 #include "MX25R80.h"          /* TEMP: SPI flash bring-up probe (Y) -- removal-slated */
 #include "uart_stress.h"
 #include "automation_console.h"
@@ -959,6 +960,7 @@ const acon_op_t g_x_acon_command[] =
     { 'P', v_acon_op_persist,     "persist params to NVM"        },
     { 'E', v_acon_op_errors,      "transport error count"        },
     { 'N', v_acon_op_nvm_test,    "nvm test: sub[,args]"         },
+    { 'F', v_acon_op_eventq_test, "event queue (fifo) test: sub[,args]" },
     { 'Y', v_acon_op_spiflash,    "spi flash probe: [I=id,S=status,T=dma rw test,L=loopback,N=ncs lb,J=sck lb,C[,0|1]=park cs,K=clock burst] (temp)" },
     { 'U', v_acon_op_uart_stress, "uart loopback stress: idx[,first,last,bursts]" },
     { 'B', v_acon_op_baud_sweep,  "baud sweep: idx[,rate...] (default ladder)" },

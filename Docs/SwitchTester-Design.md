@@ -306,6 +306,32 @@ then repeat/on/off per channel. IDs are contiguous so
 so a virgin pool creates all thirteen in one flash write. Defaults: on 500000 µs,
 off 500000 µs, repeat 0, pulse width 100 ms. About 130 of the 512-byte pool.
 
+## Event queue — vendored variable-length FIFO, bench-verified 2026-08-27
+
+`App/event_queue/` — a vendorable ring FIFO of variable-length records: 16-bit
+event ID + 16-bit true payload size + 0..65535 payload bytes, copy-in/copy-out,
+each record occupying header+payload rounded up to a multiple of 4. C stdlib
+only; config seam at `App/Inc/event_queue_config.h`. Full decision log:
+[`planning/event-queue-plan.md`](planning/event-queue-plan.md) (19 green, 1
+deferred, no open rows).
+
+Contract highlights: SPSC (one producer context, one consumer context) is
+lock-free with **zero interrupt masking** — monotonic per-side counters, single
+writer each, aligned 32-bit atomicity. Multiple producers supply a per-queue
+lock/unlock function-pointer pair that wraps the put path only; the consumer
+never masks. Status enum is a packed int16: negative = real error (put-on-full
+drops the event and says so), positive = information (get-on-empty, truncated
+get), 0 = OK. `create` takes a `const` (ROM-able, C99-designated) config where
+every zero member is a sane default, and refuses an already-live handle.
+
+Bench validation is `test_eventq.py` (15/15) over acon op `F` — including a
+true-ISR producer soak: the 1 ms tick callback (`v_eventq_test_tick()` in
+`app_main.c`) puts sequence-stamped events in interrupt context while the host
+drains concurrently, asserting a contiguous sequence and exact put+drop
+accounting. `ACON_EMIT_MAX` was raised 128 → 512 for the byte-echo replies.
+The intended first customer is automation-console phase 2 (async events via
+`v_acon_flush_events()` / `JOB_CYCLE_COMPLETE`).
+
 ## Done — cycler and automation console
 
 ### Timer-driven cycling — bench-verified 2026-08-03
