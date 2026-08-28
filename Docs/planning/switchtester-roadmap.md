@@ -110,7 +110,7 @@ Task 3 is mostly *already decided*. The rows live in
 | **S6** | Async event queue — ISR-safe records, formatted at dequeue, enqueue gated on an "is anyone listening" flag, queue reset on session entry |
 | **S7** | Deferral rule (async frames only *between* response frames, never inside one) and overflow policy (drop + dropped-count). **Counter design settled 2026-08-27** — see "Event accounting" |
 | **S8** | Timestamp source — `TIM2->CNT`, 1 µs, captured **at the event**, not at print time. Rationale: `HAL_GetTick()`'s 1 ms cannot resolve a switch bounce |
-| **S9** | Event subscription / arming — **largely answered 2026-08-27:** MCU-style mask register, gating at production. See "Event control" below. Residuals: masked-source counting, reset default, mask lifetime |
+| **S9** | Event subscription / arming — **largely answered 2026-08-27:** MCU-style mask register, gating at production, masked sources counted nowhere. See "Event control" below. Residuals: reset default, mask lifetime |
 | **S12** | Menu-mode human log — the second sink. Must **not** share S6's REPL gate |
 | **I5** | Async-readiness contract |
 
@@ -273,41 +273,47 @@ per-source enable set** — an `IER` with a master switch:
   ISRs, and an aligned 32-bit load/store is atomic on Cortex-M0+ — so no lock is
   needed on either side, consistent with `event_queue`'s own lock-free discipline.
 
-### The one open question this raises
+### Where the MCU analogy deliberately stops — RESOLVED (user, 2026-08-27)
 
-On a real MCU the analogy has a wrinkle worth deciding deliberately: **a peripheral's
-status flag sets whether or not the interrupt is enabled.** The `IER` bit gates
-whether the request *propagates*, not whether the event is *recorded* — which is why
-polling a masked flag still works.
+On real hardware the analogy has a wrinkle: **a peripheral's status flag sets whether
+or not the interrupt is enabled.** The `IER` bit gates whether the request
+*propagates*, not whether the event is *recorded*, which is why polling a masked flag
+still works. That raised the question of whether a masked source here should still
+bump a counter a host could read.
 
-Applied here: when a source is masked, does the event vanish entirely, or does it
-still bump a per-source counter that the host can read? The counter costs one
-increment in the ISR and would let a host ask *"how many switch transitions happened
-while I wasn't recording?"* — genuinely useful on a bench instrument, and it makes a
-masked source observable exactly the way a masked peripheral flag is. The alternative
-is simpler and truer to "production off means nothing happens."
+**It should not. Masked means masked — nothing is counted, anywhere.** In the user's
+words: *"The whole point of masking is to, well, mask event sources that are
+not-of-interest. I see no use in tracking in any way events that are masked from
+production."* Not at `event_queue` level (which cannot see masks at all) and not at
+application level either.
 
-Not decided. See the open-questions table.
+So the mask borrows the MCU register's *shape* — global enable plus per-source bits,
+one write, atomic — without borrowing its status-flag semantics. A masked source
+costs one predictable branch in the ISR and produces nothing: no record, no counter,
+no trace. That is the simpler behaviour and the one that matches what "production
+off" plainly means.
 
 ---
 
-## Event accounting — drop count and masked-source counter (user, 2026-08-27)
+## Event accounting — the drop count (user, 2026-08-27)
 
-> **The drop counter is BUILT** (2026-08-27, `event_queue` S8): handle fields
+> **BUILT and bench-verified** (`event_queue` S8, suite 20/20): handle fields
 > `u32_records_dropped` / `u32_dropped_ack`, public
 > `u32_event_queue_dropped()` / `v_event_queue_dropped_reset()`, counting
-> `EQ_ERROR_FULL` only, across all producers. Verified on the bench (suite 19/19,
-> including a reconciliation of the module's count against an independent ISR
-> tally). The **masked-source counter below is still unbuilt** — it depends on the
-> production mask, which is task 2/3 work.
+> `EQ_ERROR_FULL` only, across all producers, reconciled on the bench against an
+> independent ISR tally. A companion `u32_event_queue_puts()` / reset pair (S9)
+> counts successes, so `puts + dropped` is every put attempt a producer made.
 
-Two counters of the same shape, both answering *"what happened that never reached
-me?"* — which is why they belong together in whatever status frame the host reads:
+**There is exactly one thing worth counting: drops.** The queue was full, so the
+event was discarded. A *masked* source is not counted at all — see the resolution
+above; masking means the event was never of interest, so there is nothing to
+account for.
 
-1. **Drops** — the queue was full, so the event was discarded (`EQ_ERROR_FULL`).
-2. **Masked** — the production mask suppressed the event before it was ever queued.
-   Conditional on the still-open question of whether masked sources are counted at
-   all (see the questions table).
+That also keeps the accounting honest about what it means. "Events that happened but
+did not reach you" is a fault signal — the ring was undersized or the consumer fell
+behind. Folding in deliberately-masked events would mix a fault indication with a
+configuration choice, and a host would have to subtract one from the other to learn
+anything.
 
 ### The job-queue precedent (this project's own pattern)
 
@@ -371,15 +377,18 @@ Count **only** `EQ_ERROR_FULL`. A `EQ_ERROR_PARAMETER` or `EQ_ERROR_NOT_INIT` re
 is a caller bug, not a dropped event, and folding those in would make the number mean
 two different things.
 
-### Where each counter lives — not the same place
+### Layer boundary — why the module could not have counted masked events anyway
 
-- **The drop counter belongs in the vendored module.** Fullness is `event_queue`'s
-  own business; it is the only thing that knows a put was refused for space.
-- **The masked-source counter belongs in the application**, in whatever event-
-  production layer owns the mask. `event_queue` knows nothing about event classes,
-  channels or masks — the mask is an application concept built on top of the generic
-  16-bit ID (see *Event control*). Pushing it into the module would break the
-  dependency rule and give the module knowledge of the adopter's taxonomy.
+The drop counter belongs in the vendored module: fullness is `event_queue`'s own
+business, and it is the only thing that knows a put was refused for space.
+
+**Masking is purely an application-level behaviour** (user, 2026-08-27), and the
+module could not participate even if counting were wanted. `event_queue` knows
+nothing of event classes, channels or masks — the mask is an application concept
+built on top of the generic 16-bit ID (see *Event control*), and pushing it into the
+module would break the dependency rule by giving it knowledge of the adopter's
+taxonomy. The mask is tested in the application's event-production layer, before
+`x_event_queue_put()` is ever called.
 
 Both are reported to the host together even though they live in different layers.
 
@@ -451,7 +460,7 @@ One per task, to be asked **one at a time** when its session opens
 |---|---|---|
 | 1 | **What should each SENSE channel measure?** The channels are asymmetric; this precedes all sense design work | Task 1, and the sense half of 2/3 |
 | 2 | ~~One queue or two?~~ ~~Flush on handover?~~ **BOTH RESOLVED** — XOR by console mode (R2); flush is a dedicated host-commanded acon command | — |
-| 3 | **S9 — arming:** largely answered (mask-register model, production-side gating). **Residual: does a masked source still bump a counter the host can read** — the MCU status-flag-sets-anyway nuance? Plus: default on or off at reset, and does a mask survive acon exit? | The proving subset |
+| 3 | **S9 — arming:** mask-register model, production-side gating, and masked sources counted nowhere — all resolved. **Residuals: default on or off at reset, and does a mask survive acon exit?** | The proving subset |
 | 4 | **Task 4 — extend the compare-ISR engine, or move to DMA-fed PWM?** | Task 4 |
 
 ---
