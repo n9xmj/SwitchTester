@@ -110,7 +110,7 @@ Task 3 is mostly *already decided*. The rows live in
 | **S6** | Async event queue — ISR-safe records, formatted at dequeue, enqueue gated on an "is anyone listening" flag, queue reset on session entry |
 | **S7** | Deferral rule (async frames only *between* response frames, never inside one) and overflow policy (drop + dropped-count) |
 | **S8** | Timestamp source — `TIM2->CNT`, 1 µs, captured **at the event**, not at print time. Rationale: `HAL_GetTick()`'s 1 ms cannot resolve a switch bounce |
-| **S9** | Event subscription / arming — default on/off, granularity (per class vs per channel), lifetime across REPL entry/exit. **Needs the user when phase 2 opens** |
+| **S9** | Event subscription / arming — **largely answered 2026-08-27:** MCU-style mask register, gating at production. See "Event control" below. Residuals: masked-source counting, reset default, mask lifetime |
 | **S12** | Menu-mode human log — the second sink. Must **not** share S6's REPL gate |
 | **I5** | Async-readiness contract |
 
@@ -180,9 +180,11 @@ Two queues (the other option) are not needed either.
 - S12's "must not share S6's gate" requirement is honoured for free — the two sinks
   are separated by mode, not by a shared flag.
 
-**Two consequences to work out when the proving subset is built:**
+**Two consequences — both since answered by the user; see "Event control" below. Kept
+here because the reasoning explains WHY the answers are what they are:**
 
-1. **Handover behaviour at the mode transition.** The console switches modes at
+1. **Handover behaviour at the mode transition.** *(ANSWERED: a dedicated
+   host-commanded acon flush, so no firmware handover policy is needed.)* The console switches modes at
    runtime (`ACON_ENTER` 0xDA in, `Q`/Ctrl-C/`ACON_EXIT` out), and a session can end
    with events still queued. S6 already decided *reset the queue on entry, not just
    enable it*, for the REPL side. Under the XOR model the equivalent question is
@@ -193,7 +195,8 @@ Two queues (the other option) are not needed either.
    reset-on-entry intent and keeping a host from being handed events that predate
    its session.
 
-2. **The producer gate may simplify to an emit gate.** S6 gated *enqueue* on REPL
+2. **The producer gate may simplify to an emit gate.** *(ANSWERED: no — the user
+   wants gating at PRODUCTION. The reasoning below is why the question was live.)* S6 gated *enqueue* on REPL
    mode, reasoning that "nothing accumulates for an absent host" and "the queue
    cannot overflow while nobody is listening." Under the XOR model **some** consumer
    is always draining, so that overflow argument weakens: the human-side consumer
@@ -206,6 +209,88 @@ Two queues (the other option) are not needed either.
 Note the user's phrasing, *"one consumption point for a given event queue"*: the
 contract is per-queue, so a future subsystem wanting its own queue is unaffected by
 any of this.
+
+---
+
+## Event control — production masking and flush (user, 2026-08-27)
+
+This substantially answers **S9** and settles both residuals left by **R2**. The
+user's direction, in their words:
+
+> *"Presumably the event queue can be flushed 'on demand' — perhaps when the acon is
+> entered, or even at the start of specific acon commands, or even a dedicated acon
+> command that does the flush. The dedicated acon flush command is probably the route
+> I'd choose — it gives the host script control of the event queue."*
+>
+> *"I'd probably also add a acon command that can switch event -production- on and
+> off. I'd probably set this up so event production can be somewhat granular — e.g.
+> one production switch for switch events (or even one for each individual switch),
+> another set of switches for the sense inputs, and more switches for other types of
+> events that I've not yet conceived. Will probably also add a global event production
+> on/off switch. Think of this using the same/similar model as an interrupt mask
+> register on a MCU IP."*
+
+### What this settles
+
+**Flush is host-commanded, not automatic.** A dedicated acon command flushes the
+queue, giving the host script explicit control rather than having the firmware decide
+at mode transitions. R2's "flush on handover or carry across?" therefore does not need
+a firmware policy: a host that wants a clean slate issues the flush as the first act
+of its session. `x_event_queue_flush()` is a single call, so the command is thin.
+(Flush-on-acon-entry and flush-at-the-start-of-specific-commands remain available if
+they later prove convenient; they are not exclusive with a dedicated command.)
+
+**The gate is at PRODUCTION, not emission.** The user's emphasis on event *production*
+resolves R2's second residual in the opposite direction from the leaning this doc
+previously carried: masked sources never enter the queue at all, rather than being
+enqueued and filtered at the sink. That keeps the ISR cost proportional to what is
+actually wanted and the queue holding only records someone asked for.
+
+Consequently the consumer's job is unconditional: **whichever sink owns the console
+always drains** (R2's XOR), regardless of whether the human side is currently
+*printing* anything. Draining is not optional — it is what keeps the queue from
+filling. "Optional log messages" governs emission only.
+
+### The mask-register model
+
+Following the user's MCU-IP analogy, the natural shape is a **global enable plus a
+per-source enable set** — an `IER` with a master switch:
+
+- Today's sources: 4 switch channels + 4 sense channels = **8**. A single `uint32_t`
+  mask holds 32, which is ample headroom for "other types of events I've not yet
+  conceived", so one mask word plus one global bool covers the whole model with no
+  structure to redesign later.
+- Granularity comes for free at the bit level: the host can enable "all switch
+  events" by writing a nibble/byte of bits, or one individual switch by writing one
+  bit. Per-class and per-channel are then the same mechanism at different
+  granularities, which is what makes the register model worth borrowing — S9 asked
+  "per class or per channel?" and the answer is *both, it is one mask*.
+- **Proposed ID encoding** (proposal, not decided): event ID = `(class << 8) |
+  instance`, so the class is the high byte and the instance the low byte. The
+  enqueue-side check is then a class lookup plus a bit test, and the 16-bit generic
+  ID that `event_queue` already carries needs no extra field.
+- **Free property:** the mask is written by the console (main context) and read by
+  ISRs, and an aligned 32-bit load/store is atomic on Cortex-M0+ — so no lock is
+  needed on either side, consistent with `event_queue`'s own lock-free discipline.
+
+### The one open question this raises
+
+On a real MCU the analogy has a wrinkle worth deciding deliberately: **a peripheral's
+status flag sets whether or not the interrupt is enabled.** The `IER` bit gates
+whether the request *propagates*, not whether the event is *recorded* — which is why
+polling a masked flag still works.
+
+Applied here: when a source is masked, does the event vanish entirely, or does it
+still bump a per-source counter that the host can read? The counter costs one
+increment in the ISR and would let a host ask *"how many switch transitions happened
+while I wasn't recording?"* — genuinely useful on a bench instrument, and it makes a
+masked source observable exactly the way a masked peripheral flag is. The alternative
+is simpler and truer to "production off means nothing happens."
+
+Not decided. See the open-questions table.
+
+---
+
 ## Task 4 — the design fork worth knowing before that session starts
 
 The current engine does **not** use PWM output mode. It sets a level by rewriting
@@ -245,8 +330,8 @@ One per task, to be asked **one at a time** when its session opens
 | # | Question | Blocks |
 |---|---|---|
 | 1 | **What should each SENSE channel measure?** The channels are asymmetric; this precedes all sense design work | Task 1, and the sense half of 2/3 |
-| 2 | ~~One queue or two?~~ **RESOLVED** — XOR by console mode (R2). Residual: flush the queue on mode transition, or carry events across? | The proving subset |
-| 3 | **S9 — arming:** default on or off, per-class or per-channel, does a subscription survive REPL exit? | The proving subset |
+| 2 | ~~One queue or two?~~ ~~Flush on handover?~~ **BOTH RESOLVED** — XOR by console mode (R2); flush is a dedicated host-commanded acon command | — |
+| 3 | **S9 — arming:** largely answered (mask-register model, production-side gating). **Residual: does a masked source still bump a counter the host can read** — the MCU status-flag-sets-anyway nuance? Plus: default on or off at reset, and does a mask survive acon exit? | The proving subset |
 | 4 | **Task 4 — extend the compare-ISR engine, or move to DMA-fed PWM?** | Task 4 |
 
 ---
