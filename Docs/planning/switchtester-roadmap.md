@@ -273,6 +273,45 @@ per-source enable set** — an `IER` with a master switch:
   ISRs, and an aligned 32-bit load/store is atomic on Cortex-M0+ — so no lock is
   needed on either side, consistent with `event_queue`'s own lock-free discipline.
 
+### Leanings on the remaining S9 residuals (user, 2026-08-27 — NOT yet locked)
+
+Recorded as leanings, in the user's framing: *"I suspect that I'll opt for..."*,
+*"I might also opt to..."*. Do not treat these as decided; they are where the
+thinking currently sits.
+
+- **All events masked by default.** This answers S9's default-on-or-off directly and
+  agrees with S7's original worry, that unconditional reporting would flood the link
+  during a soak run and overflow the queue continuously. It also makes a plain boot
+  free: nothing is produced, the queue stays empty, the drop count stays 0 until a
+  host or operator explicitly arms something — the same "costs nothing unless asked"
+  posture as the flash test pool, which is not auto-inited either. Worth noting the
+  failure mode it chooses: *"I forgot to arm it"* (nothing happens, trivially
+  diagnosed) in place of *"why is my link flooded?"* (which looks like a fault).
+
+- **Control from BOTH the debug menu and acon.** Consistent with the XOR sink model:
+  each surface configures production for whoever currently owns the console. Note
+  this sharpens the *mask lifetime* residual rather than settling it — with two
+  control surfaces over one register, a mask set from the menu is visible to a host
+  that enters acon afterwards, so "does a mask survive acon entry/exit" becomes a
+  question about handover, not just about reset. Per the guard policy, validate the
+  acon path and leave the menu path relaxed.
+
+- **NVM-persisting the mask register — TBD.** Two things to weigh when it is decided:
+
+  1. **It largely replaces the masked-by-default decision rather than complementing
+     it.** If the mask persists, the boot state is whatever was last set; "all
+     masked" then only describes a virgin pool. The real question becomes *what is
+     the boot mask — always all-off, or last-set?* If last-set, a one-key
+     mask-everything command is worth having, because a persisted arm-everything
+     mask would otherwise come back after every reset and flood the link again.
+  2. **A stale or foreign pool could arm sources unexpectedly.** `.nvmdata` is
+     `NOLOAD` and survives reflashing, and this bench is shared with Skeleton, so a
+     pool written by other firmware can be read as ours (see the NVM inherited-data
+     hazard in the design doc). A garbage mask reads as "some or all sources armed",
+     which is the loud failure rather than the quiet one. Cheap in itself — one
+     `uint32_t` object appended at the end of the ID enum — but it inherits that
+     hazard.
+
 ### Where the MCU analogy deliberately stops — RESOLVED (user, 2026-08-27)
 
 On real hardware the analogy has a wrinkle: **a peripheral's status flag sets whether
@@ -460,7 +499,7 @@ One per task, to be asked **one at a time** when its session opens
 |---|---|---|
 | 1 | **What should each SENSE channel measure?** The channels are asymmetric; this precedes all sense design work | Task 1, and the sense half of 2/3 |
 | 2 | ~~One queue or two?~~ ~~Flush on handover?~~ **BOTH RESOLVED** — XOR by console mode (R2); flush is a dedicated host-commanded acon command | — |
-| 3 | **S9 — arming:** mask-register model, production-side gating, and masked sources counted nowhere — all resolved. **Residuals: default on or off at reset, and does a mask survive acon exit?** | The proving subset |
+| 3 | **S9 — arming:** mask model, production-side gating and no masked-source counting all resolved. **Residuals, with leanings recorded (not locked): all-masked-by-default, menu + acon control, and whether the mask is NVM-persisted (TBD — note it largely supersedes the default)** | The proving subset |
 | 4 | **Task 4 — extend the compare-ISR engine, or move to DMA-fed PWM?** | Task 4 |
 
 ---
