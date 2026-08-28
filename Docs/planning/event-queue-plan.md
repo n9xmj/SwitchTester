@@ -181,6 +181,13 @@ counters for free:
 - `u16_event_queue_count(px)` — queued-record count via a second pair of monotonic
   *record* counters, same single-writer trick.
 
+**Considered and DECLINED 2026-08-27:** a `bytes_used` / `bytes_free` / `capacity`
+trio, proposed on the observation that `u32_event_queue_free_space()` returns
+payload capacity for the next record (free bytes minus one header) rather than raw
+free bytes, and that nothing reports fullness directly. **User: not wanted --
+`u32_event_queue_free_space()` provides the information needed.** Do not re-propose;
+the header deduction is deliberate and documented, not an oversight.
+
 Phase-2 ideas surfaced during resolution, banked on the wish list: non-consumptive
 get (W1) and priority put (W4). Flush remains W2.
 
