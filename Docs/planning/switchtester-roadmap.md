@@ -544,15 +544,28 @@ module, so it lands in Skeleton and is re-vendored to adopters.
 
 ### B2 — SwitchTester: its own interrupt-driven tick, settable/readable over acon
 
-**Current state: does not exist.** Nothing maintains a software tick. The 1 ms TIM14
-callback runs `v_periodic_int_test()`, `v_timer_update()`, `v_switch_out_tick()` and
-the event-queue test hook, but counts nothing. Two things sit nearby and are worth
-knowing about, neither of which is what was asked for:
+**Current state: the timer exists; the counter does not.** SwitchTester already
+provisions a dedicated periodic-service timer, separate from the HAL's SysTick-based
+tick — **`TIM14`, firing every 1 ms** (verified: prescaler 63 and period 999 off the
+64 MHz SYSCLK give 1 kHz, and `PERIODIC_TIMER_INTERVAL_MS` in `platform.h` is 1;
+handle `PERIODIC_INT_TIMER_HANDLE = htim14`. TIM6 was retired in its favour). Its
+callback already runs `v_periodic_int_test()`, `v_timer_update()`,
+`v_switch_out_tick()` and the event-queue test hook.
+
+**So B2 is much smaller than it first sounds.** The interrupt-driven periodic source
+is already there and already at a sane rate — what is missing is only (a) a counter
+incremented in that callback, and (b) acon commands to read and set it. No new timer
+to provision, no CubeMX change.
+
+Two things sit nearby, neither of which is what was asked for:
 
 - **`v_system_tick_set()` / `v_system_tick_add()`** (`utils.c`) exist and are
   atomic — but they write **`uwTick`, the HAL's own tick**, the same value
-  `HAL_GetTick()` returns. Setting it therefore perturbs every HAL timeout in the
-  system, which is exactly why an *independent* counter is the better idea.
+  `HAL_GetTick()` returns. Two objections, the second the user's own
+  (2026-08-27): setting it perturbs every HAL timeout in the system, and it **pokes a
+  variable owned by the HAL**, breaking HAL inviolability. They are an *alternative
+  approach* to an application-defined tick, and a deliberately less clean one — not a
+  substitute for B2.
 - **`TIM2->CNT`** is already a free-running 32-bit 1 µs counter, and **S8 has already
   chosen it as the async-event timestamp source**. It is hardware, not
   interrupt-driven, and is not a settable tick count.
