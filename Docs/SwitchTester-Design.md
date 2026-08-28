@@ -1,12 +1,17 @@
 # SwitchTester — Design Notes
 
-> Status: **manual switch control, timer-driven cycling, the `uart_stream`
-> console transport, and the automation console (phase 1) are implemented and
-> bench-verified.** A 47-test HIL suite drives the automation console over the
-> real link and passes. `uart_stream` is verified on seven UART instances, not
-> just the console. Remaining: automation-console **phase 2** (async events,
-> designed but not built) and the **sense front-end** (open-ended, not designed).
-> Last touched 2026-08-04.
+> Status: **manual switch control, timer-driven cycling, the `uart_stream` console
+> transport, the automation console (phase 1), the vendored `logging`, `menusystem`,
+> `nvmparams` (phase 1, incl. a SPI-flash backend) and `event_queue` modules are all
+> implemented and bench-verified.** Three HIL suites totalling 92 tests drive the real
+> link and pass: `test_acon.py` 47, `test_nvm.py` 28, `test_eventq.py` 17.
+>
+> **Remaining work — see [`planning/switchtester-roadmap.md`](planning/switchtester-roadmap.md),
+> which is the entry point for anyone picking this project up:** sense inputs (largest,
+> and open-ended until the user decides what each channel measures), tying `event_queue`
+> into switch and sense events, consuming those events via the automation console and
+> the human-readable log, and interrupt-driven "switching lists" (per-cycle variable
+> duty). Last touched 2026-08-27.
 
 ## Concept
 
@@ -507,6 +512,12 @@ must use `0x9F`.
 
 ## Banked for later — each gets its own planning pass
 
+> **Forward plan:** [`planning/switchtester-roadmap.md`](planning/switchtester-roadmap.md)
+> now carries the user's stated intent for finishing the project (2026-08-27) — the
+> four remaining tasks, their order, the open questions, and how the items below fit
+> into them. Read it before starting any of this work. The `event_queue` module that
+> the async-event and sense-event work will build on is **built and bench-verified**.
+
 ### 1. Automation console, phase 2 — async events
 
 Designed and fully decided; not built. Device-originated frames (cycle
@@ -522,7 +533,7 @@ channel handling, bounce/latency measurement. `TIM2->CNT` is available as a
 common 32-bit timestamp source shared with the drive side (1 µs resolution since
 the PSC 63 change).
 
-**Last, and open-ended by choice** — the best use of the sense inputs is not yet
+**Open-ended by choice, and now the largest remaining task** (roadmap task 1) — the best use of the sense inputs is not yet
 decided, and that question needs answering before any design work. The four
 channels are intentionally asymmetric (see the sense front-end section above),
 so "what should each one measure" is the real first question, not "polled or
