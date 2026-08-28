@@ -508,6 +508,64 @@ One per task, to be asked **one at a time** when its session opens
 
 ---
 
+## Smaller banked ideas (user, 2026-08-27) — not among the four tasks
+
+Recorded to be worked later, not fleshed out. Both were checked against the code
+first; the findings are below so a later session need not re-derive them.
+
+### B1 — Logging: make the timestamp source a CONFIG-HEADER seam
+
+**Current state: a seam already exists, but not the kind proposed.** The module does
+**not** hardcode `HAL_GetTick()` — `logging.c` calls `u32_log_timestamp_ms()`, which
+has a **weak default returning 0** so a freshly vendored copy links and runs before
+any port is written. The application overrides it with a strong definition. In this
+project that is `App/Src/logging_port.c`, whose entire content is:
+
+```c
+uint32_t u32_log_timestamp_ms(void) { return HAL_GetTick(); }
+```
+
+So it is a **link seam** (weak-symbol override), not a **config-header seam**. The
+proposal — a definition in the adoption header naming the function to call — is a
+real increase in versatility, for two reasons:
+
+1. **It would let an adopter point straight at an existing function** with no wrapper
+   and no port file: `#define LOG_TIMESTAMP_MS() u32_my_tick()`.
+2. **`logging` would stop needing a port source at all.** That one function is the
+   *whole* reason `App/Src/logging_port.c` exists, and it is the only entry in the
+   strategy doc's port-inventory table that mandates a port source for a single
+   function. Removing it would let `logging` join `menusystem` under the
+   optional-port rule.
+
+**Keep the weak default as a fallback** if this is done — undefined macro falls
+through to the existing weak symbol, so nothing already vendored breaks and the
+"links before you write a port" property survives. This is a change to the vendored
+module, so it lands in Skeleton and is re-vendored to adopters.
+
+### B2 — SwitchTester: its own interrupt-driven tick, settable/readable over acon
+
+**Current state: does not exist.** Nothing maintains a software tick. The 1 ms TIM14
+callback runs `v_periodic_int_test()`, `v_timer_update()`, `v_switch_out_tick()` and
+the event-queue test hook, but counts nothing. Two things sit nearby and are worth
+knowing about, neither of which is what was asked for:
+
+- **`v_system_tick_set()` / `v_system_tick_add()`** (`utils.c`) exist and are
+  atomic — but they write **`uwTick`, the HAL's own tick**, the same value
+  `HAL_GetTick()` returns. Setting it therefore perturbs every HAL timeout in the
+  system, which is exactly why an *independent* counter is the better idea.
+- **`TIM2->CNT`** is already a free-running 32-bit 1 µs counter, and **S8 has already
+  chosen it as the async-event timestamp source**. It is hardware, not
+  interrupt-driven, and is not a settable tick count.
+
+**The two ideas compose, though they were raised as unrelated.** If B2 gives
+SwitchTester its own tick, B1 is precisely the mechanism by which `logging` would
+consume it — the config-header seam would point at the new tick instead of
+`HAL_GetTick()`, and log lines would share a timebase with the instrument rather than
+with the HAL. Worth deciding together: whether that tick and `TIM2->CNT` are one
+timebase at two resolutions or two independent ones.
+
+---
+
 ## Explicitly not in scope
 
 - **LED_Strip_Controller_G474 vendoring is ON HOLD** (user, 2026-08-27). That project
