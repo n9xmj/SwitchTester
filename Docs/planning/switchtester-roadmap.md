@@ -375,18 +375,31 @@ two different things.
 
 Both are reported to the host together even though they live in different layers.
 
-### Aside — a latent race in the job queue itself
+### Aside — the job queue's overflow counter is deliberately approximate
 
-Noted while reading the precedent, not urgent, and **not** a reason to change working
-code. `u8_full` is read-modify-written by *both* `v_job_add*()` and `u8_job_get()`
-with no critical section, and `v_job_add_with_params(NULL, JOB_CYCLE_COMPLETE, ...)`
-is called from `v_switch_cycle_advance()` — which runs in `v_switch_cycle_isr()`, at
-priority 0. So an ISR-side `u8_full++` can straddle the main-loop-side `u8_full = 1`.
+Noted while reading the precedent, and **explicitly accepted by the user
+(2026-08-27). This is not a defect and is not to be "fixed".**
 
-The consequence is a **miscounted overflow**, not corruption or loss of a queued job,
-the window is a few instructions, and it can only occur when the queue is already
-overflowing. If it ever matters, the monotonic + ack pattern above fixes it there
-too.
+`u8_full` is read-modify-written by both `v_job_add*()` and `u8_job_get()` with no
+critical section, and `v_job_add_with_params(NULL, JOB_CYCLE_COMPLETE, ...)` is
+reached from `v_switch_cycle_advance()`, which runs in `v_switch_cycle_isr()` at
+priority 0. So an ISR-side `u8_full++` can straddle the main-loop-side write.
+
+**Why it does not matter, in the user's words:** the overflow count is *"used mostly
+as a logging diagnostic"* across the several projects this job queue has served, and
+*"the fact that an overflow occurred — not the exact count of overflows — is the
+important thing to have tracked."* A count that is occasionally off by one under a
+rare interleaving still carries the signal the diagnostic exists to carry. No queued
+job is ever lost or corrupted by this; only the tally can drift.
+
+**Do not refactor `jobs.c` for this.** It is long-standing, widely reused code whose
+counter is fit for its stated purpose.
+
+The reason the new `event_queue` drop counter uses the monotonic + ack pattern anyway
+is not that this standard is stricter — it is that the pattern costs *nothing extra*
+in code being written from scratch, and `event_queue`'s whole design already runs on
+one-writer-per-field. Getting it exact for free in new code and leaving proven code
+alone are the same judgement, not two different ones.
 
 ---
 
