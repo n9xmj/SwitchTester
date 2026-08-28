@@ -53,7 +53,8 @@ extern void v_eventq_test_tick(void);
  *                            the locked put path)
  *   F,D                    destroy the test queue
  *   F,I                    info: record count, free payload space, empty flag,
- *                          ring size
+ *                          ring size, dropped-event count
+ *   F,R                    reset the dropped-event count
  *   F,P,<id>[,<hexbytes>]  put one record; payload from the hex string
  *                          (absent/empty = zero-length payload)
  *   F,G[,<cap>]            get one record into a <cap>-byte buffer (default

@@ -3,8 +3,8 @@
 > Status: **manual switch control, timer-driven cycling, the `uart_stream` console
 > transport, the automation console (phase 1), the vendored `logging`, `menusystem`,
 > `nvmparams` (phase 1, incl. a SPI-flash backend) and `event_queue` modules are all
-> implemented and bench-verified.** Three HIL suites totalling 92 tests drive the real
-> link and pass: `test_acon.py` 47, `test_nvm.py` 28, `test_eventq.py` 17.
+> implemented and bench-verified.** Three HIL suites totalling 94 tests drive the real
+> link and pass: `test_acon.py` 47, `test_nvm.py` 28, `test_eventq.py` 19.
 >
 > **Remaining work — see [`planning/switchtester-roadmap.md`](planning/switchtester-roadmap.md),
 > which is the entry point for anyone picking this project up:** sense inputs (largest,

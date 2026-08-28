@@ -150,6 +150,18 @@ def put(con, ident, payload=b''):
     return eq_status(con, 'P', '%X' % ident)
 
 
+def dropped(con):
+    """F,I -- the module's dropped-event count."""
+    return info(con)['O']
+
+
+def dropped_reset(con):
+    """F,R -- reset it; returns the post-reset value."""
+    frame = eq(con, 'R')
+    check(frame is not None and frame.ok, "F,R failed")
+    return frame.tokens['O']
+
+
 def tick_state(con):
     """F,T -- returns (remaining, put, drops)."""
     frame = eq(con, 'T')
@@ -419,6 +431,46 @@ def t_large(con):
           and frame.tokens['V'] == 1, "large truncated verify: %r" % frame.raw)
 
 
+@test("drops are counted, only for FULL, and survive until reset")
+def t_dropped(con):
+    A, B, C, D, E = (bytes([v]) for v in (0xAA, 0xBB, 0xCC, 0xDD, 0xEE))
+    fresh(con, size=0x20)                        # 32 bytes
+    check(dropped(con) == 0, "fresh queue reports drops")
+    check(put(con, 1, A * 8) == EQ_OK, "put 1")   # space 12
+    check(put(con, 2, B * 8) == EQ_OK, "put 2")   # space 12, used 24
+    for n in range(5):                           # five refused puts
+        st = put(con, 3, C * 8)
+        check(st == EQ_ERROR_FULL, "expected FULL, got %s" % name_of(st))
+    check(dropped(con) == 5, "dropped %d, expected 5" % dropped(con))
+
+    # A command the harness rejects never reaches put, so it must not count.
+    frame = eq(con, 'S', '4', '%X' % 0x900)      # len beyond the scratch buffer
+    check(frame is not None and not frame.ok,
+          "expected an ERR frame for an over-long pattern, got %r"
+          % (frame.raw if frame else None))
+    check(dropped(con) == 5, "a rejected command was counted as a drop")
+
+    # Draining frees space; the count is history, not a live flag.
+    check(get_frame(con)[0] == EQ_OK, "drain 1")
+    check(dropped(con) == 5, "count changed on drain")
+    check(put(con, 4, D * 4) == EQ_OK, "put after drain")
+    check(dropped(con) == 5, "count changed on a successful put")
+
+    check(dropped_reset(con) == 0, "reset did not zero the count")
+    check(dropped(con) == 0, "count non-zero after reset")
+    st = put(con, 5, E * 20)                     # too big for what is left
+    check(st == EQ_ERROR_FULL, "expected FULL after reset")
+    check(dropped(con) == 1, "counting did not resume after reset")
+
+
+@test("dropped count is inert on a destroyed handle")
+def t_dropped_guarded(con):
+    fresh(con)
+    expect(con, EQ_OK, 'D')
+    check(dropped(con) == 0, "destroyed handle reports drops")
+    check(dropped_reset(con) == 0, "reset on destroyed handle misbehaved")
+
+
 # ---------------------------------------------------------------------------
 # Concurrency: the ISR producer
 # ---------------------------------------------------------------------------
@@ -433,6 +485,7 @@ def run_isr_soak(con, mode, host_puts):
     received = []                               # tick-event sequence numbers
     host_ids = []
     hp = 0
+    host_drops = 0                              # main-context puts refused
     deadline = time.time() + 15.0
     while time.time() < deadline:
         status, ident, size, data = get_frame(con)
@@ -452,6 +505,8 @@ def run_isr_soak(con, mode, host_puts):
             check(st in (EQ_OK, EQ_ERROR_FULL), "host put: %s" % name_of(st))
             if st == EQ_OK:
                 hp += 1
+            else:
+                host_drops += 1
     else:
         raise Failure("ISR run did not finish within the deadline")
 
@@ -469,11 +524,17 @@ def run_isr_soak(con, mode, host_puts):
             hp += 1
         else:
             check(st == EQ_ERROR_FULL, "top-up put: %s" % name_of(st))
+            host_drops += 1
             collect(drain_all(con))
 
     collect(drain_all(con))
     remaining, put_n, drops = tick_state(con)
     check(remaining == 0, "run over but R=%d" % remaining)
+    # The module counts refused puts from EVERY producer; the ISR harness only
+    # counts its own. The sum must reconcile exactly.
+    check(dropped(con) == drops + host_drops,
+          "module counted %d drops, expected %d ISR + %d host"
+          % (dropped(con), drops, host_drops))
     check(put_n + drops == armed,
           "put %d + drops %d != armed %d" % (put_n, drops, armed))
     check(len(received) == put_n,

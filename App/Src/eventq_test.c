@@ -241,12 +241,22 @@ void v_acon_op_eventq_test(char c_op, char *pc_line)
          * F,I -- info from the three helpers plus the ring size.
          *----------------------------------------------------------------*/
         case 'I':
-            v_acon_emit(ACON_SIG_OK, "%s,I,N%X,F%lX,E%X,Z%lX",
+            v_acon_emit(ACON_SIG_OK, "%s,I,N%X,F%lX,E%X,Z%lX,O%lX",
                         pc_acon_op_name(c_op, ac_op),
                         u16_event_queue_count(&s_x_eq_test),
                         (unsigned long) u32_event_queue_free_space(&s_x_eq_test),
                         (unsigned) (b_event_queue_is_empty(&s_x_eq_test) ? 1u : 0u),
-                        (unsigned long) s_x_eq_test.u32_size);
+                        (unsigned long) s_x_eq_test.u32_size,
+                        (unsigned long) u32_event_queue_dropped(&s_x_eq_test));
+            return;
+
+        /*------------------------------------------------------------------
+         * F,R -- reset the dropped-event count.
+         *----------------------------------------------------------------*/
+        case 'R':
+            v_event_queue_dropped_reset(&s_x_eq_test);
+            v_acon_emit(ACON_SIG_OK, "%s,R,O%lX", pc_acon_op_name(c_op, ac_op),
+                        (unsigned long) u32_event_queue_dropped(&s_x_eq_test));
             return;
 
         /*------------------------------------------------------------------

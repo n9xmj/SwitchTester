@@ -274,6 +274,28 @@ already-empty queue is success.
 **`x_event_queue_destroy(&h)`** — frees the ring if the module allocated it,
 invalidates the handle; every later call on it returns `EQ_ERROR_NOT_INIT`.
 
+**Dropped-event accounting.** A put refused for want of space increments an
+internal counter, so a producer that cannot stop to handle an error -- an ISR,
+typically -- can ignore the return value entirely and let the consumer find out
+later how much was lost:
+
+```c
+uint32_t u32_event_queue_dropped     (&h);   /* drops since the last reset */
+void     v_event_queue_dropped_reset (&h);   /* consumer context, like get */
+```
+
+Only `EQ_ERROR_FULL` is counted: a parameter or not-initialised return is a caller
+bug, not a dropped event, and folding those in would make the number mean two
+different things. Every producer's drops land in the same counter, so on a
+multi-producer queue the figure is the total across all of them.
+
+It needs no lock, by the same trick as everything else here: the producer only
+increments its own monotonic total, the reset only writes a consumer-owned
+acknowledgement of it, and the accessor subtracts the two. No read-modify-write is
+ever shared between contexts -- which matters, because the obvious
+"increment in put, zero in reset" would let the producer's writeback silently
+clobber the reset on a core with no atomic RMW.
+
 **Helpers** — all tolerate NULL/uninitialised handles (empty/zero results):
 
 ```c
@@ -314,7 +336,8 @@ that is your serialization to provide.
 **`EQ_ERROR_FULL` is a dropped event, not back-pressure.** The queue cannot
 make the producer wait. If an event must not be lost, size the ring for the
 worst-case burst — `u32_event_queue_free_space()` from the producer side is
-exact if you want to instrument headroom.
+exact if you want to instrument headroom, and `u32_event_queue_dropped()` tells
+you after the fact whether the sizing was wrong.
 
 **The counters are internal; do not reach into the handle.** The handle is in
 the public header so you can instantiate it, and `u32_size` is fair to read,

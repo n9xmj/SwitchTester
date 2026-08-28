@@ -9,9 +9,10 @@ conventions). **Parent spec:** [`../SwitchTester-Design.md`](../SwitchTester-Des
 (sync after decisions land).
 
 **Status:** PHASE 1 COMPLETE (2026-08-27) — designed, implemented,
-bench-verified (`test_eventq.py` 17/17; acon 47/47, nvm 28/28) and documented
+bench-verified (`test_eventq.py` 19/19; acon 47/47, nvm 28/28) and documented
 (`README.md`, T2) in one day. Same-day additions: size round-down
-(EQ_STATUS_SIZE_ROUNDED), allocator macro seam, peek + flush (S7). Only W4
+(EQ_STATUS_SIZE_ROUNDED), allocator macro seam, peek + flush (S7), dropped-event
+counter (S8). Only W4
 (priority put) remains banked, with a promotion draft. **Working mode:** user
 relays design in chat; one question at a time; board holds everything else.
 
@@ -51,6 +52,7 @@ First expected customer: automation-console phase-2 async events
 | S5 | 🟢 | Locking: per-queue fn pointers, put-path only, NULL = SPSC lock-free |
 | S6 | 🟢 | Destroy/guard detail: free owned buffer, reset state, init-magic on all ops |
 | S7 | 🟢 | Peek + flush shipped (promoted from W1/W2); consumer-context ops |
+| S8 | 🟢 | Dropped-event counter: producer-owned monotonic + consumer-owned ack |
 | I1 | 🟢 | Monotonic internal byte counters — no head/tail ambiguity, no shared writes |
 | I2 | 🟢 | Buffer ownership flag; malloc behind `EVENT_QUEUE_ENABLE_MALLOC` (default on) |
 | I3 | 🟢 | `create` takes `const` config, copies into handle; config can live in flash |
@@ -377,6 +379,41 @@ Console: `F,K` (peek, shares the `F,G` handler) and `F,Z` (flush). HIL: two
 new tests (peek non-consumption incl. truncated-peek-keeps-data; flush
 idempotence and NOT_INIT guard) — suite now 17.
 
+### S8 — Dropped-event accounting *(resolved)*
+
+**Status:** 🟢 · **Needs user:** no
+
+**Resolution:** implemented 2026-08-27 at the user's direction, following this
+project's own job-queue precedent (`u8_full` doubling as an overflow count, reported
+in band as a synthetic `JOB_QUEUE_OVERFLOW` job). `event_queue` has no full flag to
+overload, so the counter is its own handle field with an accessor and a reset-er:
+
+```c
+uint32_t u32_event_queue_dropped     (const event_queue_handle_t *px_handle);
+void     v_event_queue_dropped_reset (event_queue_handle_t *px_handle);
+```
+
+**Only `EQ_ERROR_FULL` is counted.** A parameter or not-initialised return is a
+caller bug, not a dropped event; folding those in would make the number mean two
+things. Drops from every producer land in the same counter, so on a multi-producer
+queue the figure is the total across all of them.
+
+**The design constraint, and why it is not a naive counter.** The count is
+incremented by `put` (producer, typically an ISR) and reset by the consumer. The
+Cortex-M0+ has no LDREX/STREX, so a read-modify-write cannot be made atomic without
+masking -- which this module exists to avoid. An obvious "increment in put, zero in
+reset" therefore races: a consumer store of 0 landing inside the producer's RMW is
+silently clobbered by the writeback. The fix is the module's own idiom, one writer
+per field: `u32_records_dropped` is producer-owned and monotonic,
+`u32_dropped_ack` is consumer-owned and written only by the reset-er, and the
+accessor returns the unsigned-wrap-safe delta. No shared RMW, no lock, correct in
+both SPSC and locked multi-producer.
+
+Console: `F,I` reports `O<dropped>`, `F,R` resets. HIL: two new tests (drops counted
+only for FULL, survive drains, reset and resume; inert on a destroyed handle), plus
+the ISR soak now reconciles the module's counter against the harness's own tally --
+`dropped == ISR drops + host drops` exactly. Suite 19.
+
 ### T1 — Vendoring shape *(resolved)*
 
 **Status:** 🟢 · **Needs user:** no
@@ -514,8 +551,8 @@ for audit):
 - `ACON_EMIT_MAX` raised 128 → 512 (project config, user-approved) so `F,G`
   can echo up to 200 payload bytes as hex.
 
-**Plan status (2026-08-27):** 🟢 21 · 🟡 0 · 🔵 0 · 🔴 0 · W: W4 deferred
-(W1/W2 implemented → S7, W3 dropped). Next IDs: D7, S8, I6, T4, W5. **Every
+**Plan status (2026-08-27):** 🟢 22 · 🟡 0 · 🔵 0 · 🔴 0 · W: W4 deferred
+(W1/W2 implemented → S7, W3 dropped). Next IDs: D7, S9, I6, T4, W5. **Every
 board row closed. Phase 1 complete: 17/17 HIL, regression nets green (acon
 47/47, nvm 28/28), README written, design doc synced
 (`../SwitchTester-Design.md` § "Event queue").**

@@ -216,6 +216,9 @@ event_queue_status_t x_event_queue_put(event_queue_handle_t *px_handle,
              - (px_handle->u32_bytes_written - px_handle->u32_bytes_read);
     if (u32_space > u32_free)
     {
+        /* Producer-owned, monotonic, never reset here -- see the accessor. */
+        px_handle->u32_records_dropped += 1u;
+
         if (px_handle->pfn_unlock != NULL)
         {
             px_handle->pfn_unlock();
@@ -385,4 +388,30 @@ uint32_t u32_event_queue_free_space(const event_queue_handle_t *px_handle)
         return 0u;
     }
     return u32_free - sizeof(event_queue_header_t);
+}
+
+uint32_t u32_event_queue_dropped(const event_queue_handle_t *px_handle)
+{
+    if ((px_handle == NULL) || (px_handle->u32_magic != EQ_MAGIC))
+    {
+        return 0u;
+    }
+
+    /* Unsigned subtraction of two single-writer counters: correct across the
+     * 2^32 wrap, and a stale read of the producer's total only under-reports
+     * by however many drops landed during the read. */
+    return px_handle->u32_records_dropped - px_handle->u32_dropped_ack;
+}
+
+void v_event_queue_dropped_reset(event_queue_handle_t *px_handle)
+{
+    if ((px_handle == NULL) || (px_handle->u32_magic != EQ_MAGIC))
+    {
+        return;
+    }
+
+    /* Consumer-owned field, plain 32-bit store. A drop landing between the
+     * read and the store is simply counted against the next interval rather
+     * than lost -- which is why this is a store and not a subtract. */
+    px_handle->u32_dropped_ack = px_handle->u32_records_dropped;
 }

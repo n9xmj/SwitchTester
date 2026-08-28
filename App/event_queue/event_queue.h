@@ -196,7 +196,7 @@ _Static_assert((EVENT_QUEUE_DEFAULT_SIZE % 4u) == 0u,
  * x_event_queue_create(); it does not initialise or modify the members itself.
  * ALL members are module state -- read-only to callers.
  *
- * The four counters are the synchronization core: monotonic, free-running,
+ * The counters are the synchronization core: monotonic, free-running,
  * never reset while the queue lives. The written/put pair is stored only by
  * the producer side, the read/got pair only by the consumer side; each side
  * only ever READS the other's. Unsigned wrap at 2^32 is harmless -- deltas
@@ -211,10 +211,12 @@ typedef struct
 
     volatile uint32_t       u32_bytes_written;  /* Producer-owned counters */
     volatile uint32_t       u32_records_put;
+    volatile uint32_t       u32_records_dropped; /* Puts refused for space */
     uint32_t                u32_wr_idx;         /* Producer-private ring index */
 
     volatile uint32_t       u32_bytes_read;     /* Consumer-owned counters */
     volatile uint32_t       u32_records_got;
+    uint32_t                u32_dropped_ack;    /* Drops the consumer has seen */
     uint32_t                u32_rd_idx;         /* Consumer-private ring index */
 
     pfn_event_queue_lock_t  pfn_lock;           /* Producer serialization */
@@ -279,5 +281,30 @@ extern uint16_t u16_event_queue_count   (const event_queue_handle_t *px_handle);
 /* Payload bytes available to the next put: a put with u16_data_size up to
  * this value is guaranteed to succeed (record overhead already deducted). */
 extern uint32_t u32_event_queue_free_space(const event_queue_handle_t *px_handle);
+
+/*----------------------------------------------------------------------------
+ * Dropped-event accounting.
+ *
+ * A put refused for want of space (EQ_ERROR_FULL) increments an internal
+ * counter, so a producer that cannot stop to handle the error -- an ISR,
+ * typically -- can simply ignore the return value and let the consumer find
+ * out later how many events were lost. ONLY EQ_ERROR_FULL is counted: a
+ * parameter or not-initialised return is a caller bug, not a dropped event.
+ *
+ * u32_event_queue_dropped() returns the number of drops since the last reset.
+ * v_event_queue_dropped_reset() zeroes that figure.
+ *
+ * These follow the same single-writer discipline as everything else here: the
+ * producer only ever increments its own monotonic total, the reset only ever
+ * writes a consumer-owned acknowledgement of it, and the accessor subtracts
+ * the two. So no read-modify-write is ever shared between contexts, and no
+ * lock or interrupt masking is needed on either side -- which matters because
+ * a naive "increment in put, zero in reset" would let the producer's writeback
+ * silently clobber the reset on a core with no atomic RMW.
+ *
+ * Call the reset from the consumer context, as with get/peek/flush.
+ *--------------------------------------------------------------------------*/
+extern uint32_t u32_event_queue_dropped     (const event_queue_handle_t *px_handle);
+extern void     v_event_queue_dropped_reset (event_queue_handle_t *px_handle);
 
 #endif /* EVENT_QUEUE_H */

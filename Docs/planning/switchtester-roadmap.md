@@ -293,6 +293,14 @@ Not decided. See the open-questions table.
 
 ## Event accounting — drop count and masked-source counter (user, 2026-08-27)
 
+> **The drop counter is BUILT** (2026-08-27, `event_queue` S8): handle fields
+> `u32_records_dropped` / `u32_dropped_ack`, public
+> `u32_event_queue_dropped()` / `v_event_queue_dropped_reset()`, counting
+> `EQ_ERROR_FULL` only, across all producers. Verified on the bench (suite 19/19,
+> including a reconciliation of the module's count against an independent ISR
+> tally). The **masked-source counter below is still unbuilt** — it depends on the
+> production mask, which is task 2/3 work.
+
 Two counters of the same shape, both answering *"what happened that never reached
 me?"* — which is why they belong together in whatever status frame the host reads:
 
