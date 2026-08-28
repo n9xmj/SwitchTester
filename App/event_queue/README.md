@@ -284,6 +284,18 @@ uint32_t u32_event_queue_dropped     (&h);   /* drops since the last reset */
 void     v_event_queue_dropped_reset (&h);   /* consumer context, like get */
 ```
 
+Its companion counts the successes:
+
+```c
+uint32_t u32_event_queue_puts        (&h);   /* puts since the last reset  */
+void     v_event_queue_puts_reset    (&h);
+```
+
+`u32_event_queue_puts()` is a **lifetime total, not a queue depth** -- a get does
+not decrement it. Use `u16_event_queue_count()` for how many records are waiting.
+Together the two say what a producer offered: puts + drops is every put attempt
+made. Both are diagnostic; nothing in the module depends on either.
+
 Only `EQ_ERROR_FULL` is counted: a parameter or not-initialised return is a caller
 bug, not a dropped event, and folding those in would make the number mean two
 different things. Every producer's drops land in the same counter, so on a

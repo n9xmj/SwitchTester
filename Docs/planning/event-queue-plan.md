@@ -9,10 +9,10 @@ conventions). **Parent spec:** [`../SwitchTester-Design.md`](../SwitchTester-Des
 (sync after decisions land).
 
 **Status:** PHASE 1 COMPLETE (2026-08-27) — designed, implemented,
-bench-verified (`test_eventq.py` 19/19; acon 47/47, nvm 28/28) and documented
+bench-verified (`test_eventq.py` 20/20; acon 47/47, nvm 28/28) and documented
 (`README.md`, T2) in one day. Same-day additions: size round-down
 (EQ_STATUS_SIZE_ROUNDED), allocator macro seam, peek + flush (S7), dropped-event
-counter (S8). Only W4
+counter (S8), successful-put counter (S9). Only W4
 (priority put) remains banked, with a promotion draft. **Working mode:** user
 relays design in chat; one question at a time; board holds everything else.
 
@@ -53,6 +53,7 @@ First expected customer: automation-console phase-2 async events
 | S6 | 🟢 | Destroy/guard detail: free owned buffer, reset state, init-magic on all ops |
 | S7 | 🟢 | Peek + flush shipped (promoted from W1/W2); consumer-context ops |
 | S8 | 🟢 | Dropped-event counter: producer-owned monotonic + consumer-owned ack |
+| S9 | 🟢 | Successful-put counter, same ack pattern; lifetime total, not a depth |
 | I1 | 🟢 | Monotonic internal byte counters — no head/tail ambiguity, no shared writes |
 | I2 | 🟢 | Buffer ownership flag; malloc behind `EVENT_QUEUE_ENABLE_MALLOC` (default on) |
 | I3 | 🟢 | `create` takes `const` config, copies into handle; config can live in flash |
@@ -414,6 +415,38 @@ only for FULL, survive drains, reset and resume; inert on a destroyed handle), p
 the ISR soak now reconciles the module's counter against the harness's own tally --
 `dropped == ISR drops + host drops` exactly. Suite 19.
 
+### S9 — Successful-put counter *(resolved)*
+
+**Status:** 🟢 · **Needs user:** no
+
+**Resolution:** added 2026-08-27 at the user's suggestion as a diagnostic companion
+to S8 -- *"counted successful put attempts ... would not have to be decremented on a
+get ... dead-simple to implement."*
+
+```c
+uint32_t u32_event_queue_puts     (const event_queue_handle_t *px_handle);
+void     v_event_queue_puts_reset (event_queue_handle_t *px_handle);
+```
+
+It is a **lifetime total, not a queue depth** -- `u16_event_queue_count()` remains
+the depth. `puts + dropped` is every put attempt a producer made.
+
+**Why it is not simply the raw counter exposed.** The underlying total
+(`u32_records_put`) already existed -- it is half of what
+`u16_event_queue_count()` computes as `records_put - records_got`. So a reset-er
+that *zeroed* it, which is the obvious reading of "just a uint32_t", would make
+that subtraction underflow and report a nonsense queue depth. Using S8's
+consumer-owned-ack pattern avoids that as well as the cross-context
+read-modify-write race, and costs one extra handle word: the producer's total stays
+monotonic and untouched, `u32_puts_ack` is consumer-owned, and the accessor returns
+the delta.
+
+Console: `F,I` gains `P<puts>`; `F,R` takes an optional selector (0/absent both,
+1 drops, 2 puts) so the host can prove the two reset-ers are independent. HIL: one
+new test covering successes-only counting, get-does-not-decrement, independent
+resets, and that a reset leaves the live queue depth intact; the ISR soak also
+reconciles `puts == ISR puts + host puts`. Suite 20.
+
 ### T1 — Vendoring shape *(resolved)*
 
 **Status:** 🟢 · **Needs user:** no
@@ -551,8 +584,8 @@ for audit):
 - `ACON_EMIT_MAX` raised 128 → 512 (project config, user-approved) so `F,G`
   can echo up to 200 payload bytes as hex.
 
-**Plan status (2026-08-27):** 🟢 22 · 🟡 0 · 🔵 0 · 🔴 0 · W: W4 deferred
-(W1/W2 implemented → S7, W3 dropped). Next IDs: D7, S9, I6, T4, W5. **Every
+**Plan status (2026-08-27):** 🟢 23 · 🟡 0 · 🔵 0 · 🔴 0 · W: W4 deferred
+(W1/W2 implemented → S7, W3 dropped). Next IDs: D7, S10, I6, T4, W5. **Every
 board row closed. Phase 1 complete: 17/17 HIL, regression nets green (acon
 47/47, nvm 28/28), README written, design doc synced
 (`../SwitchTester-Design.md` § "Event queue").**

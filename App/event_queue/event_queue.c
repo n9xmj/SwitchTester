@@ -415,3 +415,24 @@ void v_event_queue_dropped_reset(event_queue_handle_t *px_handle)
      * than lost -- which is why this is a store and not a subtract. */
     px_handle->u32_dropped_ack = px_handle->u32_records_dropped;
 }
+
+uint32_t u32_event_queue_puts(const event_queue_handle_t *px_handle)
+{
+    if ((px_handle == NULL) || (px_handle->u32_magic != EQ_MAGIC))
+    {
+        return 0u;
+    }
+    return px_handle->u32_records_put - px_handle->u32_puts_ack;
+}
+
+void v_event_queue_puts_reset(event_queue_handle_t *px_handle)
+{
+    if ((px_handle == NULL) || (px_handle->u32_magic != EQ_MAGIC))
+    {
+        return;
+    }
+
+    /* Consumer-owned field. The producer's total stays monotonic -- it also
+     * feeds u16_event_queue_count(), which would underflow if it were zeroed. */
+    px_handle->u32_puts_ack = px_handle->u32_records_put;
+}

@@ -217,6 +217,7 @@ typedef struct
     volatile uint32_t       u32_bytes_read;     /* Consumer-owned counters */
     volatile uint32_t       u32_records_got;
     uint32_t                u32_dropped_ack;    /* Drops the consumer has seen */
+    uint32_t                u32_puts_ack;       /* Puts the consumer has seen  */
     uint32_t                u32_rd_idx;         /* Consumer-private ring index */
 
     pfn_event_queue_lock_t  pfn_lock;           /* Producer serialization */
@@ -306,5 +307,27 @@ extern uint32_t u32_event_queue_free_space(const event_queue_handle_t *px_handle
  *--------------------------------------------------------------------------*/
 extern uint32_t u32_event_queue_dropped     (const event_queue_handle_t *px_handle);
 extern void     v_event_queue_dropped_reset (event_queue_handle_t *px_handle);
+
+/*----------------------------------------------------------------------------
+ * Successful-put accounting -- the companion to the drop count.
+ *
+ * u32_event_queue_puts() returns how many records have been queued since the
+ * last reset. It is a lifetime total, NOT a queue depth: a get does not
+ * decrement it. Use u16_event_queue_count() for how many records are waiting.
+ * Together with u32_event_queue_dropped() it gives the full picture of what a
+ * producer offered -- puts + drops is every put attempt made.
+ *
+ * Diagnostic only; nothing in the module depends on it.
+ *
+ * The same single-writer split as the drop count, for the same reason plus one
+ * more: the underlying total also feeds u16_event_queue_count(), so zeroing it
+ * would make that subtraction underflow and report a nonsense queue depth. The
+ * reset moves a consumer-owned acknowledgement instead, leaving the producer's
+ * total monotonic and untouched.
+ *
+ * Call the reset from the consumer context, as with get/peek/flush.
+ *--------------------------------------------------------------------------*/
+extern uint32_t u32_event_queue_puts      (const event_queue_handle_t *px_handle);
+extern void     v_event_queue_puts_reset  (event_queue_handle_t *px_handle);
 
 #endif /* EVENT_QUEUE_H */

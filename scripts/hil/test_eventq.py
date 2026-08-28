@@ -155,11 +155,21 @@ def dropped(con):
     return info(con)['O']
 
 
-def dropped_reset(con):
-    """F,R -- reset it; returns the post-reset value."""
-    frame = eq(con, 'R')
+def puts(con):
+    """F,I -- the module's successful-put count."""
+    return info(con)['P']
+
+
+def counters_reset(con, sel=0):
+    """F,R[,sel] -- 0 both, 1 drops, 2 puts. Returns (dropped, puts) after."""
+    frame = eq(con, 'R') if sel == 0 else eq(con, 'R', '%X' % sel)
     check(frame is not None and frame.ok, "F,R failed")
-    return frame.tokens['O']
+    return frame.tokens['O'], frame.tokens['P']
+
+
+def dropped_reset(con):
+    """Reset the drop count only; returns it."""
+    return counters_reset(con, 1)[0]
 
 
 def tick_state(con):
@@ -463,11 +473,49 @@ def t_dropped(con):
     check(dropped(con) == 1, "counting did not resume after reset")
 
 
+@test("put count totals successes only, is not a queue depth, resets independently")
+def t_put_count(con):
+    P = bytes([0x5A])
+    fresh(con, size=0x20)                        # 32 bytes
+    check(puts(con) == 0, "fresh queue reports puts")
+    for n in range(2):                           # two fit (space 12 each)
+        check(put(con, 0x80 + n, P * 8) == EQ_OK, "put %d" % n)
+    check(puts(con) == 2, "puts %d, expected 2" % puts(con))
+
+    # A refused put is not a successful one.
+    check(put(con, 0x90, P * 8) == EQ_ERROR_FULL, "expected FULL")
+    check(puts(con) == 2, "a refused put was counted as a success")
+    check(dropped(con) == 1, "drop not counted")
+
+    # It is a lifetime total, not a depth: a get must not decrement it.
+    check(get_frame(con)[0] == EQ_OK, "drain 1")
+    check(puts(con) == 2, "a get decremented the put count")
+    i = info(con)
+    check(i['N'] == 1, "queue depth %d, expected 1" % i['N'])
+    check(i['P'] == 2, "F,I put count disagrees with the accessor")
+
+    # The two reset-ers are independent.
+    d, p = counters_reset(con, 2)                # puts only
+    check(p == 0, "puts not reset")
+    check(d == 1, "resetting puts also reset drops")
+    d, p = counters_reset(con, 1)                # drops only
+    check(d == 0, "drops not reset")
+
+    # Resetting must not disturb the live queue depth -- the raw total that
+    # backs u16_event_queue_count() has to stay monotonic.
+    i = info(con)
+    check(i['N'] == 1, "reset corrupted the queue depth: %r" % i)
+    check(put(con, 0xA0, P * 4) == EQ_OK, "put after reset")
+    check(puts(con) == 1, "counting did not resume after reset")
+    check(info(con)['N'] == 2, "queue depth wrong after reset: %r" % info(con))
+
+
 @test("dropped count is inert on a destroyed handle")
 def t_dropped_guarded(con):
     fresh(con)
     expect(con, EQ_OK, 'D')
     check(dropped(con) == 0, "destroyed handle reports drops")
+    check(puts(con) == 0, "destroyed handle reports puts")
     check(dropped_reset(con) == 0, "reset on destroyed handle misbehaved")
 
 
@@ -539,6 +587,9 @@ def run_isr_soak(con, mode, host_puts):
           "put %d + drops %d != armed %d" % (put_n, drops, armed))
     check(len(received) == put_n,
           "received %d tick events, ISR reports %d put" % (len(received), put_n))
+    check(puts(con) == put_n + hp,
+          "module counted %d puts, expected %d ISR + %d host"
+          % (puts(con), put_n, hp))
     check(received == list(range(len(received))),
           "tick sequence not contiguous/ordered (first anomaly near %r)"
           % received[:20])
