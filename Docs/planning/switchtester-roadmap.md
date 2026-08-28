@@ -84,11 +84,11 @@ The user's own proposal, which the dependency graph supports:
 into it, so the path is the shared risk. Proving it on **switch** events costs
 little — they already exist, need no new hardware bring-up, and no open user
 decision blocks them. Concretely, a proving slice is: switch-transition events
-enqueued from the TIM2 compare ISR, drained in the main loop, emitted as async acon
-frames **and** as human log lines, with arming and a dropped-count.
+enqueued from the TIM2 compare ISR, drained by whichever sink owns the console (R2), emitted as async acon
+frames in acon mode **or** as human log lines in menu mode, with arming and a dropped-count.
 
 That slice retires the real unknowns — ISR-context enqueue cost, the deferral rule,
-the arming model, the two-sink question below — before either of the expensive tasks
+the arming model, the mode-handover behaviour (R2) — before either of the expensive tasks
 commits to them.
 
 After that the two remaining tracks are independent and can be taken in either
@@ -123,8 +123,8 @@ Two hooks already exist in code for exactly this:
 
 ## Reconciliations the next session must handle
 
-Two places where the phase-2 design predates the vendored `event_queue` module and
-needs updating rather than following literally.
+Two places where the phase-2 design predates the vendored `event_queue` module. **R1 is
+still to handle; R2 is now resolved** — both are recorded so neither is re-litigated.
 
 ### R1 — S6's bespoke ring is superseded
 
@@ -144,31 +144,68 @@ flush time." **Drop:** the hand-rolled ring and its priority discussion. The
 `repl_event_t` shape may still be a fine *payload*, now as the record's data rather
 than as the queue's fixed cell.
 
-### R2 — one queue, two sinks, and the single-consumer contract
+### R2 — one queue, two sinks — RESOLVED (user, 2026-08-27)
 
-Task 3 wants the same events to reach **two** sinks: the automation console (S6) and
-the human-readable log (S12). But `event_queue` is **single-consumer by contract** —
-`get`, `peek` and `flush` all move the consumer-side cursor, and the README's
-"one consumer means one consumer" gotcha applies directly. Two contexts calling
-`get` on one queue is precisely the race the producer lock does *not* cover.
+Task 3 wants switch/sense events to reach two sinks: the automation console (S6)
+and the human-readable log (S12). But `event_queue` is **single-consumer by
+contract** — `get`, `peek` and `flush` all move the consumer-side cursor, and the
+README's "one consumer means one consumer" gotcha applies directly.
 
-So this needs a deliberate choice, and it is a **real open question for the user**:
+**Resolution — the two sinks are mutually exclusive, so there is only ever one
+consumer.** In the user's words:
 
-- **(a) One queue, one consumer that routes.** A single drain point (the job runner)
-  reads each record once and emits it to whichever sink is currently armed. Honours
-  the contract, one copy of each event, cheapest in ISR cost and RAM. Cost: an event
-  can only go to one sink per drain unless the router deliberately emits to both.
-- **(b) Two queues, producer enqueues to each armed sink.** Fully decouples the two
-  gates — which S12 explicitly requires ("must not reuse the same gate"). Cost:
-  double the ISR work and double the RAM, and the two can overflow independently.
+> *"the consumption sink for the event queue will probably be a XOR — when acon is
+> active, it will be the only consumer. When acon is inactive (debug menu system
+> controls console), event queue will be consumed by the app polling task and
+> (optional) log messages with event emits will take place. Either way, there will
+> only be one consumption point for a given event queue — either acon-exclusive, or
+> human console-exclusive."*
 
-Leaning: **(a)**, with the router emitting to both sinks when both are armed, and
-S6's gate generalised from "REPL mode is active" to "any sink is armed." That keeps
-S12's requirement that the *human* view is not coupled to REPL mode, while keeping
-one producer path and one consumer. Not decided — the user's call.
+This is better than the "one queue, one router that fans out to both" leaning this
+doc previously carried: **no fan-out logic is needed at all.** Console ownership is
+already exclusive — the debug menu and the automation console cannot both own the
+link — so the single-consumer contract is satisfied *structurally*, by a property
+the system already has, rather than by a rule a future maintainer has to remember.
+Two queues (the other option) are not needed either.
 
----
+**What this settles:**
 
+- One `event_queue` instance for switch/sense events. One producer path (the ISRs),
+  one consumer, selected by which mode owns the console.
+- acon mode: drained at `v_acon_flush_events()`, honouring S7's deferral rule
+  (between response frames, never inside one).
+- menu/human mode: drained by `v_app_polling_task()`, emitting log lines only if
+  the human-side emit option is on. `i_getline()` keeps the polling task pumped
+  while blocked, so the drain does not stall during a menu prompt.
+- S12's "must not share S6's gate" requirement is honoured for free — the two sinks
+  are separated by mode, not by a shared flag.
+
+**Two consequences to work out when the proving subset is built:**
+
+1. **Handover behaviour at the mode transition.** The console switches modes at
+   runtime (`ACON_ENTER` 0xDA in, `Q`/Ctrl-C/`ACON_EXIT` out), and a session can end
+   with events still queued. S6 already decided *reset the queue on entry, not just
+   enable it*, for the REPL side. Under the XOR model the equivalent question is
+   whether a mode change **flushes** the queue or lets the incoming sink drain what
+   the outgoing one left. `x_event_queue_flush()` exists and makes the flush option
+   a single call — an unplanned payoff from building W2. **Open: flush on
+   transition, or carry events across?** Leaning: flush, matching S6's
+   reset-on-entry intent and keeping a host from being handed events that predate
+   its session.
+
+2. **The producer gate may simplify to an emit gate.** S6 gated *enqueue* on REPL
+   mode, reasoning that "nothing accumulates for an absent host" and "the queue
+   cannot overflow while nobody is listening." Under the XOR model **some** consumer
+   is always draining, so that overflow argument weakens: the human-side consumer
+   can drain-and-discard when its emit option is off, which keeps the queue empty
+   without gating the ISR at all. That trades a few ISR cycles for a uniform drain
+   path and the option of counting events even when not emitting them. Fold this
+   into **S9** (arming) when that opens rather than deciding it separately — it is
+   the same question wearing a different hat.
+
+Note the user's phrasing, *"one consumption point for a given event queue"*: the
+contract is per-queue, so a future subsystem wanting its own queue is unaffected by
+any of this.
 ## Task 4 — the design fork worth knowing before that session starts
 
 The current engine does **not** use PWM output mode. It sets a level by rewriting
@@ -208,7 +245,7 @@ One per task, to be asked **one at a time** when its session opens
 | # | Question | Blocks |
 |---|---|---|
 | 1 | **What should each SENSE channel measure?** The channels are asymmetric; this precedes all sense design work | Task 1, and the sense half of 2/3 |
-| 2 | **One queue with a routing consumer, or two queues?** (R2 above) | Task 3 |
+| 2 | ~~One queue or two?~~ **RESOLVED** — XOR by console mode (R2). Residual: flush the queue on mode transition, or carry events across? | The proving subset |
 | 3 | **S9 — arming:** default on or off, per-class or per-channel, does a subscription survive REPL exit? | The proving subset |
 | 4 | **Task 4 — extend the compare-ISR engine, or move to DMA-fed PWM?** | Task 4 |
 
