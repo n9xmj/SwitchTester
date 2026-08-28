@@ -181,6 +181,20 @@ counters for free:
 - `u16_event_queue_count(px)` — queued-record count via a second pair of monotonic
   *record* counters, same single-writer trick.
 
+**Accepted corner case (user, 2026-08-27).** `u32_event_queue_free_space()` returns
+0 both when 4 bytes remain (a zero-length put would succeed) and when nothing
+remains (it would fail) -- raw free space is always a multiple of 4, and the
+function deducts one header, so both collapse to 0. The user assessed and accepted
+this: it only arises with the ring essentially full, where declining to produce is
+the wrong instinct anyway, *"and if production were to be held off based on such a
+condition, we'd lose the ability to track and register overflows."*
+
+That second point generalises into guidance now in the README: **do not gate a put
+on free_space -- just put and read the status.** A skipped put never reaches the
+module, so it is invisible to `u32_event_queue_dropped()`; pre-checking defeats the
+overflow accounting precisely when it matters. The README's "guaranteed to succeed"
+wording was also corrected -- the guarantee holds for non-zero returns only.
+
 **Considered and DECLINED 2026-08-27:** a `bytes_used` / `bytes_free` / `capacity`
 trio, proposed on the observation that `u32_event_queue_free_space()` returns
 payload capacity for the next record (free bytes minus one header) rather than raw

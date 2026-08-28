@@ -221,8 +221,22 @@ ring: a 4-byte payload costs 8 bytes (31 such events fit), a 5-byte payload
 costs 12, a zero-length event costs 4.
 
 `u32_event_queue_free_space()` reports payload bytes available to the **next**
-put — record overhead already deducted, so a put with `u16_data_size` up to
-that value is guaranteed to succeed.
+put — record overhead already deducted, so a **non-zero** return means a put with
+`u16_data_size` up to that value will succeed.
+
+A return of **zero is ambiguous**, and deliberately so. Raw free space is always a
+multiple of 4 (both the ring size and every record's footprint are), so zero is
+reported both when 4 bytes remain — exactly enough for a zero-length record, which
+would succeed — and when nothing remains at all. Distinguishing them would need a
+different accessor; the case only arises with the ring essentially full, where the
+answer is academic.
+
+**Which points at the more useful rule: do not gate a put on this function.** Just
+put, and read the status. That is one call instead of two, it cannot be wrong at the
+boundary, and — the part that matters — a put you skip is a put that never happened,
+so it is invisible to `u32_event_queue_dropped()`. Pre-checking silently defeats your
+own overflow accounting at exactly the moment it is telling you something. Use this
+function for sizing and instrumentation, not for flow control.
 
 Records may straddle the ring's wrap point internally; you never see that.
 
