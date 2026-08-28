@@ -288,6 +288,37 @@ already is. Enabling it unconditionally would make every deployed device across
 every project using this API reformat its pool on the next firmware update,
 wiping field settings. Opt-in keeps the change purely additive.
 
+**Alternative, and complementary — separate pool regions per project** (user idea,
+2026-08-27). Give Skeleton and SwitchTester their own `.nvmdata` sectors in their own
+linker scripts, rather than both landing on `0x0807F800`. Neither ever reads the
+other's pool: each finds blank media the first time it runs after the other, formats
+it, and creates its own defaults. It is a **port-tier change** — linker script only,
+nothing in the vendored module, no runtime cost, no format change.
+
+The two guards do different jobs and are worth having together:
+
+| | Separate regions | Label check |
+|---|---|---|
+| Kind | **Prevention** | **Detection** |
+| Covers | the known siblings that share this bench | *any* foreign pool, including a third project nobody remembered |
+| Cost | 2 KB of address planning per project | one `strncmp` on restore |
+
+Regions alone do not close the hole that actually bit here: the doc above records the
+culprit as *"a previous project's firmware"* traceable to a GPS baseline, not to
+Skeleton — and a third image can land on either address whatever these two agree
+between themselves. The label check catches that case; regions stop the two projects
+in daily rotation from ever reaching it.
+
+**One decision if regions are taken:** whether each project reserves only its own
+sector, or both.
+
+- **Own sector only** — simpler. The other project's sector is ordinary flash, so
+  code may be placed there and flashing one image can wipe the other's parameters.
+  Harmless (the next run reformats), but settings do not survive an image swap.
+- **Both sectors reserved in both projects** — 4 KB out of 510 KB in each, and both
+  pools survive alternating flashes, which is the nicer bench behaviour when swapping
+  images repeatedly.
+
 Add a distinct `NVM_ERROR_POOL_FOREIGN` rather than reusing `POOL_CORRUPT`, so
 the log reports *wrong owner* rather than *damaged* — precisely the distinction
 that was missing when this bit.

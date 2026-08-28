@@ -308,7 +308,11 @@ thinking currently sits.
      `NOLOAD` and survives reflashing, and this bench is shared with Skeleton, so a
      pool written by other firmware can be read as ours (see the NVM inherited-data
      hazard in the design doc). A garbage mask reads as "some or all sources armed",
-     which is the loud failure rather than the quiet one. Cheap in itself — one
+     which is the loud failure rather than the quiet one. **Two mitigations are on
+     the table** (see the design doc's inherited-data section): per-project `.nvmdata`
+     regions so the siblings never share an address (user idea, 2026-08-27 —
+     prevention, linker-script only), and the already-documented pool-label ownership
+     check (detection, catches any foreign pool). Cheap in itself — one
      `uint32_t` object appended at the end of the ID enum — but it inherits that
      hazard.
 
