@@ -108,7 +108,7 @@ Task 3 is mostly *already decided*. The rows live in
 | Row | What it settles |
 |---|---|
 | **S6** | Async event queue — ISR-safe records, formatted at dequeue, enqueue gated on an "is anyone listening" flag, queue reset on session entry |
-| **S7** | Deferral rule (async frames only *between* response frames, never inside one) and overflow policy (drop + dropped-count) |
+| **S7** | Deferral rule (async frames only *between* response frames, never inside one) and overflow policy (drop + dropped-count). **Counter design settled 2026-08-27** — see "Event accounting" |
 | **S8** | Timestamp source — `TIM2->CNT`, 1 µs, captured **at the event**, not at print time. Rationale: `HAL_GetTick()`'s 1 ms cannot resolve a switch bounce |
 | **S9** | Event subscription / arming — **largely answered 2026-08-27:** MCU-style mask register, gating at production. See "Event control" below. Residuals: masked-source counting, reset default, mask lifetime |
 | **S12** | Menu-mode human log — the second sink. Must **not** share S6's REPL gate |
@@ -288,6 +288,105 @@ masked source observable exactly the way a masked peripheral flag is. The altern
 is simpler and truer to "production off means nothing happens."
 
 Not decided. See the open-questions table.
+
+---
+
+## Event accounting — drop count and masked-source counter (user, 2026-08-27)
+
+Two counters of the same shape, both answering *"what happened that never reached
+me?"* — which is why they belong together in whatever status frame the host reads:
+
+1. **Drops** — the queue was full, so the event was discarded (`EQ_ERROR_FULL`).
+2. **Masked** — the production mask suppressed the event before it was ever queued.
+   Conditional on the still-open question of whether masked sources are counted at
+   all (see the questions table).
+
+### The job-queue precedent (this project's own pattern)
+
+`App/{Inc,Src}/jobs.*` already solves this, and elegantly. `u8_full` is tri-state
+rather than a boolean:
+
+| Value | Meaning |
+|---|---|
+| `0` | not full |
+| `1` | full, nothing lost |
+| `>= 2` | overflowed; **`u8_full - 1`** jobs were lost |
+
+It saturates at `0xFF` rather than wrapping, and — the part worth borrowing
+conceptually — the loss is reported **in band**: `u8_job_get()` synthesises a
+`JOB_QUEUE_OVERFLOW` job carrying the lost count in `u8_param1`, then knocks
+`u8_full` back to `1` (still full, overflow now reported). The consumer learns about
+the loss through the same ordered channel as normal jobs, so a report cannot be
+missed by a consumer that is only reading the queue.
+
+Worth considering whether the event path wants the same in-band treatment — a
+synthetic "N events lost here" record injected at the point of loss preserves
+*where* in the stream the gap occurred, which a side-channel counter cannot express.
+A counter alone tells the host how many it lost, not when.
+
+### For event_queue — the shape, and the one hazard
+
+The user's direction: **a new member in the handle/control struct counting overflows,
+with an accessor and a reset-er added to the public API.** `event_queue` has no full
+flag to overload, so the counter is its own field.
+
+**The hazard that shapes the design:** the counter is incremented by `put`
+(producer, typically an ISR) and a reset-er would be called by the consumer (main
+loop). Cortex-M0+ has **no LDREX/STREX**, so a read-modify-write cannot be made
+atomic without masking interrupts — which this module exists to avoid. A naive
+"increment in `put`, zero it in the reset-er" therefore races: if the consumer's
+store of `0` lands inside the producer's read-modify-write, the producer writes back
+`old + 1` and the reset is silently lost.
+
+**The module's own idiom already solves it** — every counter has exactly one writer,
+and deltas are taken with unsigned subtraction:
+
+- `u32_records_dropped` — **producer-owned**, monotonic, only ever incremented by
+  `put`, never reset internally.
+- `u32_dropped_ack` — **consumer-owned**, only ever written by the reset-er.
+- Accessor returns `u32_records_dropped - u32_dropped_ack`, wrap-safe exactly like
+  the existing byte counters.
+- The reset-er stores `u32_dropped_ack = u32_records_dropped` — a single aligned
+  32-bit store to a field the producer never touches.
+
+That keeps the one-writer-per-field invariant the whole module rests on, needs no
+lock, and is correct for both SPSC and the multi-producer (locked) case. Proposed
+signatures, matching house style (`v_nvm_commit_timer_reset()` is the precedent for a
+void reset-er):
+
+```c
+uint32_t u32_event_queue_dropped     (const event_queue_handle_t *px_handle);
+void     v_event_queue_dropped_reset (event_queue_handle_t *px_handle);
+```
+
+Count **only** `EQ_ERROR_FULL`. A `EQ_ERROR_PARAMETER` or `EQ_ERROR_NOT_INIT` return
+is a caller bug, not a dropped event, and folding those in would make the number mean
+two different things.
+
+### Where each counter lives — not the same place
+
+- **The drop counter belongs in the vendored module.** Fullness is `event_queue`'s
+  own business; it is the only thing that knows a put was refused for space.
+- **The masked-source counter belongs in the application**, in whatever event-
+  production layer owns the mask. `event_queue` knows nothing about event classes,
+  channels or masks — the mask is an application concept built on top of the generic
+  16-bit ID (see *Event control*). Pushing it into the module would break the
+  dependency rule and give the module knowledge of the adopter's taxonomy.
+
+Both are reported to the host together even though they live in different layers.
+
+### Aside — a latent race in the job queue itself
+
+Noted while reading the precedent, not urgent, and **not** a reason to change working
+code. `u8_full` is read-modify-written by *both* `v_job_add*()` and `u8_job_get()`
+with no critical section, and `v_job_add_with_params(NULL, JOB_CYCLE_COMPLETE, ...)`
+is called from `v_switch_cycle_advance()` — which runs in `v_switch_cycle_isr()`, at
+priority 0. So an ISR-side `u8_full++` can straddle the main-loop-side `u8_full = 1`.
+
+The consequence is a **miscounted overflow**, not corruption or loss of a queued job,
+the window is a few instructions, and it can only occur when the queue is already
+overflowing. If it ever matters, the monotonic + ack pattern above fixes it there
+too.
 
 ---
 
