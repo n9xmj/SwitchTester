@@ -16,6 +16,8 @@
  * INCLUDES
  *==========================================================================*/
 
+#include <string.h>                 /* memcmp/memcpy/memset -- pool label check */
+
 #include "device_config.h"          /* stdint/stdio, main.h, platform.h, globals.h */
 #include "tim.h"                     /* PERIODIC_INT_TIMER_HANDLE (htim14) */
 #include "utils.h"
@@ -23,6 +25,7 @@
 #include "nvmparams.h"
 #include "debug_menu.h"
 #include "switch_out.h"
+#include "app_events.h"
 #include "uart_stream.h"
 #include "stdio_retarget.h"
 #include "nvm_test.h"               /* RAM-backed test pool, SwitchTester only */
@@ -87,9 +90,16 @@ extern uint32_t _nvm_start;         /* provided by the linker script */
 
 static const nvm_pool_config_t x_nvm_param_config =
 {
-    /* Stored in the pool header. Informational only -- nvmparams never makes a
-     * decision on it. Shows up in the debug-menu pool dump. */
-    .p_c_label       = "PARAMS",
+    /* Stored in the pool header. nvmparams never makes a decision on it -- the
+     * APPLICATION does, in u8_nvm_label_matches() below.
+     *
+     * This must be unique among every project that can be loaded onto this
+     * board. .nvmdata is NOLOAD, so the pool survives reflashing, and this
+     * bench is shared with G0B1_Skeleton: without a distinguishing label this
+     * firmware will happily read the other project's pool as its own -- valid
+     * signature, self-consistent, foreign IDs. That has already happened once
+     * (2026-08-02). Skeleton now ships "UNNAMED" as a placeholder. */
+    .p_c_label       = NVM_POOL_LABEL,
 
     /* Storage driver, read half: fills the RAM pool from the device at init. */
     .pfn_read        = x_nvm_drv_stm_flash_read,
@@ -143,6 +153,72 @@ static const nvm_pool_config_t x_nvm_param_config_volatile =
     /* pfn_read / pfn_write deliberately NULL -- see nvmparams.h on the null
      * device. Reads zero the buffer, writes report success and do nothing. */
 };
+
+_Static_assert(sizeof(NVM_POOL_LABEL) - 1U <= NVM_LABEL_MAX_LENGTH,
+               "NVM_POOL_LABEL does not fit the pool header's label field");
+
+/*
+ * Does this pool carry OUR label?
+ *
+ * nvmparams treats the label as informational and never decides on it, so
+ * provenance is the application's job. Nothing else can do it: a foreign pool
+ * is perfectly VALID -- right signature, self-consistent contents -- so neither
+ * the init policy nor a CRC can tell it apart from ours. Only the label can.
+ *
+ * Compares the whole 16-byte field, not a prefix: the label is written with
+ * strncpy() bounded by the field width, which zero-fills the tail, so a
+ * full-field compare is well defined and rejects a label that merely shares a
+ * prefix. A garbage or truncated label fails it too, which is what we want.
+ *
+ * Takes the pool explicitly rather than assuming "the" pool -- nvmparams
+ * manages several across several devices, and this project runs four.
+ */
+static uint8_t u8_nvm_label_matches(const nvm_pool_t *p_x_pool,
+                                    const char *p_c_expected)
+{
+    const nvm_header_t *p_x_header;
+    char   c_expected[NVM_LABEL_MAX_LENGTH];
+    size_t sz_len;
+
+    if ((p_x_pool == NULL) || (p_x_pool->p_v_data == NULL))
+    {
+        return 1U;              /* nothing to judge -- do not destroy anything */
+    }
+
+    sz_len = strlen(p_c_expected);
+    if (sz_len > NVM_LABEL_MAX_LENGTH)
+    {
+        sz_len = NVM_LABEL_MAX_LENGTH;
+    }
+
+    memset(c_expected, 0, sizeof(c_expected));
+    memcpy(c_expected, p_c_expected, sz_len);
+
+    p_x_header = (const nvm_header_t *) p_x_pool->p_v_data;
+
+    return (memcmp(p_x_header->c_label, c_expected, NVM_LABEL_MAX_LENGTH) == 0)
+           ? 1U : 0U;
+}
+
+/*
+ * Wipe a pool whose label says it is not ours, and rebuild it from defaults.
+ *
+ * A foreign pool is explicitly not worth preserving. Blanking the media to 0xFF
+ * and re-initialising makes the second init see blank media and format it with
+ * our label -- the same mechanism the [N] menu erase uses, minus the reset.
+ * Release before re-init because this pool allocates its RAM buffer internally;
+ * re-initialising over a live handle would leak the first one.
+ */
+static void v_nvm_reclaim_foreign_pool(void)
+{
+    LOGCT(LOG_NVM, "pool label is not \"%s\" -- foreign pool, wiping", NVM_POOL_LABEL);
+
+    memset(g_x_nvm_param.p_v_data, 0xFF, g_x_nvm_param.u32_size);
+    x_nvm_write(&g_x_nvm_param);
+
+    x_nvm_pool_release(&g_x_nvm_param);
+    (void) x_nvm_pool_init(&g_x_nvm_param, &x_nvm_param_config);
+}
 
 void v_param_init(void)
 {
@@ -203,6 +279,17 @@ void v_param_init(void)
             break;
     }
 
+    /* Provenance check, before ANY x_nvm_get(). A pool that is valid but was
+     * written by another project would otherwise be read as ours -- including
+     * the event production mask, which would come back arming sources nobody
+     * asked for. Runs on the flash pool only; the volatile fallback is freshly
+     * formatted by definition. */
+    if ((g_x_nvm_param.u8_user1 != NVM_USER1_VOLATILE_FALLBACK)
+        && !u8_nvm_label_matches(&g_x_nvm_param, NVM_POOL_LABEL))
+    {
+        v_nvm_reclaim_foreign_pool();
+    }
+
     /* Example persistent parameter. Replace / extend for real use. */
     u32_test_param_1 = 0xDEAD;
     x_nvm_create(&g_x_nvm_param, NVM_PARAM_TEST_1,
@@ -261,7 +348,22 @@ void v_hardware_init(void)
      * exercises multi-pool operation. SwitchTester only; see nvm_test.h. */
     v_nvm_test_init();
     v_console_stream_init();
+
+    /* Queue before any producer can fire. Nothing is armed yet either way --
+     * g_x_event_control is still all-zero -- but "the queue exists before the
+     * first put" is the rule regardless. */
+    v_event_queue_init();
+
     v_switch_out_init();
+
+    /* DEFERRED ON PURPOSE -- must stay AFTER v_switch_out_init().
+     *
+     * The mask is all-zero until this line, which is what makes switch init's
+     * four forced-off writes silent: they go through v_switch_out_force(), the
+     * manual-event production site, and would otherwise emit four "switch ->
+     * off" records at every boot on outputs that were already off. Move this
+     * call earlier and they come back. See Docs/planning/event-path-plan.md (S6). */
+    v_event_control_restore();
     HAL_TIM_Base_Start_IT(&PERIODIC_INT_TIMER_HANDLE);
 }
 

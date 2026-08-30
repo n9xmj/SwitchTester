@@ -21,6 +21,7 @@
 #include "jobs.h"
 #include "nvmparams.h"
 #include "switch_out.h"
+#include "app_events.h"
 
 /*============================================================================
  * CHANNEL MAP
@@ -81,17 +82,117 @@ _Static_assert(NVM_PARAM_CYCLE_D_OFF_US == NVM_PARAM_CYCLE_A_REPEAT
                "cycling NVM ID block must cover exactly SWITCH_OUT_COUNT channels");
 
 /*============================================================================
+ * EVENT PATH -- queue instance, production mask, NVM
+ *
+ * These are not switch-specific, but they live here rather than in a module of
+ * their own: the plumbing is header-defined (app_events.h) and only the storage
+ * needs a .c home. Sense producers will include the same header and put
+ * directly. See Docs/planning/event-path-plan.md (I7).
+ *==========================================================================*/
+
+/* Declared uint32_t rather than uint8_t so the buffer is 4-byte aligned --
+ * x_event_queue_create() requires it and rejects anything else. */
+static uint32_t u32_event_queue_buffer[EVENT_QUEUE_BUFFER_SIZE / sizeof(uint32_t)];
+
+event_queue_handle_t     g_x_event_queue;
+
+/* .bss, so it starts all-zero = every source disarmed. That is both the NVM
+ * default and what makes v_switch_out_init()'s forced-off writes silent: the
+ * persisted value is not read back until v_event_control_restore(), long after
+ * the outputs are up. */
+volatile event_control_t g_x_event_control;
+
+/*
+ * Producer serialization. This queue has THREE producer contexts -- the main
+ * loop, the TIM14 tick ISR (pulse expiry) and the TIM2 compare ISR -- so the
+ * module's default single-producer lock-free mode is not safe here and the
+ * lock pair is mandatory, not optional.
+ *
+ * Save/restore rather than unconditional enable, so a put from inside an
+ * already-masked region does not re-enable interrupts on the way out.
+ */
+static uint32_t u32_event_lock_primask;
+
+static void v_event_queue_lock(void)
+{
+    u32_event_lock_primask = __get_PRIMASK();
+    __disable_irq();
+}
+
+static void v_event_queue_unlock(void)
+{
+    __set_PRIMASK(u32_event_lock_primask);
+}
+
+void v_event_queue_init(void)
+{
+    const event_queue_config_t x_config =
+    {
+        .u32_size   = sizeof(u32_event_queue_buffer),
+        .pv_buffer  = u32_event_queue_buffer,
+        .pfn_lock   = v_event_queue_lock,
+        .pfn_unlock = v_event_queue_unlock
+    };
+
+    (void) x_event_queue_create(&g_x_event_queue, &x_config);
+}
+
+/*
+ * Emit one event, if its source is armed.
+ *
+ * The record is a stack temporary filled member by member; x_event_queue_put()
+ * copies it into the ring. No wrapper beyond this -- and this one exists only
+ * because the same six lines would otherwise be written at every production
+ * site. A drop (queue full) is counted by the queue itself and reported
+ * side-channel; there is no synthetic in-band record.
+ */
+static void v_event_emit(uint16_t u16_class,
+                         uint8_t  u8_channel,
+                         uint16_t u16_state,
+                         uint32_t u32_tim_count)
+{
+    switch_event_data_t x_data;
+
+    if (!b_event_armed(u16_class, u8_channel))
+    {
+        return;
+    }
+
+    x_data.u8_channel    = u8_channel;
+    x_data.u8_pad        = 0U;
+    x_data.u16_state     = u16_state;
+    x_data.u32_tim_count = u32_tim_count;
+    x_data.u32_tick      = EVENT_TICK_MS();
+
+    (void) x_event_queue_put(&g_x_event_queue, u16_class,
+                             (uint16_t) sizeof(x_data), &x_data);
+}
+
+/*============================================================================
  * PRIVATE - LEVEL CONTROL
  *==========================================================================*/
 
 /* Set the drive level by rewriting the channel's OCxM field. This is the only
- * place a switch output level is changed directly. */
+ * place a switch output level is changed directly.
+ *
+ * Also the manual-event production site. Note it emits on every level REQUEST,
+ * including a redundant one -- the output may already be at the asked-for
+ * level. That is deliberate: the semantics are "a level was commanded", not
+ * "the pin changed", and the record carries the requested state so a consumer
+ * can tell. Two consequences worth expecting rather than debugging: a campaign
+ * ending emits a manual OFF on an already-low output alongside the
+ * cycle-complete, and a manual set on a cycling channel emits two records (the
+ * implicit stop's OFF, then the requested level). See the plan, S7.
+ *
+ * TIM2->CNT is exact here: this write IS the edge. */
 static void v_switch_out_force(uint8_t u8_channel, uint8_t u8_on)
 {
     LL_TIM_OC_SetMode(TIM2,
                       x_switch_map[u8_channel].u32_ll_channel,
                       u8_on ? LL_TIM_OCMODE_FORCED_ACTIVE
                             : LL_TIM_OCMODE_FORCED_INACTIVE);
+
+    v_event_emit(EVENT_CLASS_SWITCH_MANUAL, u8_channel, u8_on, TIM2->CNT);
 }
 
 static void v_switch_out_cancel_pulse(uint8_t u8_channel)
@@ -158,6 +259,17 @@ static void v_switch_cycle_advance(uint8_t u8_channel)
     uint32_t u32_ll_channel = x_switch_map[u8_channel].u32_ll_channel;
     uint32_t u32_delta;
 
+    /* Capture the compare value that PRODUCED the edge, before
+     * v_switch_cycle_schedule() overwrites it with the next one. This -- not
+     * TIM2->CNT -- is the exact edge time: the hardware placed the edge at the
+     * match, so CNT read here would carry ISR entry latency instead.
+     *
+     * The level after the edge follows from the phase we are leaving: an ON
+     * phase ends with the output driven low, an OFF phase with it driven high. */
+    const uint32_t u32_edge_count = *(x_switch_map[u8_channel].p_u32_ccr);
+    const uint16_t u16_new_state  =
+        (p_x_cycle->u8_phase == SWITCH_CYCLE_PHASE_ON) ? 0U : 1U;
+
     if (p_x_cycle->u8_phase == SWITCH_CYCLE_PHASE_ON)
     {
         /* The match just drove the output low, completing an ON pulse. Count it
@@ -169,8 +281,18 @@ static void v_switch_cycle_advance(uint8_t u8_channel)
         if (p_x_cycle->u32_repeat_count
             && (p_x_cycle->u32_cycles_done >= p_x_cycle->u32_repeat_count))
         {
+            /* No reschedule on this path, so there is no lead budget to
+             * protect and the puts can sit wherever reads best. The final
+             * edge is reported first, then the campaign completion; the halt
+             * between them emits its own manual OFF (S7). */
+            v_event_emit(EVENT_CLASS_SWITCH_AUTO, u8_channel,
+                         u16_new_state, u32_edge_count);
+
             v_switch_cycle_halt(u8_channel);
             v_job_add_with_params(NULL, JOB_CYCLE_COMPLETE, u8_channel, 0);
+
+            v_event_emit(EVENT_CLASS_SWITCH_CYCLE_COMPLETE, u8_channel,
+                         u16_new_state, u32_edge_count);
             return;
         }
 
@@ -186,7 +308,14 @@ static void v_switch_cycle_advance(uint8_t u8_channel)
         LL_TIM_OC_SetMode(TIM2, u32_ll_channel, LL_TIM_OCMODE_INACTIVE);
     }
 
+    /* Next edge FIRST, event second. SWITCH_CYCLE_MIN_LEAD_US is 4 uS -- 256
+     * cycles at 64 MHz -- and x_event_queue_put() is a meaningful fraction of
+     * that, so producing before rescheduling would eat the lead budget and
+     * start pushing edges out. See the plan, I8. */
     v_switch_cycle_schedule(u8_channel, u32_delta);
+
+    v_event_emit(EVENT_CLASS_SWITCH_AUTO, u8_channel,
+                 u16_new_state, u32_edge_count);
 }
 
 /*============================================================================
@@ -253,6 +382,55 @@ void v_switch_out_nvm_init(void)
             x_nvm_get(&g_x_nvm_param, x_id, p_u32_value);
         }
     }
+
+    /* Create only -- the read-back is deferred to v_event_control_restore().
+     * Creating it here keeps first-boot provisioning of every object inside the
+     * single flash write this function exists to batch. */
+    v_event_control_nvm_init();
+}
+
+/*
+ * Create the mask's NVM object with the all-disarmed default, WITHOUT reading
+ * it back. The read-back is v_event_control_restore(), deliberately deferred
+ * until after the outputs are up.
+ *
+ * A virgin pool therefore gets a 0 here and boots producing nothing; every
+ * later boot leaves the stored value alone for the restore to pick up.
+ */
+void v_event_control_nvm_init(void)
+{
+    uint32_t u32_default = 0UL;
+
+    x_nvm_create(&g_x_nvm_param, NVM_PARAM_EVENT_CONTROL,
+                 sizeof(u32_default), &u32_default);
+}
+
+/*
+ * Read the persisted mask into the live register.
+ *
+ * ORDERING IS LOAD-BEARING: this must run AFTER v_switch_out_init(). Until it
+ * does, g_x_event_control is all-zero, which is what keeps the four forced-off
+ * writes in switch init silent. Moving this call earlier resurrects them.
+ *
+ * Fails safe: if the get() does not succeed the register keeps its zero, so the
+ * failure mode is "nothing is armed" rather than "everything is".
+ */
+void v_event_control_restore(void)
+{
+    uint32_t u32_mask = 0UL;
+
+    if (x_nvm_get(&g_x_nvm_param, NVM_PARAM_EVENT_CONTROL, &u32_mask)
+        == NVM_ERROR_NONE)
+    {
+        g_x_event_control.u32_all = u32_mask;
+    }
+}
+
+void v_event_control_nvm_save(void)
+{
+    uint32_t u32_mask = g_x_event_control.u32_all;
+
+    x_nvm_set(&g_x_nvm_param, NVM_PARAM_EVENT_CONTROL, &u32_mask);
 }
 
 void v_switch_cycle_nvm_save(uint8_t u8_channel, uint8_t u8_parameter)

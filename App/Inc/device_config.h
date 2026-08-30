@@ -43,6 +43,20 @@
 #define PRODUCT_NAME                    "SwitchTester"
 #define PLATFORM_NAME                   "NUCLEO-G0B1RE"
 
+//------------------------------------------------------------------------------
+// NVM pool ownership label -- written into the pool header and checked at init.
+//
+// Derived from PRODUCT_NAME on purpose: a project forked from this one changes
+// PRODUCT_NAME as a matter of course and inherits a distinct pool label for
+// free, which is exactly the property the check depends on. The .nvmdata
+// section is NOLOAD and survives reflashing, so two projects sharing a board
+// and a label will read each other's pools.
+//
+// Must be at most NVM_LABEL_MAX_LENGTH (16) characters; asserted in app_main.c.
+//------------------------------------------------------------------------------
+
+#define NVM_POOL_LABEL                  PRODUCT_NAME
+
 #if defined(DEBUG)
 #define BUILD_CONFIG                    "DEBUG"
 #else 

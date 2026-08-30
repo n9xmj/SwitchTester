@@ -90,6 +90,12 @@ typedef enum
     NVM_PARAM_TEST_2,
     NVM_PARAM_TEST_3,
 
+    /* Event production mask -- one uint32_t holding event_control_t::u32_all.
+     * Default is 0 (everything disarmed), so a virgin pool boots producing
+     * nothing. Restored late in init on purpose; see v_event_control_restore()
+     * in app_events.h. */
+    NVM_PARAM_EVENT_CONTROL,
+
     /* Marker -- not a parameter. Keep last. */
     NVM_PARAM_APP_LAST
 }
