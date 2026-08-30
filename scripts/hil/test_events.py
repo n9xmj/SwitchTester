@@ -180,6 +180,16 @@ def drain_all(con):
     raise Failure("drain_all did not converge")
 
 
+def ok(con, text):
+    """Issue a command and insist it succeeded. Setup steps must be checked --
+    a silently rejected W leaves the channel on its STORED parameters, and the
+    test then measures something entirely different from what it asked for."""
+    frame = con.command(text)
+    check(frame is not None, "no response to %s" % text)
+    check(frame.ok, "%s was rejected: %r" % (text, frame.raw))
+    return frame
+
+
 def toggle(con, channel, level):
     """Manual set of one channel, via S (select/set/clear)."""
     bit = 1 << channel
@@ -498,11 +508,14 @@ def t_auto_cycle(con):
     quiesce(con)
     arm(con, M_SW_AUTO_ALL | M_SW_MANUAL_ALL | M_CYCLE_COMPLETE)
 
-    # 2 ms on, 2 ms off, 3 repeats -- well above the 10 uS floor, and short
-    # enough that the run is over before the drain.
-    con.command('W,0,7D0,7D0,3')
-    con.command('C,1')
-    con.expect_silence(0.2)
+    # 25 ms on + 25 ms off = a 50 ms period, which is exactly
+    # ACON_MIN_CYCLE_PERIOD_US -- the host-commanded floor. Anything shorter is
+    # correctly REFUSED by the W handler, which would leave the channel on its
+    # stored parameters and make this test measure the wrong waveform.
+    # 3 repeats therefore takes ~150 ms; wait comfortably past that.
+    ok(con, 'W,0,61A8,61A8,3')
+    ok(con, 'C,1')
+    con.expect_silence(0.5)
 
     events = drain_all(con)
     classes = [e.cls for e in events]
@@ -530,9 +543,9 @@ def t_auto_complete_only(con):
     quiesce(con)
     arm(con, M_CYCLE_COMPLETE)              # no AUTO, no MANUAL
 
-    con.command('W,1,7D0,7D0,2')
-    con.command('C,2')
-    con.expect_silence(0.2)
+    ok(con, 'W,1,61A8,61A8,2')
+    ok(con, 'C,2')
+    con.expect_silence(0.5)
 
     events = drain_all(con)
     check(len(events) >= 1, "expected a CYCLE_COMPLETE, got nothing")

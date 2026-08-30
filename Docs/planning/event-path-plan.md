@@ -68,7 +68,7 @@ what the next relay should cover. See *Implementation readiness* below the Big B
 | I7 | 🟢 | No wrapper layer: header for types, stack record, direct `x_event_queue_put()` |
 | I8 | 🟢 | TIM2 ISR order: capture `CCRx` → reschedule → put. 6 µs worst-case ISR budget |
 | T1 | 🟡 | Skeleton: label `"UNNAMED"` + notice **DONE**; check back-port + W1 still pending |
-| T2 | 🟡 | `scripts/hil/test_events.py` written, 21 tests — NOT yet run on hardware |
+| T2 | 🟢 | `scripts/hil/test_events.py` — **22/22 green on hardware**; acon 47, eventq 20, nvm 28 still green |
 
 ---
 
@@ -139,9 +139,25 @@ defaults to all-disarmed and nothing produces until a command surface exists.
 
 ---
 
-## Consumer side — sync drain BUILT (2026-08-30)
+## Consumer side — sync drain BUILT and BENCH-VERIFIED (2026-08-30)
 
-Compiles clean; **not yet flashed, so no test has run.**
+**22/22 on hardware**, and the three existing suites are still green (acon 47, eventq 20,
+nvm 28). The produce-and-consume path is proven end to end: switch transitions produced in
+ISR and main context, gated by the persisted mask, drained over the console.
+
+**One bug, and it was in the TEST, not the firmware.** The first run failed the two cycling
+tests. The evidence was in the record timestamps: events arrived 500 mS apart when the test
+had asked for 2 mS. `W,0,7D0,7D0,3` requests a 4 mS period, and `ACON_MIN_CYCLE_PERIOD_US`
+is **50 mS** on the host-commanded path — so the W was correctly REFUSED, the channel kept
+its stored 500 mS parameters, and a 3-repeat run needed 3 seconds while the test waited 200
+mS. The guard policy working exactly as designed, against a test that ignored it and did
+not check the reply.
+
+Fixed by using 25 mS + 25 mS (the floor exactly) and adding an `ok()` helper that asserts
+setup commands actually succeeded — **the real defect was the unchecked reply**, which is
+what let a rejected command masquerade as a firmware fault. Worth remembering: in this
+suite a silently-rejected setup step makes the test measure a different waveform than the
+one it asked for.
 
 ### The wire contract
 
