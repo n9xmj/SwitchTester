@@ -579,6 +579,52 @@ timebase at two resolutions or two independent ones.
 
 ---
 
+### B3 — Centralised switch control + event hooks for MANUAL changes
+
+**Current state: both requested changes are already in place.** Checked 2026-08-27;
+the recollection that manual control manipulates `MODER`/`ODR` is a memory of the
+*earlier plan*, which the design doc records as superseded.
+
+- **Pins stay permanently in AF2/TIM2 and levels are set through output-compare
+  mode**, exactly as proposed. `v_switch_out_force()` is a two-line static:
+  `LL_TIM_OC_SetMode(TIM2, ch, on ? LL_TIM_OCMODE_FORCED_ACTIVE :
+  LL_TIM_OCMODE_FORCED_INACTIVE)`. **`switch_out.c` contains no `MODER`, no `ODR`,
+  no `HAL_GPIO_WritePin`, and no GPIO re-init at all** — there is no remuxing, so no
+  window where pin ownership is ambiguous.
+- **Switch control is already one application-specific module with a public
+  interface**: `App/{Inc,Src}/switch_out.*`, ~20 exported functions covering manual
+  set/toggle/pulse/all-off, cycling, state readback, NVM persistence and the ISR
+  entry point. **Both intended consumers already go through it** — the debug menu
+  and `automation_commands.c`. Neither touches switch GPIO directly. (Both files do
+  call `HAL_GPIO_WritePin`, but only for SPI-flash bit-bang diagnostics, which is
+  unrelated.)
+
+**What actually remains is the part B3 was really for: event registration.** The
+centralisation that would have made it easy is done, so this reduces to adding hooks
+— and the module's shape makes the placement obvious, because there are exactly two
+points where a level changes, matching the "two systems are somewhat independent"
+observation:
+
+1. **Software-initiated changes** all funnel through `v_switch_out_force()`, which
+   is called from six sites and is commented as *"the only place a switch output
+   level is changed directly."* One hook there catches every manual set, toggle,
+   pulse edge, all-off and cycle start/halt.
+2. **Autonomous cycling transitions are made by the hardware** at compare match —
+   the ISR comment is explicit that *"the output has already changed, the hardware
+   did it"* — so those are not visible at the choke point and must be reported from
+   `v_switch_cycle_advance()` / `v_switch_cycle_isr()` instead.
+
+That asymmetry is the real content of this item: **one event source is a software
+choke point, the other is a hardware event observed after the fact.** Both are inside
+the one module, so no restructuring is needed — but they need separate hooks, and
+only the second has a `TIM2->CNT` capture that is truly contemporaneous with the
+edge (S8). A manual change timestamped inside `v_switch_out_force()` is
+contemporaneous too, since the software write *is* the edge.
+
+Folds naturally into task 2 rather than standing alone.
+
+---
+
 ## Explicitly not in scope
 
 - **LED_Strip_Controller_G474 vendoring is ON HOLD** (user, 2026-08-27). That project
