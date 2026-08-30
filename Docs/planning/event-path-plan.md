@@ -69,7 +69,7 @@ is fully designed and unbuilt.
 | I5 | 🟢 | Queue instance: static 8 KB buffer, created at init, never destroyed; lock-fn pair |
 | I7 | 🟢 | No wrapper layer: header for types, stack record, direct `x_event_queue_put()` |
 | I8 | 🟢 | TIM2 ISR order: capture `CCRx` → reschedule → put. 6 µs worst-case ISR budget |
-| T1 | 🟡 | Skeleton: label `"UNNAMED"` + notice **DONE**; check back-port + W1 still pending |
+| T1 | 🟢 | Skeleton back-port DONE — placeholder label, the check, and a boot warning |
 | T2 | 🟢 | `scripts/hil/test_events.py` — **22/22 green on hardware**; acon 47, eventq 20, nvm 28 still green |
 
 ---
@@ -239,7 +239,7 @@ with acon 47 / eventq 20 / nvm 28 still green alongside it.
 |---|---|---|
 | **Menu-side human sink** | **D2**, **I6** menu half | Parked by the user, 2026-08-30. Needs the log-line format and the polling-task drain |
 | **acon monitor mode** | **D1** phase 2 | Fully specified in D1 — finite timeout, explicit exit byte, XON/XOFF, pump every pass, `*` sigil. Unbuilt |
-| **Skeleton back-port** | **T1** | A different repo. The label check now exists here to port, along with W1/W3 |
+| **Skeleton back-port** | ~~T1~~ | **DONE** — placeholder, check and boot warning all shipped (`e0a2f0e`) |
 
 ---
 
@@ -1018,14 +1018,30 @@ everything cloned from it.
   described as secondary and optional, and its natural partner is the runtime notice, which
   needs the check to exist first.
 
-**Still pending, and deliberately so:**
+**Also done, commit `e0a2f0e`** (pushed) — the label check itself, back-ported:
 
-- **The label check itself.** It does not exist in SwitchTester yet, so there is nothing to
-  back-port. It follows once I3 is built, as a per-pool helper.
-- **W1**, the label-peek enhancement, which travels with that same visit.
+- `NVM_POOL_LABEL` / `NVM_POOL_LABEL_UNSET` moved into Skeleton's `device_config.h`
+  alongside `PRODUCT_NAME`; the pool config references the macro instead of a literal.
+- `u8_nvm_label_matches()` and `v_nvm_reclaim_foreign_pool()` ported verbatim in shape —
+  **per-pool signature**, full 16-byte compare, check after pool init and before any
+  `x_nvm_get()`, mismatched pool wiped and rebuilt.
+- **A boot warning while the label is still the shipped placeholder.** This is what
+  finally makes `"UNNAMED"` self-detecting rather than dependent on the adopter reading a
+  comment — and it matters because an unadopted clone is indistinguishable from *every
+  other* unadopted clone, which is precisely the collision the check exists to prevent.
+- Adds a `LOG_NVM` class, which Skeleton did not have.
 
-**Resolution:** _(partial — the placeholder label and notice are done; the check back-port
-and W1 remain, both blocked on the SwitchTester-side implementation)_
+**Consequence recorded in Skeleton's README:** two projects alternating on this shared
+bench now each wipe the other's pool at boot. Intended — a foreign pool is not worth
+preserving — but parameters do not survive a swap.
+
+**Not flashed** — the bench Nucleo is running SwitchTester. Skeleton builds clean.
+
+**Still banked, deliberately:** **W1** (label peek without full init) stays on hold at the
+user's direction, and **W3** (opt-in label check inside `x_nvm_pool_init()`) with it. Note
+W3 would largely supersede this application-side check if it were ever built.
+
+**Resolution:** T1 is complete. Skeleton ships the placeholder, the check, and the warning.
 
 ---
 
@@ -1660,7 +1676,7 @@ Travels with T1 and W1 rather than causing its own excursion.
 - **Regression net:** `test_acon.py` 47, `test_nvm.py` 28, `test_eventq.py` 20. Run after
   anything structural. Close Tera Term first — it holds COM3.
 
-**Plan status summary (2026-08-30):** 17 🟢 · 2 🟡 · 1 🔴 · 3 🔵.
+**Plan status summary (2026-08-30):** 18 🟢 · 1 🟡 · 1 🔴 · 3 🔵.
 
 **The proving subset is DONE and verified on hardware.** Switch events are produced in both
 ISR and main context, gated by a persisted mask, and consumed end to end over acon —
@@ -1670,7 +1686,6 @@ ISR and main context, gated by a persisted mask, and consumed end to end over ac
 
 - **D2** 🔴 — the human log line and its verbosity tier. Parked by the user.
 - **I6** 🟡 — acon half built; the polling-task drain waits on D2.
-- **T1** 🟡 — Skeleton back-port of the label check, plus banked W1/W3.
 - **W1 / W2 / W3** 🔵 — banked by intent, not oversights.
 
 **Next natural step** is whichever the user picks: the menu-side consumer, acon monitor
