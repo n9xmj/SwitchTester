@@ -68,7 +68,22 @@ CLASS_NAME = {
 # ---------------------------------------------------------------------------
 
 CH_PRI = 3                      # SWITCH_D -- the workhorse
-CH_SEC = 2                      # SWITCH_C -- the "masked" contrast channel
+CH_SEC = 2                      # SWITCH_C -- second channel, DELIBERATE
+
+# SWITCH_C is driven on purpose, in three places, and is to be KEPT (user,
+# 2026-08-30: "better test coverage"). Do not propose narrowing these to
+# SWITCH_D alone:
+#
+#   gate: armed vs masked      C high/low -- proving a MASKED channel stays
+#                              silent needs a second channel that really moves
+#   drain: order is FIFO       C is one of the three channels walked in order
+#   auto: complete-only        C cycles 2x25 ms -- a channel to cycle while its
+#                              transition bits are masked
+#
+# Expect ~2 single blinks plus one brief flicker on SWITCH_C per full run. Note
+# each output also drives a CD4066 control input, not just an indicator LED, so
+# a blink briefly closes an analog switch -- harmless here, but the reason
+# SWITCH_A (the DUT channel) is never touched at all.
 
 CH_SAFE_MASK = 0xE              # channels 1..3: everything except SWITCH_A
 
