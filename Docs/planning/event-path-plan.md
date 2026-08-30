@@ -91,10 +91,18 @@ RAM delta and leaves 122.6 KiB free.
 wrapper is acceptable *provided it costs no call frame* — optimise this one operation for
 speed over size, without touching the project's optimisation level.
 
+> **Build-config note, checked 2026-08-30.** Both Debug and Release compile C at **`-Og`**;
+> an earlier claim in this session that Release used `-Os` was wrong. The `-Os` in
+> `.cproject` was on the **C++** compiler option, inert in a C-only project. It has since
+> been set to `-Og` as well, so no `-Os` remains anywhere and the two defined build types
+> are consistent. Release differs from Debug only in `-g3`/`-DDEBUG`: flash 66,296 B vs
+> 68,608 B, RAM identical at 21,912 B.
+
 **It was not free by default, and the measurement is the reason the attribute is there.**
-At `-Og` (Debug) and `-Os` (Release) the compiler emitted both as real functions —
-`v_event_emit` 64 bytes calling `b_event_armed` 100 bytes — so a **masked** source, the
-common case during a soak, paid **two nested call frames just to learn it was masked**.
+At **`-Og`** — which both Debug and Release use — the compiler emitted both as real
+functions, `v_event_emit` 64 bytes calling `b_event_armed` 100 bytes, so a **masked**
+source, the common case during a soak, paid **two nested call frames just to learn it was
+masked**.
 With `__attribute__((always_inline))` on both, the symbols disappear and the gate compiles
 to roughly five instructions:
 
