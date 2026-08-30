@@ -256,7 +256,9 @@ filling. "Optional log messages" governs emission only.
 Following the user's MCU-IP analogy, the natural shape is a **global enable plus a
 per-source enable set** — an `IER` with a master switch:
 
-- Today's sources: 4 switch channels + 4 sense channels = **8**. A single `uint32_t`
+- Today's sources: 4 switch channels + 4 sense channels = **8** — or **12** if switch
+  channels carry separate manual and automated bits, which is the user's stated
+  intent (see B3). A single `uint32_t`
   mask holds 32, which is ample headroom for "other types of events I've not yet
   conceived", so one mask word plus one global bool covers the whole model with no
   structure to redesign later.
@@ -620,6 +622,23 @@ the one module, so no restructuring is needed — but they need separate hooks, 
 only the second has a `TIM2->CNT` capture that is truly contemporaneous with the
 edge (S8). A manual change timestamped inside `v_switch_out_force()` is
 contemporaneous too, since the software write *is* the edge.
+
+**Stated intent (user, 2026-08-27): manual operations get their own event-mask bit,
+independent of the automated path.** So the mask does not merely distinguish *which
+channel* or *which class* — for switch events it also distinguishes *how the change
+was initiated*. Arming manual events without cycling events, or the reverse, is a
+first-class capability rather than something a host filters after the fact.
+
+That earns its keep immediately: a soak run at a 1 ms half-period floods the link
+with cycling transitions (the flood S7 worried about), while manual operations are
+rare and nearly always interesting. Separate bits let an operator watch their own
+actions against a running soak without drowning in it — which a per-channel-only
+mask could not express, since the same channel produces both kinds.
+
+It also lines up with the two hooks above rather than cutting across them: hook 1
+(`v_switch_out_force()`) is the manual source and hook 2
+(`v_switch_cycle_advance()`) the automated one, so each hook tests its own mask bit
+and neither needs to know why it was called.
 
 Folds naturally into task 2 rather than standing alone.
 
