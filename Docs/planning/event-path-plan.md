@@ -60,15 +60,15 @@ what the next relay should cover. See *Implementation readiness* below the Big B
 | I3 | 🟢 | Per-pool label check; only the main params pool is renamed `"SwitchTester"` |
 | S7 | 🟢 | Emit on every level **request**, even a redundant one — no change-filtering |
 | S8 | 🟢 | Drop reporting is the side-channel counter only — no synthetic in-band record |
-| D1 | 🟡 | Two commands: sync drain (max-count in, remaining-count out) + monitor (finite timeout) |
+| D1 | 🟢 | Sync drain BUILT: ops A (mask) / D (drain) / H (housekeeping); monitor still to build |
+| I6 | 🟡 | acon drain BUILT (commanded). Menu-side drain and the async hook still open |
 | D2 | 🔴 | Human log line format and its verbosity tier/class |
 | I4 | 🟢 | Record struct (12 B) and the 16-bit event-type/class ID |
 | I5 | 🟢 | Queue instance: static 8 KB buffer, created at init, never destroyed; lock-fn pair |
-| I6 | 🔴 | Drain implementations — `v_acon_flush_events()` body, and the polling-task drain |
 | I7 | 🟢 | No wrapper layer: header for types, stack record, direct `x_event_queue_put()` |
 | I8 | 🟢 | TIM2 ISR order: capture `CCRx` → reschedule → put. 6 µs worst-case ISR budget |
 | T1 | 🟡 | Skeleton: label `"UNNAMED"` + notice **DONE**; check back-port + W1 still pending |
-| T2 | 🔴 | HIL coverage — extend `test_acon.py` or add a `test_events.py` |
+| T2 | 🟡 | `scripts/hil/test_events.py` written, 21 tests — NOT yet run on hardware |
 
 ---
 
@@ -136,6 +136,75 @@ distinct pool label for free, which is precisely the property S5's check relies 
 **Not yet done:** anything sink-side (D1, D2, I6), HIL (T2), and no way yet to set the mask
 at runtime — so the path is currently unexercisable end to end. That is expected; the mask
 defaults to all-disarmed and nothing produces until a command surface exists.
+
+---
+
+## Consumer side — sync drain BUILT (2026-08-30)
+
+Compiles clean; **not yet flashed, so no test has run.**
+
+### The wire contract
+
+| Command | Reply |
+|---|---|
+| `A` / `A,<mask>` | `=A,M<mask>` — read, or write and echo what landed |
+| `D` / `D,<max>` | `=D,K<n>,N<rem>,D<drops>` then **n** `+I<class>,C<ch>,S<state>,T<tim>,M<ms>` lines |
+| `H` / `H,S` / `H,F` / `H,R` | `=H,N<queued>,D<drops>,P<puts>` — status / flush / reset counters |
+
+**Uses the console's existing `K<n>` + `+` payload idiom** rather than a bespoke
+terminator, so `read_frame()` parses a whole drain into one `Frame` with `.payload`
+already split — no read-until-terminator loop on the host. That idiom is what the `L`
+builtin ([automation_console.c:306](../../App/automation_console/automation_console.c:306))
+and the baud-sweep / uart-stress ops already use.
+
+**The depth is snapshotted before the header is emitted**, which is what lets `K` be exact:
+a producer racing the drain can only ADD, never remove, so the snapshot cannot
+overpromise. `N` is therefore "left over from that snapshot" — `N == 0` means nothing
+remains *of what was seen*, not that the queue is provably empty. `H,S` answers the latter
+if it matters.
+
+**The handler always emits exactly `K` payload lines**, even if a `get` unexpectedly fails
+mid-drain (it emits a sentinel `I0` line instead). A short block would leave the host
+waiting on payload that never arrives — a hung transaction is a much worse failure than a
+diagnosable sentinel.
+
+**Token note:** the event line uses `M` for the millisecond tick, not `K` — `K` is the
+payload-count token in the header and reusing it would be confusing at best.
+
+### Opcode space — checked, and larger than assumed
+
+**There is no `toupper`/`tolower` anywhere on the input path.** No `ctype` include in the
+console, and `px_acon_find()`
+([automation_console.c:521](../../App/automation_console/automation_console.c:521)) does an
+exact `==` byte compare on `line[0]`. Opcodes are case-sensitive, so the usable set is
+essentially all printable ASCII (0x21..0x7E) — **all 26 lowercase letters and the digits
+included** — minus:
+
+- **`,`** (0x2C), which `u8_acon_args()` skips directly after the opcode, so a `,` opcode
+  would be ambiguous;
+- **`=` `!` `+` `*`**, the response sigils — output-side only and therefore *technically*
+  usable as input opcodes, but a frame reading `=*,...` is not worth the confusion.
+
+Assigned today: `S R W G X C P E N F Y U B @ $` (app), `A D H` (new), builtins
+`Z Q V L ? ~` and Ctrl-C.
+
+**`ACON_SIG_EVENT = '*'` already exists and is unused**
+([automation_console.h:143](../../App/automation_console/automation_console.h:143)),
+reserved for phase-2 async events. It is the natural sigil for **monitor mode's** streamed
+event lines — it lets a host tell an event from a command response at the first byte even
+if it loses sync. The sync drain stays `=`, since there the events genuinely *are* the
+command's response.
+
+### The acon async hook is now dead weight
+
+**`v_acon_flush_events()` will stay empty** (user, 2026-08-30). It is called once per
+command, after the response and before the next *blocking* read — so it can only move
+events when commands are already flowing, which is exactly when a commanded drain would
+have moved them anyway. With consumption now host-commanded, the hook has no job.
+
+Leave the call site in place rather than deleting it: it is one empty static, it documents
+where async output *would* be legal under S7's deferral rule, and monitor mode may yet want
+that position. Worth revisiting only if the console module is ever tidied.
 
 ---
 

@@ -25,6 +25,7 @@
 #include "uart_stream.h"            /* transport error count (E) */
 #include "stdio_retarget.h"         /* h_stdio_retarget_get_stream (E) */
 #include "switch_out.h"
+#include "app_events.h"        /* event mask, record type, queue handle */
 #include "nvmparams.h"
 #include "globals.h"          /* g_x_nvm_param */
 #include "nvm_test.h"         /* v_acon_op_nvm_test -- SwitchTester-only NVM suite */
@@ -392,6 +393,177 @@ static void v_acon_op_persist(char c_op, char *pc_line)
  * since the stream was bound; there is no reset, so a host takes a baseline
  * before a run and asserts the value has not moved after it.
  */
+/*============================================================================
+ * EVENT PATH -- production mask (A) and synchronous drain (D)
+ *
+ * Consumption is host-COMMANDED, never unsolicited: nothing is ever emitted
+ * that the host did not ask for, so a plain write/read driver needs no frame
+ * classification. See Docs/planning/event-path-plan.md (D1).
+ *==========================================================================*/
+
+/*
+ * A[,mask] -- read or write the event production mask.
+ *
+ * With no argument this reads. With one it writes, and the reply echoes what
+ * actually landed so a host never has to assume the write took. The value is
+ * the whole event_control_t as one hex word: the global enable is bit 31, so
+ * "0" is the disarm-everything shorthand.
+ *
+ * Deliberately NOT persisted here -- P is the existing persist-to-NVM op and
+ * this stays consistent with the cycling parameters, which are also set live
+ * and committed separately.
+ */
+static void v_acon_op_event_mask(char c_op, char *pc_line)
+{
+    char    *ap_c_arg[1];
+    char     ac_op[4];
+    uint8_t  u8_argc = u8_acon_args(pc_line, ap_c_arg, 1);
+    uint32_t u32_mask;
+
+    if ((u8_argc >= 1u) && (ap_c_arg[0][0] != '\0'))
+    {
+        if (!b_acon_arg_u32(ap_c_arg[0], &u32_mask))
+        {
+            v_acon_err(c_op, ACON_ERR_ARGS);
+            return;
+        }
+
+        g_x_event_control.u32_all = u32_mask;
+    }
+
+    v_acon_emit(ACON_SIG_OK, "%s,M%X",
+                pc_acon_op_name(c_op, ac_op),
+                (unsigned) g_x_event_control.u32_all);
+}
+
+/*
+ * D[,max] -- synchronous event drain.
+ *
+ * max 0 (or absent) drains until the queue reads empty; 1+ drains up to that
+ * many. Never blocks for longer than emptying the queue takes: asking for 4
+ * when 2 are queued emits 2 and returns.
+ *
+ * Uses the console's existing multi-line idiom rather than inventing one: a
+ * "=D,K<n>,N<rem>,D<drops>" header followed by exactly n "+" payload lines, one
+ * per event. The host reads ONE frame, already parsed, instead of looping until
+ * a terminator.
+ *
+ * N is the number still queued FROM THE SNAPSHOT the header was built on. It is
+ * what lets a host that asked for 4 and got 4 know to come back -- the loop is
+ * "while N: drain(N)". Note a producer racing the drain can add more, so N == 0
+ * means "nothing left of what I saw", not "the queue is provably empty"; H,S
+ * answers that if it matters.
+ *
+ * A drain with nothing queued is just "=D,K0,N0,D<drops>" with no payload --
+ * not a special case a host has to handle separately.
+ */
+static void v_acon_op_event_drain(char c_op, char *pc_line)
+{
+    char    *ap_c_arg[1];
+    char     ac_op[4];
+    uint8_t  u8_argc   = u8_acon_args(pc_line, ap_c_arg, 1);
+    uint32_t u32_max   = 0UL;
+    uint32_t u32_count;
+    uint32_t u32_avail;
+    uint32_t u32_i;
+
+    if ((u8_argc >= 1u) && (ap_c_arg[0][0] != '\0'))
+    {
+        if (!b_acon_arg_u32(ap_c_arg[0], &u32_max))
+        {
+            v_acon_err(c_op, ACON_ERR_ARGS);
+            return;
+        }
+    }
+
+    /* Snapshot the depth, then emit exactly that many. Taking the count first
+     * is what lets the K header be exact: a producer racing this drain can only
+     * ADD, never remove, so the snapshot can never overpromise. */
+    u32_avail = (uint32_t) u16_event_queue_count(&g_x_event_queue);
+    u32_count = ((u32_max == 0UL) || (u32_max > u32_avail)) ? u32_avail : u32_max;
+
+    v_acon_emit(ACON_SIG_OK, "%s,K%X,N%X,D%X",
+                pc_acon_op_name(c_op, ac_op),
+                (unsigned) u32_count,
+                (unsigned) (u32_avail - u32_count),
+                (unsigned) u32_event_queue_dropped(&g_x_event_queue));
+
+    for (u32_i = 0UL; u32_i < u32_count; u32_i++)
+    {
+        switch_event_data_t  x_data;
+        event_queue_record_t x_record =
+        {
+            .u16_buf_size = (uint16_t) sizeof(x_data),
+            .pv_data      = &x_data
+        };
+        event_queue_status_t x_status =
+            x_event_queue_get(&g_x_event_queue, &x_record);
+
+        /* The header has already promised K lines, so ALWAYS emit K of them --
+         * a short block would leave the host waiting on payload that is never
+         * coming. A get that fails here (it should not: the count was snapped
+         * above and only this context consumes) emits a sentinel I0 line, which
+         * is a diagnosable value rather than a hung transaction. TRUNCATED is
+         * not a failure: the record came out, only an oversized payload was
+         * clipped, and ours are all one size. */
+        if ((x_status != EQ_OK) && (x_status != EQ_STATUS_TRUNCATED))
+        {
+            v_acon_emit(ACON_SIG_PAYLOAD, "I%X,C%X,S%X,T%X,M%X",
+                        (unsigned) EVENT_CLASS_NONE, 0u, 0u, 0u, 0u);
+            continue;
+        }
+
+        v_acon_emit(ACON_SIG_PAYLOAD, "I%X,C%X,S%X,T%X,M%X",
+                    (unsigned) x_record.u16_id,
+                    (unsigned) x_data.u8_channel,
+                    (unsigned) x_data.u16_state,
+                    (unsigned) x_data.u32_tim_count,
+                    (unsigned) x_data.u32_tick);
+    }
+}
+
+/*
+ * H[,sub] -- event queue housekeeping. Flush and counter resets, kept off the
+ * drain path so D stays purely a read.
+ *
+ *   H       or H,S : status -- queued, drops, puts
+ *   H,F           : flush the queue
+ *   H,R           : reset the drop and put counters
+ */
+static void v_acon_op_event_house(char c_op, char *pc_line)
+{
+    char   *ap_c_arg[1];
+    char    ac_op[4];
+    uint8_t u8_argc = u8_acon_args(pc_line, ap_c_arg, 1);
+    char    c_sub   = ((u8_argc >= 1u) && (ap_c_arg[0][0] != '\0'))
+                      ? ap_c_arg[0][0] : 'S';
+
+    switch (c_sub)
+    {
+        case 'F':
+            (void) x_event_queue_flush(&g_x_event_queue);
+            break;
+
+        case 'R':
+            v_event_queue_dropped_reset(&g_x_event_queue);
+            v_event_queue_puts_reset(&g_x_event_queue);
+            break;
+
+        case 'S':
+            break;
+
+        default:
+            v_acon_err(c_op, ACON_ERR_ARGS);
+            return;
+    }
+
+    v_acon_emit(ACON_SIG_OK, "%s,N%X,D%X,P%X",
+                pc_acon_op_name(c_op, ac_op),
+                (unsigned) u16_event_queue_count(&g_x_event_queue),
+                (unsigned) u32_event_queue_dropped(&g_x_event_queue),
+                (unsigned) u32_event_queue_puts(&g_x_event_queue));
+}
+
 static void v_acon_op_errors(char c_op, char *pc_line)
 {
     uart_stream_h_t h_stream = h_stdio_retarget_get_stream();
@@ -961,6 +1133,9 @@ const acon_op_t g_x_acon_command[] =
     { 'E', v_acon_op_errors,      "transport error count"        },
     { 'N', v_acon_op_nvm_test,    "nvm test: sub[,args]"         },
     { 'F', v_acon_op_eventq_test, "event queue (fifo) test: sub[,args]" },
+    { 'A', v_acon_op_event_mask,  "event mask: [hex] (bit31=global enable)" },
+    { 'D', v_acon_op_event_drain, "drain events: [max] (0=all)"           },
+    { 'H', v_acon_op_event_house, "event queue: [S=status,F=flush,R=reset]" },
     { 'Y', v_acon_op_spiflash,    "spi flash probe: [I=id,S=status,T=dma rw test,L=loopback,N=ncs lb,J=sck lb,C[,0|1]=park cs,K=clock burst] (temp)" },
     { 'U', v_acon_op_uart_stress, "uart loopback stress: idx[,first,last,bursts]" },
     { 'B', v_acon_op_baud_sweep,  "baud sweep: idx[,rate...] (default ladder)" },
