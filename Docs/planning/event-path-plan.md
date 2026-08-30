@@ -60,7 +60,7 @@ what the next relay should cover. See *Implementation readiness* below the Big B
 | I3 | 🟢 | Per-pool label check; only the main params pool is renamed `"SwitchTester"` |
 | S7 | 🟢 | Emit on every level **request**, even a redundant one — no change-filtering |
 | S8 | 🟢 | Drop reporting is the side-channel counter only — no synthetic in-band record |
-| D1 | 🔴 | acon command surface — mask read/write, dedicated flush, async event frame format |
+| D1 | 🟡 | Two commands: sync drain (max-count in, remaining-count out) + monitor (finite timeout) |
 | D2 | 🔴 | Human log line format and its verbosity tier/class |
 | I4 | 🟢 | Record struct (12 B) and the 16-bit event-type/class ID |
 | I5 | 🟢 | Queue instance: static 8 KB buffer, created at init, never destroyed; lock-fn pair |
@@ -1300,9 +1300,94 @@ Adding the in-band record later would change no existing behaviour, so nothing i
 
 ### D1 — acon command surface
 
-**Status:** 🔴 · **Needs user:** yes
+**Status:** 🟡 · **Needs user:** yes (wire syntax only — the model is settled)
 
-**Question:** what commands, and what does an async event frame look like on the wire?
+**RESOLVED — the consumption model (user, 2026-08-30): TWO commands.**
+
+**Both are host-initiated, which is what makes this work.** An unsolicited frame never
+appears in a host's buffer: monitor mode is async in *behaviour* but not in *protocol*,
+because the host asked to be in it and knows when it ends. That buys live streaming with no
+host-side frame classification.
+
+**Why not the "async emission between commands" alternative** — two findings from the code
+killed it:
+
+1. `v_acon_flush_events()` sits after `v_acon_dispatch()` and before the next blocking read
+   ([automation_console.c:616](../../App/automation_console/automation_console.c:616)). So a
+   response can never be *split* by an event frame — the user's intuition was right — but
+   events emitted after `RESP1` are still in the host's buffer when it sends `CMD2`, and a
+   plain `write/readline` driver reads an event where it expected a response.
+2. `x_acon_read_script()` does **not** flush while waiting
+   ([automation_console.c:428](../../App/automation_console/automation_console.c:428)) — it
+   spins on `ACON_PUMP()` until a line arrives. So the existing hook is not "emit while
+   idle", it is **"flush once per command, after the response"**. During a soak with no host
+   traffic the acon side drains nothing at all. Async-as-wired therefore bought almost
+   nothing over a commanded drain.
+
+### Command 1 — synchronous drain (BUILD THIS FIRST)
+
+Fully deterministic; this is what HIL tests assert against, permanently.
+
+- **Input: max events to drain.** `0` = drain until the queue reads empty; `1+` = drain up
+  to that many.
+- **Never blocks longer than emptying the queue takes.** Asking for 4 when 2 are queued
+  emits 2 and returns.
+- **One response line per event**, then a terminator.
+- **The terminator carries the REMAINING count**, not just "empty". Otherwise a host that
+  asked for 4 and got 4 cannot tell whether to poll again without a separate depth query.
+  `0` remaining means drained dry; non-zero means come back. A host loop is then
+  `while remaining: drain(N)`.
+
+### Command 2 — monitor / async-like drain (SECOND)
+
+- **Input: timeout in mS. FINITE AND REQUIRED on the acon path** (user, 2026-08-30) —
+  `0` = unlimited is *not* accepted from a host. Standing guard policy: guard the
+  host-commanded path, leave the human one relaxed. Without this, a host script that dies
+  mid-monitor strands the device: the session idle timeout is not running, because we are
+  inside a dispatch.
+- Sits in a drain loop emitting events as they arrive. **No queue-empty response, ever.**
+- **Framing:** an ack on entry and a terminator on exit carrying **the reason**
+  (timeout vs host-cancelled), the count emitted, and the **drop delta**. Without these a
+  host cannot distinguish "running, nothing has happened" from "already ended", and a soak
+  that lost events should say so as it ends rather than needing a follow-up query.
+- **The loop must call `ACON_PUMP()` every pass**, as `x_acon_read_script()` does.
+  Otherwise the console RX ring overflows and everything polled stalls — job dispatch, the
+  NVM commit timer, pulse countdowns. Switch cycling itself is safe (TIM2/TIM14 are ISRs).
+
+**Input handling inside monitor mode (user, 2026-08-30): ANY byte cancels, with carve-outs.**
+
+| Byte | Effect |
+|---|---|
+| `\r` (0x0D), `\n` (0x0A) | **consumed and IGNORED, not cancel** |
+| XOFF (0x13) | suspend emission, stay in the handler |
+| XON (0x11) | resume emission |
+| anything else | cancel and exit |
+
+- **The `\r`/`\n` carve-out is mandatory, not cosmetic.** `x_acon_read_script()` already
+  skips `'\n'` because a CRLF-sending host leaves the LF in the ring after the CR
+  terminates the command line. Under a bare "any byte cancels" rule that stray LF arrives
+  the instant monitor mode starts and cancels it — behaviour that would depend on the
+  host's line ending. Today's driver sends bare CR (`write_raw(text + '\r')`), so it is
+  latent rather than active, but the console tolerates CRLF everywhere else.
+- **No collision:** `ACON_ENTER` = 0xDA, `ACON_EXIT` = 0xA5, both clear of 0x11/0x13.
+  `ACON_EXIT` cancels by virtue of being "any byte", so no dedicated escape is needed — the
+  earlier suggestion of one is withdrawn.
+- **The timeout must KEEP RUNNING while suspended.** If XOFF paused it, a host that
+  suspends and then crashes strands the device again — reintroducing exactly what the
+  finite-timeout requirement just fixed.
+- While suspended, producers keep producing and the queue keeps filling; overflow is
+  recorded by the drop counter. That is the right trade (far better than backpressuring a
+  producer ISR) and is why the exit terminator reports the drop delta.
+
+**Sequencing (user, agreed):** synchronous drain first, with HIL tests — *"this will be the
+proof of the entire event produce and consume path."* Monitor mode second, and it can be
+checked against the sync command: the same stimulus should yield the same events either way.
+
+**Still open — the wire syntax.** Op letters, parameter format, the event response line
+layout and the terminator layout. Constraint: `'Q'` is the builtin quit and cannot be
+shadowed; `'F'` is taken by the event_queue test harness.
+
+**Original question, for the record:**
 
 Needed: op letters and syntax for reading and writing the mask (whole-word `u32_all` and/or
 by named bit), the dedicated host-commanded flush (LOCKED CONTEXT), and probably reads of
@@ -1320,6 +1405,11 @@ test harness already took `'F'`.
 ### D2 — Human log line format
 
 **Status:** 🔴 · **Needs user:** yes
+
+**Anticipated, not decided (user, 2026-08-30):** the debug-menu-state drain and log will
+probably follow the **fully async** pattern — which is available to it precisely because
+there is no request/response contract to disturb on the human side. Explicitly not being
+decided yet.
 
 **Question:** what does an event look like in the human-readable log, and at which verbosity
 tier?
