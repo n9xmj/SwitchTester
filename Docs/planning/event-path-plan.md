@@ -16,8 +16,9 @@ is **not** modified by this work.
 decisions land). **Entry point / source of scope:**
 [`switchtester-roadmap.md`](switchtester-roadmap.md).
 
-**Status:** PLANNING — **the producer side is fully specified and buildable** (mask, record,
-queue instance, both hooks); the two sinks await their shape. See *Implementation readiness*.
+**Status:** **PROVING SUBSET COMPLETE AND BENCH-VERIFIED** (2026-08-30) — switch events
+produced into `event_queue` and consumed end-to-end over acon, `test_events.py` 22/22 on
+hardware. Remaining: the menu-side human consumer (D2/I6) and monitor mode (D1 phase 2).
 **Working mode:** the user relays design in chat; one question at a time; the board holds
 everything else. Per [`decision-log-model.md`](decision-log-model.md).
 
@@ -38,10 +39,11 @@ sense events (task 1 gates those), no per-cycle duty lists (task 4). What it mus
 is the set of unknowns every later task inherits — ISR-context enqueue cost, the deferral
 rule, the arming model, and mode-handover behaviour.
 
-**Where the board stands.** The producer half is fully specified — the production mask, the
-record struct, the queue instance and both hook sites are locked. The consumer half (the
-acon command surface, the human log line, and the two drain bodies) is still open and is
-what the next relay should cover. See *Implementation readiness* below the Big Board.
+**Where the board stands.** The path is **proven end to end on hardware**: the production
+mask, the record, the queue instance, both producer hooks and the commanded acon consumer
+are built and covered by 22 passing HIL tests. What remains is the *second* sink — the
+human-readable log drained by the polling task (D2, I6) — and acon **monitor mode**, which
+is fully designed and unbuilt.
 
 ---
 
@@ -72,9 +74,9 @@ what the next relay should cover. See *Implementation readiness* below the Big B
 
 ---
 
-## Implementation status — producer side BUILT (2026-08-30)
+## Implementation status — producer side BUILT and VERIFIED (2026-08-30)
 
-Written, compiles clean (0 errors, 0 warnings), **not yet flashed or bench-tested.**
+Flashed and exercised on the bench; covered by `test_events.py` (22/22).
 
 | File | What landed |
 |---|---|
@@ -133,9 +135,8 @@ Three things worth recording:
 project forked from this one changes `PRODUCT_NAME` as a matter of course and inherits a
 distinct pool label for free, which is precisely the property S5's check relies on.
 
-**Not yet done:** anything sink-side (D1, D2, I6), HIL (T2), and no way yet to set the mask
-at runtime — so the path is currently unexercisable end to end. That is expected; the mask
-defaults to all-disarmed and nothing produces until a command surface exists.
+**Not yet done:** the menu-side human sink (D2, and I6's polling-task half) and acon
+monitor mode.
 
 ---
 
@@ -226,18 +227,19 @@ that position. Worth revisiting only if the console module is ever tidied.
 
 ## Implementation readiness
 
-**What this is:** the gating view of the Big Board above — which open rows block writing
-code, and which can follow it. Every entry is a Big Board ID; nothing lives only here.
+**What this is:** the gating view of the Big Board above. Every entry is a Big Board ID;
+nothing lives only here.
 
-**Buildable today, gated on nothing:** the whole mask subsystem (**S1–S6, I1–I3**) plus the
-producer side (**S7, I4, I5**) — record struct, queue instance, both hooks and the
-production gate.
+**Built and bench-verified (2026-08-30):** the mask subsystem (**S1–S6, I1–I3**), the
+producer (**S7, I4, I5, I7, I8**), drop accounting (**S8**), the commanded acon consumer
+(**D1** sync half, **I6** acon half) and the HIL suite (**T2**). `test_events.py` 22/22,
+with acon 47 / eventq 20 / nvm 28 still green alongside it.
 
-| Gates code? | Rows | Note |
+| What is left | Rows | Note |
 |---|---|---|
-| **Blocks the sinks** | **D1, D2, I6** | The acon command surface, the human log line, and the two drain bodies. Producers can be written and unit-tested before these land |
-| **Blocks nothing; safe default exists** | **S8, T2** | Drop reporting can start side-channel and gain an in-band record later; HIL follows the feature |
-| **Open but non-blocking** | **T1** | A different repo; blocked on the label check existing here |
+| **Menu-side human sink** | **D2**, **I6** menu half | Parked by the user, 2026-08-30. Needs the log-line format and the polling-task drain |
+| **acon monitor mode** | **D1** phase 2 | Fully specified in D1 — finite timeout, explicit exit byte, XON/XOFF, pump every pass, `*` sigil. Unbuilt |
+| **Skeleton back-port** | **T1** | A different repo. The label check now exists here to port, along with W1/W3 |
 
 ---
 
@@ -1220,7 +1222,7 @@ line to put it before.
 
 ### I6 — Drain implementations
 
-**Status:** 🔴 · **Needs user:** yes
+**Status:** 🟡 — acon half BUILT and verified; menu half open
 
 **Question:** what do the two drain sites actually do?
 
@@ -1235,11 +1237,15 @@ Two bodies to write, both already sited by LOCKED CONTEXT's XOR sink model:
   ([app_main.c:390](../../App/Src/app_main.c:390)), emitting log lines only when the
   human-side emit option is on, but **draining unconditionally** either way.
 
-Depends on D1 (frame format) and D2 (log line). Open sub-questions: how many records to
-drain per pass (all, or a bounded batch so one flush cannot monopolise the loop), and
-whether the human side needs its own emit-on/off control separate from the mask.
+**acon half — DONE.** Not `v_acon_flush_events()` after all: consumption is host-commanded,
+so the drain lives in the `D` handler. That hook stays empty (see *Consumer side*).
 
-**Resolution:** _(pending)_
+**Menu half — still open**, and deliberately parked (user, 2026-08-30: holding off on the
+debug-menu consumer). Depends on D2 (log line). Open sub-questions unchanged: how many
+records to drain per pass — all, or a bounded batch so one drain cannot monopolise the
+polling loop — and whether the human side needs its own emit on/off separate from the mask.
+
+**Resolution:** _(partial — acon drain built and verified; the polling-task drain is open)_
 
 ---
 
@@ -1385,7 +1391,7 @@ Adding the in-band record later would change no existing behaviour, so nothing i
 
 ### D1 — acon command surface
 
-**Status:** 🟡 · **Needs user:** yes (wire syntax only — the model is settled)
+**Status:** 🟢 for the sync drain (built, 22/22 on hardware) · monitor mode designed, unbuilt
 
 **RESOLVED — the consumption model (user, 2026-08-30): TWO commands.**
 
@@ -1480,16 +1486,19 @@ the drop and put counters. Plus the async frame format itself — how a host dis
 unsolicited event frame from a command response, given S7's deferral rule already keeps them
 out of each other's way.
 
-Constraint to remember: `'Q'` is the builtin quit and cannot be shadowed; the event_queue
-test harness already took `'F'`.
-
-**Resolution:** _(pending)_
+**Resolution (2026-08-30):** the sync drain is **built and verified** as ops `A` / `D` / `H`
+— see *Consumer side* above for the wire contract, the opcode-space audit and the `K`/`+`
+payload rationale. **Monitor mode remains unbuilt**, with its behaviour fully specified in
+this row: finite timeout required, explicit exit byte, XON/XOFF suspend/resume with the
+timeout still running, `ACON_PUMP()` every pass, and `*` (`ACON_SIG_EVENT`) as the natural
+sigil for its streamed lines.
 
 ---
 
 ### D2 — Human log line format
 
-**Status:** 🔴 · **Needs user:** yes
+**Status:** 🔴 · **Needs user:** yes — **explicitly PARKED** (user, 2026-08-30: holding off
+on the debug-menu consumer for now). The row is open by choice, not by oversight.
 
 **Anticipated, not decided (user, 2026-08-30):** the debug-menu-state drain and log will
 probably follow the **fully async** pattern — which is available to it precisely because
@@ -1510,14 +1519,30 @@ that cannot be compiled out would be a poor fit for a soak run.
 
 ### T2 — HIL coverage
 
-**Status:** 🔴 · **Needs user:** no (follows the implementation)
+**Status:** 🟢 · **Needs user:** no
 
-Extend `scripts/hil/test_acon.py` or add a `test_events.py` alongside `test_eventq.py`.
-Regression net today: acon 47, nvm 28, eventq 20. Natural cases: mask write/read-back, mask
-persistence across reset, an armed source producing the expected count, a masked source
-producing nothing, flush behaviour, and the drop counter under a deliberate overrun.
+**Resolution (2026-08-30):** `scripts/hil/test_events.py`, **22 tests, all passing on
+hardware.** A new suite rather than an extension of `test_acon.py`, and distinct from
+`test_eventq.py` — that one drives the vendored module against a dedicated test queue,
+this one drives the real application path.
 
-**Resolution:** _(pending)_
+Regression net is now **acon 47 · nvm 28 · eventq 20 · events 22**, all green together.
+
+Coverage: mask round-trip, filler-bit retention and read purity; the three gating cases
+(disarmed, global-clear, per-channel); masked sources moving no counters; record content
+and per-event TIM2 advance; S7's redundant-request semantics; drain protocol (empty, `max`
+bound, FIFO order, consumption); housekeeping (depth without consuming, flush, put counter,
+counter reset); the automated path including a single CYCLE_COMPLETE and cycle-complete
+armed with transitions masked; and mask persistence across a commit.
+
+**Not covered, and worth knowing:** the drop counter under a deliberate overrun. Filling an
+8 KB ring through the console would take ~512 events per round trip; `test_eventq.py`
+already proves the drop path against the module directly, so this suite trusts it.
+
+**Bench constraint baked into the suite: SWITCH_A is never driven.** It is the user's DUT
+channel on this bench. Tests use SWITCH_D (`CH_PRI`), with SWITCH_C (`CH_SEC`) as the
+masked-contrast channel, and `quiesce()` stops/clears channels 1..3 only via
+`CH_SAFE_MASK`.
 
 ---
 
@@ -1635,18 +1660,27 @@ Travels with T1 and W1 rather than causing its own excursion.
 - **Regression net:** `test_acon.py` 47, `test_nvm.py` 28, `test_eventq.py` 20. Run after
   anything structural. Close Tera Term first — it holds COM3.
 
-**Plan status summary:** 15 🟢 · 1 🟡 · 4 🔴 · 3 🔵.
+**Plan status summary (2026-08-30):** 17 🟢 · 2 🟡 · 1 🔴 · 3 🔵.
 
-**The producer side is designed AND built** (S1–S8, I1–I5, I7, I8) — compiles clean, not
-yet flashed. See *Implementation status*.
+**The proving subset is DONE and verified on hardware.** Switch events are produced in both
+ISR and main context, gated by a persisted mask, and consumed end to end over acon —
+`test_events.py` 22/22, with the three existing suites still green.
 
-**Remaining 🔴 are all sink-side or follow-on:** D1 (acon commands), D2 (human log line),
-I6 (the two drains), T2 (HIL). D1/D2/I6 are the next relay. **🟡:** T1 (Skeleton
-back-port of the label check, now that one exists here to port).
+**Open:**
 
-**The five 🔴 rows are all sink-side or follow-on:** D1 (acon commands), D2 (human log
-line), I6 (the two drains), S8 (drop reporting), T2 (HIL). D1/D2/I6 are the next relay;
-S8/T2 have safe defaults and can follow the code.
+- **D2** 🔴 — the human log line and its verbosity tier. Parked by the user.
+- **I6** 🟡 — acon half built; the polling-task drain waits on D2.
+- **T1** 🟡 — Skeleton back-port of the label check, plus banked W1/W3.
+- **W1 / W2 / W3** 🔵 — banked by intent, not oversights.
+
+**Next natural step** is whichever the user picks: the menu-side consumer, acon monitor
+mode, or moving on to roadmap task 1 (sense), which now plugs into a path already carrying
+real traffic.
+
+**Known tidy, not stale content:** the Big Board and the detail sections have drifted out of
+the model's prescribed D → S → I → T ordering as rows were added mid-session. Worth a
+resort next time this doc is opened; deliberately not done at suspend time, since it is
+whole-file surgery for no content change.
 
 **Two 🟡:** I7's residual (where the shared plumbing lives once sense needs it) and T1
 (Skeleton back-port, blocked on the label check existing here).

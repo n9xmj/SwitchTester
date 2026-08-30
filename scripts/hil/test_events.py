@@ -58,6 +58,23 @@ CLASS_NAME = {
     CLASS_SW_CYCLE_DONE: 'CYCLE_DONE',
 }
 
+# ---------------------------------------------------------------------------
+# Test channels.
+#
+# SWITCH_A (channel 0) is DELIBERATELY NOT USED. It drives the user's DUT on
+# this bench, so a test run must not move it -- not even to force it low during
+# quiesce. Everything here works on SWITCH_D, with SWITCH_C as the second
+# channel where a test needs to contrast an armed source with a masked one.
+# ---------------------------------------------------------------------------
+
+CH_PRI = 3                      # SWITCH_D -- the workhorse
+CH_SEC = 2                      # SWITCH_C -- the "masked" contrast channel
+
+CH_SAFE_MASK = 0xE              # channels 1..3: everything except SWITCH_A
+
+M_PRI_MANUAL = M_SW_D_MANUAL
+M_SEC_MANUAL = M_SW_C_MANUAL
+
 TESTS = []
 ARGS = None
 
@@ -197,10 +214,14 @@ def toggle(con, channel, level):
 
 
 def quiesce(con):
-    """Known state: disarmed, nothing cycling, all low, queue and counters clear."""
+    """Known state: disarmed, test channels idle, queue and counters clear.
+
+    Note the CH_SAFE_MASK: this stops and clears channels 1..3 only. SWITCH_A is
+    the DUT channel on this bench and is never driven by this suite, not even to
+    force it low."""
     disarm(con)
-    con.command('X,F')
-    con.command('S,F,0,F')
+    con.command('X,%X' % CH_SAFE_MASK)
+    con.command('S,%X,0,%X' % (CH_SAFE_MASK, CH_SAFE_MASK))
     flush(con)
     house(con, 'R')
 
@@ -211,7 +232,7 @@ def quiesce(con):
 
 @test("mask: reads back what was written")
 def t_mask_roundtrip(con):
-    for value in (0, M_GLOBAL, M_GLOBAL | M_SW_A_MANUAL, 0x400000FF | M_GLOBAL):
+    for value in (0, M_GLOBAL, M_GLOBAL | M_PRI_MANUAL, 0x400000FF | M_GLOBAL):
         got = mask_write(con, value)
         check(got == value, "wrote %#010x, read %#010x" % (value, got))
     disarm(con)
@@ -231,12 +252,12 @@ def t_mask_filler(con):
 
 @test("mask: A with no argument does not disturb the value")
 def t_mask_read_is_pure(con):
-    arm(con, M_SW_A_MANUAL)
+    arm(con, M_PRI_MANUAL)
     first = mask_read(con)
     second = mask_read(con)
     check(first == second, "two reads differed: %#010x then %#010x" % (first, second))
-    check(second == (M_SW_A_MANUAL | M_GLOBAL),
-          "read %#010x, expected %#010x" % (second, M_SW_A_MANUAL | M_GLOBAL))
+    check(second == (M_PRI_MANUAL | M_GLOBAL),
+          "read %#010x, expected %#010x" % (second, M_PRI_MANUAL | M_GLOBAL))
     disarm(con)
 
 
@@ -248,8 +269,8 @@ def t_mask_read_is_pure(con):
 def t_gate_disarmed(con):
     quiesce(con)
     for _ in range(4):
-        toggle(con, 0, 1)
-        toggle(con, 0, 0)
+        toggle(con, CH_PRI, 1)
+        toggle(con, CH_PRI, 0)
     events, remaining, _ = drain(con)
     check(events == [] and remaining == 0,
           "disarmed run produced %d events" % len(events))
@@ -258,9 +279,9 @@ def t_gate_disarmed(con):
 @test("gate: global enable clear masks an armed source")
 def t_gate_global(con):
     quiesce(con)
-    mask_write(con, M_SW_A_MANUAL)          # source armed, GLOBAL deliberately not
-    toggle(con, 0, 1)
-    toggle(con, 0, 0)
+    mask_write(con, M_PRI_MANUAL)          # source armed, GLOBAL deliberately not
+    toggle(con, CH_PRI, 1)
+    toggle(con, CH_PRI, 0)
     events, _, _ = drain(con)
     check(events == [], "global disabled but %d events were produced" % len(events))
     disarm(con)
@@ -269,18 +290,18 @@ def t_gate_global(con):
 @test("gate: an armed source produces, a masked one does not")
 def t_gate_per_channel(con):
     quiesce(con)
-    arm(con, M_SW_A_MANUAL)                 # channel A only
+    arm(con, M_PRI_MANUAL)                  # SWITCH_D only
 
-    toggle(con, 0, 1)                       # A -- armed
-    toggle(con, 1, 1)                       # B -- masked
-    toggle(con, 0, 0)
-    toggle(con, 1, 0)
+    toggle(con, CH_PRI, 1)                  # D -- armed
+    toggle(con, CH_SEC, 1)                  # C -- masked
+    toggle(con, CH_PRI, 0)
+    toggle(con, CH_SEC, 0)
 
     events = drain_all(con)
-    check(len(events) == 2, "expected 2 events from channel A, got %d: %r"
+    check(len(events) == 2, "expected 2 events from the armed channel, got %d: %r"
           % (len(events), events))
     for ev in events:
-        check(ev.chan == 0, "event from masked channel %d: %r" % (ev.chan, ev))
+        check(ev.chan == CH_PRI, "event from masked channel %d: %r" % (ev.chan, ev))
         check(ev.cls == CLASS_SW_MANUAL, "expected SW_MANUAL, got %r" % ev)
     check([e.state for e in events] == [1, 0],
           "expected HI then LO, got %r" % [e.state for e in events])
@@ -293,8 +314,8 @@ def t_gate_not_counted(con):
     quiesce(con)
     before = house(con)
     for _ in range(8):
-        toggle(con, 2, 1)
-        toggle(con, 2, 0)
+        toggle(con, CH_PRI, 1)
+        toggle(con, CH_PRI, 0)
     after = house(con)
     check(after['P'] == before['P'],
           "put counter moved %d -> %d for masked sources" % (before['P'], after['P']))
@@ -311,13 +332,13 @@ def t_record_content(con):
     quiesce(con)
     arm(con, M_SW_MANUAL_ALL)
 
-    toggle(con, 2, 1)
+    toggle(con, CH_PRI, 1)
     events = drain_all(con)
 
     check(len(events) == 1, "expected 1 event, got %d: %r" % (len(events), events))
     ev = events[0]
     check(ev.cls == CLASS_SW_MANUAL, "class %r" % ev)
-    check(ev.chan == 2, "channel %d, expected 2" % ev.chan)
+    check(ev.chan == CH_PRI, "channel %d, expected %d" % (ev.chan, CH_PRI))
     check(ev.state == 1, "state %d, expected 1" % ev.state)
     check(ev.tim != 0, "TIM2 count is zero -- timestamp not captured")
     check(ev.ms != 0, "tick is zero -- EVENT_TICK_MS() not wired")
@@ -329,8 +350,8 @@ def t_record_timestamps_advance(con):
     quiesce(con)
     arm(con, M_SW_MANUAL_ALL)
 
-    toggle(con, 0, 1)
-    toggle(con, 0, 0)
+    toggle(con, CH_PRI, 1)
+    toggle(con, CH_PRI, 0)
     events = drain_all(con)
 
     check(len(events) == 2, "expected 2 events, got %d" % len(events))
@@ -347,8 +368,8 @@ def t_record_redundant(con):
     quiesce(con)
     arm(con, M_SW_MANUAL_ALL)
 
-    toggle(con, 1, 0)
-    toggle(con, 1, 0)
+    toggle(con, CH_PRI, 0)
+    toggle(con, CH_PRI, 0)
     events = drain_all(con)
 
     check(len(events) == 2,
@@ -374,8 +395,8 @@ def t_drain_max(con):
     quiesce(con)
     arm(con, M_SW_MANUAL_ALL)
     for _ in range(3):
-        toggle(con, 0, 1)
-        toggle(con, 0, 0)
+        toggle(con, CH_PRI, 1)
+        toggle(con, CH_PRI, 0)
     # 6 events queued.
 
     events, remaining, _ = drain(con, 4)
@@ -392,7 +413,7 @@ def t_drain_max(con):
 def t_drain_max_over(con):
     quiesce(con)
     arm(con, M_SW_MANUAL_ALL)
-    toggle(con, 3, 1)
+    toggle(con, CH_PRI, 1)
 
     events, remaining, _ = drain(con, 0x20)
     check(len(events) == 1, "expected 1 event, got %d" % len(events))
@@ -404,12 +425,14 @@ def t_drain_max_over(con):
 def t_drain_order(con):
     quiesce(con)
     arm(con, M_SW_MANUAL_ALL)
-    for channel in (0, 1, 2, 3):
+    order = (1, CH_SEC, CH_PRI)             # never SWITCH_A
+    for channel in order:
         toggle(con, channel, 1)
 
     events = drain_all(con)
-    check(len(events) == 4, "expected 4 events, got %d" % len(events))
-    check([e.chan for e in events] == [0, 1, 2, 3],
+    check(len(events) == len(order),
+          "expected %d events, got %d" % (len(order), len(events)))
+    check([e.chan for e in events] == list(order),
           "out of order: %r" % [e.chan for e in events])
     quiesce(con)
 
@@ -418,7 +441,7 @@ def t_drain_order(con):
 def t_drain_consumes(con):
     quiesce(con)
     arm(con, M_SW_MANUAL_ALL)
-    toggle(con, 0, 1)
+    toggle(con, CH_PRI, 1)
 
     first = drain_all(con)
     check(len(first) == 1, "expected 1 event, got %d" % len(first))
@@ -437,8 +460,8 @@ def t_drain_consumes(con):
 def t_house_depth(con):
     quiesce(con)
     arm(con, M_SW_MANUAL_ALL)
-    toggle(con, 0, 1)
-    toggle(con, 0, 0)
+    toggle(con, CH_PRI, 1)
+    toggle(con, CH_PRI, 0)
 
     first = house(con)
     check(first['N'] == 2, "expected N2, got N%d" % first['N'])
@@ -456,8 +479,8 @@ def t_house_flush(con):
     quiesce(con)
     arm(con, M_SW_MANUAL_ALL)
     for _ in range(3):
-        toggle(con, 0, 1)
-        toggle(con, 0, 0)
+        toggle(con, CH_PRI, 1)
+        toggle(con, CH_PRI, 0)
 
     check(house(con)['N'] == 6, "expected 6 queued before flush")
     flush(con)
@@ -475,8 +498,8 @@ def t_house_puts(con):
 
     before = house(con)['P']
     for _ in range(5):
-        toggle(con, 1, 1)
-        toggle(con, 1, 0)
+        toggle(con, CH_PRI, 1)
+        toggle(con, CH_PRI, 0)
     after = house(con)['P']
 
     check(after - before == 10,
@@ -488,7 +511,7 @@ def t_house_puts(con):
 def t_house_reset(con):
     quiesce(con)
     arm(con, M_SW_MANUAL_ALL)
-    toggle(con, 0, 1)
+    toggle(con, CH_PRI, 1)
     check(house(con)['P'] > 0, "expected a non-zero put count to reset")
 
     after = house(con, 'R')
@@ -513,8 +536,8 @@ def t_auto_cycle(con):
     # correctly REFUSED by the W handler, which would leave the channel on its
     # stored parameters and make this test measure the wrong waveform.
     # 3 repeats therefore takes ~150 ms; wait comfortably past that.
-    ok(con, 'W,0,61A8,61A8,3')
-    ok(con, 'C,1')
+    ok(con, 'W,%X,61A8,61A8,3' % CH_PRI)
+    ok(con, 'C,%X' % (1 << CH_PRI))
     con.expect_silence(0.5)
 
     events = drain_all(con)
@@ -527,7 +550,8 @@ def t_auto_cycle(con):
 
     done = [e for e in events if e.cls == CLASS_SW_CYCLE_DONE]
     check(len(done) == 1, "expected exactly 1 CYCLE_COMPLETE, got %d" % len(done))
-    check(done[0].chan == 0, "CYCLE_COMPLETE on channel %d, expected 0" % done[0].chan)
+    check(done[0].chan == CH_PRI,
+          "CYCLE_COMPLETE on channel %d, expected %d" % (done[0].chan, CH_PRI))
 
     # S7: the halt inside the completing ISR forces the output low through the
     # manual choke point, so a manual record rides along with the completion.
@@ -543,8 +567,8 @@ def t_auto_complete_only(con):
     quiesce(con)
     arm(con, M_CYCLE_COMPLETE)              # no AUTO, no MANUAL
 
-    ok(con, 'W,1,61A8,61A8,2')
-    ok(con, 'C,2')
+    ok(con, 'W,%X,61A8,61A8,2' % CH_SEC)
+    ok(con, 'C,%X' % (1 << CH_SEC))
     con.expect_silence(0.5)
 
     events = drain_all(con)
@@ -562,7 +586,7 @@ def t_auto_complete_only(con):
 @test("nvm: mask survives a persist and is readable back")
 def t_nvm_persist(con):
     quiesce(con)
-    want = M_SW_A_MANUAL | M_SW_B_AUTO | M_CYCLE_COMPLETE | M_GLOBAL
+    want = M_PRI_MANUAL | M_SW_C_AUTO | M_CYCLE_COMPLETE | M_GLOBAL
     mask_write(con, want)
     con.command('P')
     check(mask_read(con) == want, "mask changed across a persist")
