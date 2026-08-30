@@ -87,11 +87,39 @@ Written, compiles clean (0 errors, 0 warnings), **not yet flashed or bench-teste
 **Cost:** flash 68,608 B (13.1%), RAM 21,912 B (14.9%) — the 8 KB ring is the bulk of the
 RAM delta and leaves 122.6 KiB free.
 
-**One deviation from "no wrapper" (I7), deliberate and noted:** `v_event_emit()` is a
-six-line static in `switch_out.c` that tests the mask, fills the record and calls
-`x_event_queue_put()`. It exists because the identical six lines would otherwise appear at
-each of the three production sites; it is static and trivially inlinable, so it is not the
-abstraction layer I7 rejected. Say the word and it can be flattened into the call sites.
+**`v_event_emit()` and `b_event_armed()` are `always_inline` (user, 2026-08-30).** The
+wrapper is acceptable *provided it costs no call frame* — optimise this one operation for
+speed over size, without touching the project's optimisation level.
+
+**It was not free by default, and the measurement is the reason the attribute is there.**
+At `-Og` (Debug) and `-Os` (Release) the compiler emitted both as real functions —
+`v_event_emit` 64 bytes calling `b_event_armed` 100 bytes — so a **masked** source, the
+common case during a soak, paid **two nested call frames just to learn it was masked**.
+With `__attribute__((always_inline))` on both, the symbols disappear and the gate compiles
+to roughly five instructions:
+
+```
+ldr r3, [pc, #60]    ; &g_x_event_control
+ldr r3, [r3, #0]     ; ONE load -- the I2 snapshot
+cmp r3, #0
+bge  <return>        ; global enable is bit 31 = sign bit, so a sign test
+adds r0, r4, #4      ; channel + MANUAL_SHIFT
+movs r2, #1
+lsls r2, r0
+tst  r2, r3          ; same word, no second read
+bne  <build record>
+```
+
+Three things worth recording:
+
+- **The class switch constant-folds away entirely.** `u16_class` is a literal at every
+  production site, so no comparison against class values survives — it goes straight to the
+  shift. This is what makes the (class, channel) → bit mapping free to keep in one place.
+- **Bit 31 for the global enable pays off in codegen**, not just in "all-zero is disarmed":
+  GCC tests it as the sign bit (`cmp`/`bge`) rather than with a mask-and-test.
+- **Flash cost: zero.** Text is 68,608 bytes both before and after. The call sites grew
+  (`v_switch_out_force` 56 → 108, `v_switch_cycle_advance` 212 → 328) by almost exactly
+  what deleting the two out-of-line functions saved.
 
 **`NVM_POOL_LABEL` is derived from `PRODUCT_NAME`** rather than being its own string: a
 project forked from this one changes `PRODUCT_NAME` as a matter of course and inherits a

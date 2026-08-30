@@ -141,15 +141,24 @@ void v_event_queue_init(void)
  * Emit one event, if its source is armed.
  *
  * The record is a stack temporary filled member by member; x_event_queue_put()
- * copies it into the ring. No wrapper beyond this -- and this one exists only
- * because the same six lines would otherwise be written at every production
- * site. A drop (queue full) is counted by the queue itself and reported
- * side-channel; there is no synthetic in-band record.
+ * copies it into the ring. A drop (queue full) is counted by the queue itself
+ * and reported side-channel; there is no synthetic in-band record.
+ *
+ * ALWAYS_INLINE. This exists only so the same six lines are not written at three
+ * production sites -- it must not cost a call frame for the privilege, and at
+ * -Og / -Os the compiler will not inline a three-call-site function by itself
+ * (measured: it emitted a real 64-byte function calling a real 100-byte
+ * b_event_armed(), so a masked source paid two nested frames to learn it was
+ * masked). Forced here rather than by changing the project's optimisation level,
+ * because this is the only place that wants speed over size.
+ *
+ * With both inlined, an unarmed source costs a load, a test and a branch.
  */
-static void v_event_emit(uint16_t u16_class,
-                         uint8_t  u8_channel,
-                         uint16_t u16_state,
-                         uint32_t u32_tim_count)
+__attribute__((always_inline))
+static inline void v_event_emit(uint16_t u16_class,
+                                uint8_t  u8_channel,
+                                uint16_t u16_state,
+                                uint32_t u32_tim_count)
 {
     switch_event_data_t x_data;
 

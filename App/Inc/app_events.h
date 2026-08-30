@@ -220,14 +220,22 @@ extern volatile event_control_t g_x_event_control;
 /*
  * Is this (class, channel) armed?
  *
- * static inline, not a function: it collapses to a load, a couple of tests and
- * a branch at the call site, so it is not an abstraction layer -- it just keeps
- * the (class, channel) -> bit mapping in one place as sense adds producers.
+ * ALWAYS_INLINE, not merely `inline`. This sits in the TIM2 compare ISR inside a
+ * 4 uS edge-scheduling budget, and the builds that matter are -Og (Debug) and
+ * -Os (Release) -- neither of which inlines a multi-call-site function on its
+ * own. Left to itself the compiler emitted this as a real 100-byte function, so
+ * a MASKED source -- the common case during a soak -- paid a call frame just to
+ * be told "no". Optimising this one function for speed rather than size, without
+ * changing the project's optimisation level.
+ *
+ * Inlining also constant-folds the switch away: u16_class is a literal at every
+ * production site, so what survives is one load, one test and one bit test.
  *
  * ONE snapshot of the whole register, then bits are tested out of the local.
  * Testing the register twice would let a console write land between the global
  * check and the source check and yield a combination that never existed.
  */
+__attribute__((always_inline))
 static inline bool b_event_armed(uint16_t u16_class, uint8_t u8_channel)
 {
     const uint32_t u32_mask = g_x_event_control.u32_all;
