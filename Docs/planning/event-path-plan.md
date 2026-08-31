@@ -54,7 +54,7 @@ cover the acon halves and the log lines were read off the wire for all three swi
 | ID | Status | Subject (one line) |
 |----|--------|--------------------|
 | S1 | 🟢 | Mask **NVM default** is 0 / all-disabled; boot mask is the restored value (see S4) |
-| S2 | 🟢 | Flags persist across handover; ONE mask set shared by both interfaces |
+| S2 | 🟢 | Flags persist across handover; ONE mask set shared by both interfaces · **S2b** 🔵 proposes clear-on-entry / restore-on-exit |
 | S3 | 🟢 | Both surfaces control it — acon ops A/D/H, and the `[e]` debug submenu |
 | S4 | 🟢 | Mask register **is** stored in and restored from NVM |
 | S5 | 🟢 | Pool-label ownership check; label is `"SwitchTester"`; mismatch → wipe and re-default |
@@ -428,7 +428,7 @@ alongside it.
 | ID | Status | Subject |
 |----|--------|---------|
 | W1 | 🔵 | **nvmparams:** public "peek a pool's label" without full pool init — LOW priority |
-| W2 | 🔵 | Separate mask sets for the human vs automation interfaces — deliberately deferred |
+| W2 | 🔵 | Separate mask sets for the human vs automation interfaces — deliberately deferred. **See S2b**, which gets the same benefit with one register and no per-site context check |
 | W3 | 🔵 | **nvmparams:** opt-in label-match check inside `x_nvm_pool_init()`, reported by return code |
 | W4 | 🔵 | **ESC as a SCRIPT-mode exit** (HUMAN mode unchanged) plus a stricter automation input alphabet — lives in [`automation-console-plan.md`](automation-console-plan.md) **W6**, cross-referenced here because monitor mode is specified in D1. Note ESC already cancels a monitor session today, being "any byte". LOW priority |
 
@@ -646,7 +646,56 @@ banked as **W2**, explicitly not to be worked now.
   mask and the queue have deliberately different lifetimes.
 - **A host that arms sources and exits without disarming leaves them armed** for the human
   console. Mild, and visible — the menu side emits only if its emit option is on — but it
-  is the behaviour a script author should expect rather than be surprised by.
+  is the behaviour a script author should expect rather than be surprised by. **This is the
+  consequence S2b below proposes to remove.**
+
+#### S2b — PROPOSED revision: clear on acon entry, restore from NVM on acon exit
+
+**Status:** 🔵 proposal, not scheduled. Raised by the user 2026-08-30; recorded rather than
+built. It supersedes nothing until the user says so — S2 above is still what ships.
+
+**The proposal, in the user's terms:**
+
+- One RAM register, NVM-backed, that producers always read — **unchanged**, exactly as built.
+  The debug menu's manipulation of it does the `x_nvm_set()`.
+- **On acon entry:** clear the register in RAM only. No `x_nvm_set()` of the cleared value.
+- acon commands keep manipulating that same global register, with the optional persist flag.
+- **On acon exit:** re-read the register from NVM.
+
+**Net effect:** human-console settings survive acon sessions; every acon session starts from a
+known all-disabled state; and a script that genuinely wants a permanent change still has the
+persist flag.
+
+**It gets W2's benefit without W2's cost.** Two separate register sets were rejected because
+the active context would have to be known and checked at every production site. This achieves
+"the two surfaces do not disturb each other" with **one** register and **no** context check —
+the save/restore happens twice per session, not once per event.
+
+**The mechanism already exists and the semantics fall out correctly.** `x_nvm_get()` reads the
+pool's **RAM shadow**, not flash, which is what makes both cases work:
+
+| acon does | pool shadow | after exit restore |
+|---|---|---|
+| `A,<mask>` (volatile) | untouched | the **human's** setting comes back |
+| `A,<mask>,1` (persist) | written | **acon's** setting stays — the script meant it |
+
+Exit is a call to the existing `v_event_control_restore()` verbatim; entry is one assignment.
+
+**The one behavioural trap, and it is worth deciding on before building:** *entry-clear stops
+production that is already running.* If a human arms events and starts a long soak, and a
+script then connects to observe it, **the act of connecting kills what the observer came to
+watch.** A script that sets up its own arming is unaffected; one that expects to inherit the
+bench's state is silently defeated.
+
+The natural answer, if that case matters, is a **load-from-NVM option on `A`** — the mirror of
+the persist flag, letting a script say "adopt whatever the human configured". It costs one
+sub-option and reuses `v_event_control_restore()` a third time. Not proposed as part of this;
+noted so the trap is not discovered on the bench.
+
+**Also worth checking before building:** the HIL suites. They should be unaffected or helped —
+every test already calls `quiesce()`, so an entry-clear only makes the starting state more
+certain — but `t_nvm_persist` and `t_nvm_persist_flag_gates` reason about the shadow directly
+and want re-reading against the new entry/exit hooks.
 
 ---
 
