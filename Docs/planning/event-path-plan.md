@@ -430,7 +430,7 @@ alongside it.
 | W1 | 🔵 | **nvmparams:** public "peek a pool's label" without full pool init — LOW priority |
 | W2 | 🔵 | Separate mask sets for the human vs automation interfaces — deliberately deferred |
 | W3 | 🔵 | **nvmparams:** opt-in label-match check inside `x_nvm_pool_init()`, reported by return code |
-| W4 | 🔵 | **ESC as an alternative exit** from monitor mode and the session — lives in [`automation-console-plan.md`](automation-console-plan.md) **W6**, cross-referenced here because monitor mode is specified in D1. LOW priority |
+| W4 | 🔵 | **ESC as a SCRIPT-mode exit** (HUMAN mode unchanged) plus a stricter automation input alphabet — lives in [`automation-console-plan.md`](automation-console-plan.md) **W6**, cross-referenced here because monitor mode is specified in D1. Note ESC already cancels a monitor session today, being "any byte". LOW priority |
 
 ---
 
