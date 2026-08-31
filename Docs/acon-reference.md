@@ -124,12 +124,12 @@ device → host      <sigil><op>[,<token>]...<CRLF>
 | `=` | Command response, success |
 | `!` | Command response, failure |
 | `+` | Payload continuation line |
-| `*` | Async event — reserved for monitor mode, **not emitted today** |
+| `*` | Async event — emitted by monitor mode (`M`) only |
 | `#` | Not protocol (stray output, banners) |
 
-**Dispatch on the sigil, never on position.** Any line may turn out to be noise or (in
-future) an async event; a host that assumes "the next line is my response" desynchronises the
-first time it is wrong.
+**Dispatch on the sigil, never on position.** Any line may turn out to be noise or an async
+event; a host that assumes "the next line is my response" desynchronises the first time it is
+wrong.
 
 ### Tokens
 
@@ -151,6 +151,10 @@ payload lines follow.
 
 Declaring the count up front — rather than scanning for a terminator — is what makes a
 truncated response *detectable*. Ops that use this: `L`/`?`, `D`, `U`, `B`.
+
+**`K` is reserved for exactly that meaning**, protocol-wide. An op must not use it for any
+other count: a host reading a `K` will block waiting for payload lines. Monitor mode's
+terminator carries `C` for its event count precisely because of this rule.
 
 ### Errors
 
@@ -414,6 +418,71 @@ coming.
 Drops are reported by the side-channel counter only. There is **no synthetic in-band record**
 for a drop.
 
+#### `M` — monitor mode
+
+```
+M,<timeout_ms>
+
+->    =M,T<timeout>                          ack: in, timeout accepted
+      *I<cls>,C<ch>,S<st>,T<tim>,M<ms>       one per event, as it happens
+      =M,<TMO|CAN>,C<emitted>,D<drops>,N<remaining>
+```
+
+Streams events live until the host stops it or the timeout expires. **Async in
+behaviour, never in protocol** — the host asked to be here and is told when it ends, so an
+unsolicited frame still never turns up in its buffer.
+
+**This is the one op that answers twice**, so it cannot be driven with a plain
+send-one-line-read-one-frame helper. Read the ack, collect `*` lines, then read the
+terminator.
+
+Event lines carry **exactly the tokens `D`'s `+` payload carries** — same stimulus, same
+records either way, and one host-side parser serves both. Only the sigil differs.
+
+| Terminator token | Meaning |
+|---|---|
+| `TMO` / `CAN` | Ended by its own timeout, or by a byte from the host |
+| `C` | Events emitted during the session |
+| `D` | Drop delta *over this session*, not the lifetime counter |
+| `N` | Still queued at exit — non-zero means follow up with `D` |
+
+> **`C`, not `K`, for the count.** `K` in a header is reserved protocol-wide for "exactly
+> this many `+` payload lines follow". A terminator using `K` would block any conforming
+> host — including `acon.py` — waiting for payload that is never coming. The streamed `*`
+> lines were already delivered; they are not a declared payload block.
+
+**The timeout is required and bounded.** `0` (unlimited) is refused with `RNG`, and so is
+anything above `ACON_MONITOR_MAX_MS` (**1 hour**) — a ceiling matters as much as the floor,
+since `0xFFFFFFFF` ms would obey the rule and defeat it. The session idle timeout is **not**
+running while the device is inside a dispatch, so this timeout is the only thing between a
+host that dies mid-monitor and a console that never comes back.
+
+Note the reason code `TMO` here arrives on a `=` frame, not `!`: the host *asked* for this
+timeout. Contrast `!~,TMO`, the session idle timeout, which nobody asked for.
+
+**Input while monitoring:**
+
+| Byte | Effect |
+|---|---|
+| `CR` (0x0D), `LF` (0x0A) | Consumed and ignored — **not** a cancel |
+| XOFF (0x13) | Suspend emission, stay in the handler |
+| XON (0x11) | Resume |
+| anything else | Cancel. The byte is **consumed**, not executed |
+
+The CR/LF carve-out is mandatory, not cosmetic: a CRLF-sending host leaves its LF in the ring
+after the CR terminated the command line, and under a bare "any byte cancels" rule that
+straggler would kill the monitor the instant it started.
+
+`ACON_EXIT` (0xA5) cancels by being "any byte" and needs no special case — but note it does
+**not** then leave the session, because it was consumed as the cancel. Send it again once the
+terminator has arrived.
+
+**While suspended the timeout keeps running.** If XOFF paused it, a host that suspends and
+then crashes would strand the device — reintroducing exactly what the finite timeout fixes.
+Nothing is drained while suspended, so the queue fills and may overflow; that is a better
+trade than backpressuring a producer ISR, and it is why the terminator reports the drop
+delta.
+
 #### `H` — event queue housekeeping
 
 ```
@@ -597,8 +666,9 @@ declared `K` count rather than scanning for a terminator**. `read_frame()` retur
 on timeout is a legitimate result, not an error — several tests assert that the device stays
 silent.
 
-Convenience methods: `enter()`, `leave(how=...)`, `state()` → the `(L, M, R)` triple, and
-`quiesce()`. Note that `acon.py`'s own `quiesce()` uses mask `0xF` — **all four channels**;
+Convenience methods: `enter()`, `leave(how=...)`, `state()` → the `(L, M, R)` triple,
+`quiesce()`, and for monitor mode `monitor(timeout_ms, cancel_after=None)` →
+`(ack, events, terminator)` plus `suspend()` / `resume()` for XOFF/XON. Note that `acon.py`'s own `quiesce()` uses mask `0xF` — **all four channels**;
 `test_events.py` deliberately shadows it with a `CH_SAFE_MASK = 0xE` version so SWITCH_A is
 never driven on this bench.
 
@@ -607,7 +677,7 @@ The suites, all run against a live board:
 | Suite | Tests | Covers |
 |---|---:|---|
 | `test_acon.py` | 47 | The protocol itself, switch ops, cycling, persistence |
-| `test_events.py` | 23 | The application event path — mask, gating, records, drain, persistence |
+| `test_events.py` | 30 | The application event path — mask, gating, records, drain, monitor mode, persistence |
 | `test_eventq.py` | 20 | The vendored `event_queue` module, via `F` |
 | `test_nvm.py` | 28 | The vendored `nvmparams` module, via `N` |
 
@@ -630,8 +700,10 @@ Add `--trace` to dump the wire traffic, `-k <substring>` to filter.
 - **`P` returning `W0` is information, not a failure.** It means nothing was dirty — which is
   the assertion that catches a value that never reached the shadow.
 - **Opcodes are case-sensitive.** `a` is not `A`.
-- **`*` frames do not exist yet.** Monitor mode is designed and unbuilt. A host should still
-  route them on sight rather than treating them as a response.
+- **`*` frames come only from `M`.** Route them by sigil regardless — a host that assumes
+  "the next line is my response" desynchronises the first time it is wrong.
+- **`M` answers twice.** Ack, then stream, then terminator. `command()` reads one frame; use
+  `monitor()`.
 - **Two ST-Link probes are on this bench.** Flashing pins the NUCLEO's serial number; the
   other probe belongs to the DUT and must never be targeted.
 

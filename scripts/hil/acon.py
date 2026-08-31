@@ -34,6 +34,11 @@ ENTER_SENTINEL = 0xDA
 EXIT_SENTINEL  = 0xA5
 CANCEL         = 0x03           # Ctrl-C, quit alias
 
+# Monitor-mode flow control. Only meaningful inside M; anywhere else they are
+# ordinary bytes and would be read as an opcode.
+XON            = 0x11
+XOFF           = 0x13
+
 SIG_OK      = '='
 SIG_ERR     = '!'
 SIG_PAYLOAD = '+'
@@ -208,6 +213,44 @@ class AutomationConsole:
             return frame
 
         return None
+
+    def monitor(self, timeout_ms, cancel_after=None, slack=1.0):
+        """Run monitor mode (M) and collect what it streams.
+
+        Returns (ack, events, terminator). `events` are the '*' lines emitted
+        during THIS call, not the session-long self.events list.
+
+        cancel_after: seconds to wait before sending a cancel byte, or None to
+        let the device's own timeout end it. slack: extra seconds to wait for
+        the terminator beyond the requested timeout.
+
+        Note the two-frame shape. M answers immediately with an ack, streams,
+        then answers again with a terminator -- so it is the one op that cannot
+        be driven with command(), which reads exactly one frame.
+        """
+        mark = len(self.events)
+        self.write_raw('M,%X\r' % timeout_ms)
+
+        ack = self.read_frame()
+        if ack is None:
+            raise ProtocolError("no ack from M,%X" % timeout_ms)
+        if not ack.ok:
+            return ack, [], None            # refused; nothing streamed
+
+        if cancel_after is not None:
+            time.sleep(cancel_after)
+            self.write_raw('x')             # 'any byte' -- consumed as the cancel
+
+        term = self.read_frame(timeout=(timeout_ms / 1000.0) + slack)
+        return ack, self.events[mark:], term
+
+    def suspend(self):
+        """XOFF -- pause monitor-mode emission without leaving it."""
+        self.write_raw(bytes([XOFF]))
+
+    def resume(self):
+        """XON -- resume emission."""
+        self.write_raw(bytes([XON]))
 
     def expect_silence(self, seconds=0.5):
         """Assert the device says nothing for a while. Returns what it said

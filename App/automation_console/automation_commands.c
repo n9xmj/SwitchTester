@@ -563,6 +563,196 @@ static void v_acon_op_event_drain(char c_op, char *pc_line)
 }
 
 /*
+ * M,<timeout_ms> -- monitor mode. Stream events as they happen, until the host
+ * says stop or the timeout expires.
+ *
+ * The async-behaving half of the consumption model, and async in BEHAVIOUR only
+ * -- never in protocol. The host asked to be here and knows when it ends, so an
+ * unsolicited frame still never turns up in its buffer. That is what buys live
+ * streaming with no frame classification on the host side.
+ *
+ *   =M,T<timeout>                       ack: in, with the timeout accepted
+ *   *I<cls>,C<ch>,S<st>,T<tim>,M<ms>    one per event, as it happens
+ *   =M,TMO|CAN,C<emitted>,D<drops>,N<remaining>
+ *
+ * NOT 'K' for the emitted count, however natural it reads. K in a header is
+ * reserved protocol-wide for "exactly this many '+' payload lines follow", and
+ * a conforming host -- ours included -- would block waiting for payload that is
+ * never coming. The streamed lines are '*' frames that were already delivered,
+ * not a declared payload block. C is the count.
+ *
+ * Event lines carry the SAME tokens as D's '+' payload, deliberately: the same
+ * stimulus must yield the same records either way, and a host parses both with
+ * one function. Only the sigil differs -- '*' says "nobody asked for this line
+ * specifically", which is exactly true of a streamed event and exactly false of
+ * a drain's reply.
+ *
+ * THE TIMEOUT IS REQUIRED AND FINITE. 0 is refused, and so is anything above
+ * ACON_MONITOR_MAX_MS -- a ceiling matters as much as the floor, since
+ * 0xFFFFFFFF mS would obey the rule and defeat it. The session idle timeout is
+ * NOT running while we are inside a dispatch, so this timeout is the only thing
+ * standing between a host that dies mid-monitor and a console that never comes
+ * back. Guard the host path; the menu path stays relaxed.
+ *
+ * Input handling: any byte cancels, with three carve-outs.
+ *
+ *   CR / LF     consumed and ignored -- NOT a cancel
+ *   XOFF (0x13) suspend emission, stay in the handler
+ *   XON  (0x11) resume
+ *   anything    cancel, and the byte is CONSUMED rather than executed
+ *
+ * The CR/LF carve-out is mandatory, not cosmetic. A CRLF-sending host leaves
+ * its LF in the ring after the CR terminated the command line; under a bare
+ * "any byte cancels" rule that straggler arrives the instant monitor mode
+ * starts and kills it, making the feature depend on the host's line ending.
+ * Today's driver sends bare CR, so it is latent rather than active -- but the
+ * console tolerates CRLF everywhere else and this must not be where that stops.
+ *
+ * The timeout KEEPS RUNNING while suspended. If XOFF paused it, a host that
+ * suspends and then crashes strands the device again, reintroducing exactly
+ * what the finite timeout just fixed. While suspended nothing is drained, so
+ * the queue fills and may overflow -- far better than backpressuring a producer
+ * ISR, and the reason the terminator reports the drop delta.
+ *
+ * ACON_EXIT (0xA5) cancels by being "any byte" and needs no special case, but
+ * note it does NOT then leave the session: the byte is consumed as the cancel.
+ * A host wanting out sends it again once the terminator has arrived.
+ */
+
+#define ACON_XON                0x11u
+#define ACON_XOFF               0x13u
+
+#define ACON_MON_TIMEOUT        "TMO"       /* the timeout the host asked for  */
+#define ACON_MON_CANCELLED      "CAN"       /* a byte arrived                  */
+
+/* Events emitted per pass before pumping again. Emission is the slow part here
+ * -- each line is ~40 bytes on the wire -- so an unbounded inner drain would
+ * stall the polling task for as long as the backlog took to clear. */
+#define ACON_MONITOR_BATCH      4u
+
+static void v_acon_op_event_monitor(char c_op, char *pc_line)
+{
+    char       *ap_c_arg[1];
+    char        ac_op[4];
+    uint8_t     u8_argc     = u8_acon_args(pc_line, ap_c_arg, 1);
+    uint32_t    u32_timeout = 0UL;
+    uint32_t    u32_t0;
+    uint32_t    u32_drops0;
+    uint32_t    u32_emitted   = 0UL;
+    uint8_t     u8_suspended  = 0u;
+    const char *pc_reason     = NULL;
+
+    if ((u8_argc < 1u) || (ap_c_arg[0][0] == '\0')
+        || !b_acon_arg_u32(ap_c_arg[0], &u32_timeout))
+    {
+        v_acon_err(c_op, ACON_ERR_ARGS);
+        return;
+    }
+
+    /* RNG rather than ARG: the field parsed fine, it is the value that is out
+     * of bounds. A host switching on the mnemonic can tell "malformed" from
+     * "you asked for something I will not do". */
+    if ((u32_timeout == 0UL) || (u32_timeout > ACON_MONITOR_MAX_MS))
+    {
+        v_acon_err(c_op, ACON_ERR_RANGE);
+        return;
+    }
+
+    u32_drops0 = u32_event_queue_dropped(&g_x_event_queue);
+    u32_t0     = ACON_TICK_MS();
+
+    /* Ack before the first event, so a host that sees nothing for ten seconds
+     * still knows the difference between "running, quiet" and "never started". */
+    v_acon_emit(ACON_SIG_OK, "%s,T%lX",
+                pc_acon_op_name(c_op, ac_op), (unsigned long) u32_timeout);
+
+    for (;;)
+    {
+        int16_t i16_ch;
+        uint8_t u8_batch;
+
+        ACON_PUMP();
+
+        /* Input before output: a cancel must not wait behind a batch of events,
+         * which is the whole point of being able to stop a flood. */
+        while ((i16_ch = i16_acon_rx_poll()) >= 0)
+        {
+            uint8_t u8_ch = (uint8_t) i16_ch;
+
+            if ((u8_ch == (uint8_t) '\r') || (u8_ch == (uint8_t) '\n'))
+            {
+                continue;
+            }
+            if (u8_ch == ACON_XOFF)
+            {
+                u8_suspended = 1u;
+                continue;
+            }
+            if (u8_ch == ACON_XON)
+            {
+                u8_suspended = 0u;
+                continue;
+            }
+
+            pc_reason = ACON_MON_CANCELLED;
+            break;
+        }
+        if (pc_reason != NULL)
+        {
+            break;
+        }
+
+        /* Checked every pass, suspended or not. Unsigned wrap does the right
+         * thing at rollover, so no special case. */
+        if ((ACON_TICK_MS() - u32_t0) >= u32_timeout)
+        {
+            pc_reason = ACON_MON_TIMEOUT;
+            break;
+        }
+
+        if (u8_suspended)
+        {
+            continue;
+        }
+
+        for (u8_batch = 0u; u8_batch < ACON_MONITOR_BATCH; u8_batch++)
+        {
+            switch_event_data_t  x_data;
+            event_queue_record_t x_record =
+            {
+                .u16_buf_size = (uint16_t) sizeof(x_data),
+                .pv_data      = &x_data
+            };
+            event_queue_status_t x_status =
+                x_event_queue_get(&g_x_event_queue, &x_record);
+
+            if ((x_status != EQ_OK) && (x_status != EQ_STATUS_TRUNCATED))
+            {
+                break;                  /* empty: go round and wait */
+            }
+
+            v_acon_emit(ACON_SIG_EVENT, "I%X,C%X,S%X,T%X,M%X",
+                        (unsigned) x_record.u16_id,
+                        (unsigned) x_data.u8_channel,
+                        (unsigned) x_data.u16_state,
+                        (unsigned) x_data.u32_tim_count,
+                        (unsigned) x_data.u32_tick);
+            u32_emitted++;
+        }
+    }
+
+    /* N is what is still queued: a monitor that ended with a backlog tells the
+     * host to follow up with D rather than assume it saw everything. */
+    v_acon_emit(ACON_SIG_OK, "%s,%s,C%lX,D%lX,N%X",
+                pc_acon_op_name(c_op, ac_op),
+                pc_reason,
+                (unsigned long) u32_emitted,
+                (unsigned long) (u32_event_queue_dropped(&g_x_event_queue)
+                                 - u32_drops0),
+                (unsigned) u16_event_queue_count(&g_x_event_queue));
+}
+
+/*
  * H[,sub] -- event queue housekeeping. Flush and counter resets, kept off the
  * drain path so D stays purely a read.
  *
@@ -1176,6 +1366,7 @@ const acon_op_t g_x_acon_command[] =
     { 'A', v_acon_op_event_mask,  "event mask: [hex[,persist]] (bit31=global enable)" },
     { 'D', v_acon_op_event_drain, "drain events: [max] (0=all)"           },
     { 'H', v_acon_op_event_house, "event queue: [S=status,F=flush,R=reset]" },
+    { 'M', v_acon_op_event_monitor, "monitor events: timeout_ms (required, finite)" },
     { 'Y', v_acon_op_spiflash,    "spi flash probe: [I=id,S=status,T=dma rw test,L=loopback,N=ncs lb,J=sck lb,C[,0|1]=park cs,K=clock burst] (temp)" },
     { 'U', v_acon_op_uart_stress, "uart loopback stress: idx[,first,last,bursts]" },
     { 'B', v_acon_op_baud_sweep,  "baud sweep: idx[,rate...] (default ladder)" },

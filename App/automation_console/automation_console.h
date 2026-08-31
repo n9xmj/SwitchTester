@@ -270,4 +270,19 @@ extern uint8_t u8_acon_args(char *pc_line, char *ap_c_arg[], uint8_t u8_max);
  */
 extern uint8_t b_acon_arg_u32(const char *pc_arg, uint32_t *p_u32_value);
 
+/**
+ * @brief Non-blocking read of one byte from the console's input.
+ *
+ * For a command that runs long enough to have to watch for its host -- a
+ * streaming or monitoring op that emits until told to stop. Ordinary commands
+ * never need this: the core reads the line and hands it over.
+ *
+ * A handler that spins MUST also call ACON_PUMP() every pass, exactly as the
+ * core's own reader does. Otherwise the RX ring overflows and everything the
+ * main loop polls stalls behind the handler.
+ *
+ * @return 0..255, or a negative value when nothing is waiting.
+ */
+extern int16_t i16_acon_rx_poll(void);
+
 #endif // AUTOMATION_CONSOLE_H

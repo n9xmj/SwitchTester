@@ -6,12 +6,15 @@ against a dedicated test queue. This suite exercises the real thing: switch
 transitions produced into the application's event queue, gated by the
 production mask, and drained over the console.
 
-    A[,mask]        read / write the production mask (hex, bit31 = global enable)
-    D[,max]         drain: "=D,K<n>,N<rem>,D<drops>" + n "+" payload lines
-    H[,S|F|R]       queue status / flush / reset counters
+    A[,mask[,persist]]  read / write the production mask (hex, bit31 = global)
+    D[,max]             drain: "=D,K<n>,N<rem>,D<drops>" + n "+" payload lines
+    H[,S|F|R]           queue status / flush / reset counters
+    M,timeout_ms        monitor: ack, "*" lines as they happen, then a terminator
 
-Consumption is host-COMMANDED. Nothing is ever emitted that was not asked for,
-so this script never has to classify unsolicited frames.
+Consumption is host-COMMANDED throughout -- monitor mode included, since the
+host asked to be in it and is told when it ends. Nothing is ever emitted that
+was not asked for, so this script never has to classify a frame it did not
+expect.
 
     python scripts/hil/test_events.py --port COM3
     python scripts/hil/test_events.py --port COM3 --trace
@@ -20,6 +23,7 @@ so this script never has to classify unsolicited frames.
 
 import argparse
 import sys
+import time
 
 sys.path.insert(0, __file__.rsplit('\\', 1)[0].rsplit('/', 1)[0])
 
@@ -123,12 +127,19 @@ def check(condition, message):
 # ---------------------------------------------------------------------------
 
 class Event(object):
-    """One drained event: the '+' payload line, parsed."""
+    """One event line, parsed.
+
+    Takes either form: a drain's '+' payload (the driver has already stripped
+    the sigil) or a monitor-mode '*' line (it has not). The two carry identical
+    tokens by design, so one parser serves both -- which is also what makes the
+    'same stimulus, same events either way' test meaningful."""
 
     __slots__ = ('cls', 'chan', 'state', 'tim', 'ms', 'raw')
 
     def __init__(self, line):
         self.raw = line
+        if line[:1] in ('*', '+'):
+            line = line[1:]
         tok = {}
         for field in line.split(','):
             if len(field) >= 2 and field[0].isalpha():
@@ -618,6 +629,177 @@ def t_auto_complete_only(con):
         check(ev.cls == CLASS_SW_CYCLE_DONE,
               "transitions were masked but %r came through" % ev)
     quiesce(con)
+
+
+# ---------------------------------------------------------------------------
+# Tests -- monitor mode (M)
+# ---------------------------------------------------------------------------
+
+def wait_idle(con, channel, limit=40):
+    """Poll R until the channel stops cycling. The monitor path waits for its
+    own timeout instead, so only the drain path needs this."""
+    for _ in range(limit):
+        _, _, running = con.state()
+        if not (running & (1 << channel)):
+            return
+        time.sleep(0.05)
+    raise Failure("channel %d still cycling after %.1f s" % (channel, limit * 0.05))
+
+
+def cycle_burst(con, channel, repeats=3, half_us=0x61A8):
+    """Stage and start a short finite cycle. 0x61A8 = 25 ms, so on+off clears
+    the 50 ms ACON_MIN_CYCLE_PERIOD_US floor exactly."""
+    ok(con, 'W,%X,%X,%X,%X' % (channel, half_us, half_us, repeats))
+    ok(con, 'C,%X' % (1 << channel))
+
+
+@test("monitor: the timeout is required and bounded")
+def t_mon_guards(con):
+    quiesce(con)
+
+    for text, code in (('M',          'ARG'),     # missing
+                       ('M,zz',       'ARG'),     # unparseable
+                       ('M,0',        'RNG'),     # 0 = unlimited is refused
+                       ('M,4000000',  'RNG')):    # 67108864 ms, over the 1 h cap
+        frame = con.command(text)
+        check(frame is not None and not frame.ok, "%s was accepted" % text)
+        check(frame.code == code,
+              "%s answered %s, expected %s" % (text, frame.code, code))
+
+
+@test("monitor: quiet session acks, times out, and streams nothing")
+def t_mon_quiet(con):
+    quiesce(con)
+    ack, events, term = con.monitor(200)
+
+    check(ack.ok, "M was refused: %r" % ack.raw)
+    check(ack.tokens.get('T') == 200, "ack echoed T%r, expected 200" % ack.tokens.get('T'))
+    check(events == [], "a disarmed board streamed %d event(s)" % len(events))
+    check(term is not None, "no terminator arrived")
+    check(term.fields[0] == 'TMO', "terminator reason %r, expected TMO" % term.fields[0])
+    check(term.tokens['C'] == 0, "terminator claims C%d emitted" % term.tokens['C'])
+    check(term.tokens['N'] == 0, "terminator claims N%d left" % term.tokens['N'])
+
+
+@test("monitor: terminator carries no K -- it would mean payload follows")
+def t_mon_no_k_token(con):
+    """K in a header is reserved protocol-wide for 'exactly n + lines follow'.
+    Using it for the emitted count would hang any conforming host, this one
+    included -- read_frame() would sit waiting for payload that never comes.
+    That the frame parses at all is most of the assertion."""
+    quiesce(con)
+    _, _, term = con.monitor(150)
+    check(term is not None, "no terminator -- the host may have blocked on a K")
+    check('K' not in term.tokens,
+          "terminator %r carries a K token; it must use C for the count" % term.raw)
+
+
+@test("monitor: streams live events and counts them")
+def t_mon_streams(con):
+    quiesce(con)
+    arm(con, M_PRI_AUTO | M_PRI_MANUAL | M_CYCLE_COMPLETE)
+    flush(con)
+    cycle_burst(con, CH_PRI)
+
+    ack, events, term = con.monitor(400)
+    check(ack.ok, "M was refused: %r" % ack.raw)
+    check(len(events) > 0, "a running cycle streamed nothing")
+    check(term.fields[0] == 'TMO', "reason %r, expected TMO" % term.fields[0])
+    check(term.tokens['C'] == len(events),
+          "terminator says C%d but %d '*' lines arrived"
+          % (term.tokens['C'], len(events)))
+    check(term.tokens['N'] == 0, "monitor left %d queued" % term.tokens['N'])
+
+    parsed = [Event(line) for line in events]
+    check(all(e.chan == CH_PRI for e in parsed),
+          "an event arrived from a channel that was not armed")
+    check(any(e.cls == CLASS_SW_CYCLE_DONE for e in parsed),
+          "a finite run streamed no CYCLE_COMPLETE")
+    quiesce(con)
+
+
+@test("monitor: same stimulus yields the same events as the sync drain")
+def t_mon_matches_drain(con):
+    """The plan's own acceptance criterion for monitor mode. Identical
+    stimulus, one run collected each way; the records must agree."""
+    def signature(events):
+        return [(e.cls, e.chan, e.state) for e in events]
+
+    quiesce(con)
+    arm(con, M_PRI_AUTO | M_PRI_MANUAL | M_CYCLE_COMPLETE)
+
+    flush(con)
+    cycle_burst(con, CH_PRI)
+    _, streamed, term = con.monitor(400)
+    check(term.fields[0] == 'TMO', "monitor ended early: %r" % term.raw)
+
+    flush(con)
+    cycle_burst(con, CH_PRI)
+    wait_idle(con, CH_PRI)
+    drained = drain_all(con)
+
+    check(signature([Event(l) for l in streamed]) == signature(drained),
+          "monitor and drain disagree:\n  monitor: %r\n  drain:   %r"
+          % (signature([Event(l) for l in streamed]), signature(drained)))
+    quiesce(con)
+
+
+@test("monitor: any byte cancels, CR and LF do not")
+def t_mon_cancel(con):
+    quiesce(con)
+
+    # A cancel byte ends it well inside the requested window.
+    _, _, term = con.monitor(3000, cancel_after=0.2)
+    check(term is not None, "cancel produced no terminator")
+    check(term.fields[0] == 'CAN',
+          "reason %r after a cancel byte, expected CAN" % term.fields[0])
+
+    # CR/LF must be consumed and ignored -- a CRLF host must not kill its own
+    # monitor with the LF left over from the command line.
+    con.write_raw('M,12C\r')                    # 300 ms
+    ack = con.read_frame()
+    check(ack is not None and ack.ok, "no ack: %r" % (ack.raw if ack else None))
+    con.write_raw('\r\n')
+    term = con.read_frame(timeout=1.5)
+    check(term is not None, "CRLF appears to have wedged the monitor")
+    check(term.fields[0] == 'TMO',
+          "CR/LF cancelled the monitor (reason %r) -- the carve-out is broken"
+          % term.fields[0])
+
+
+@test("monitor: XOFF suspends, XON resumes, and the timeout keeps running")
+def t_mon_flow_control(con):
+    quiesce(con)
+    arm(con, M_PRI_AUTO | M_PRI_MANUAL)
+    flush(con)
+    ok(con, 'W,%X,%X,%X,0' % (CH_PRI, 0x61A8, 0x61A8))      # infinite 25/25 ms
+    ok(con, 'C,%X' % (1 << CH_PRI))
+
+    # 3 s, not 1 s. expect_silence() below is built on a blocking readline() and
+    # can overrun its own window by up to the port timeout -- with a short
+    # monitor it swallows the terminator and the test reports a strand that did
+    # not happen. Keep the observation window comfortably clear of the deadline.
+    con.write_raw('M,BB8\r')                                # 3000 ms
+    ack = con.read_frame()
+    check(ack is not None and ack.ok, "no ack: %r" % (ack.raw if ack else None))
+
+    con.suspend()
+    time.sleep(0.15)                    # let anything already in flight land
+    con.drain()                         # measure only what follows the suspend
+    quiet = con.expect_silence(0.4)
+    check(not [l for l in quiet if l.startswith('*')],
+          "XOFF did not stop emission: %r" % quiet[:3])
+
+    # Never resumed: the timeout must still end it, or a host that suspends and
+    # dies strands the console -- exactly what the finite timeout exists to stop.
+    term = con.read_frame(timeout=4.0)
+    check(term is not None, "suspended monitor never timed out -- STRANDED")
+    check(term.fields[0] == 'TMO', "reason %r, expected TMO" % term.fields[0])
+    check(term.tokens['N'] > 0,
+          "nothing queued up during the suspend; the test proved little")
+
+    quiesce(con)
+    flush(con)
 
 
 # ---------------------------------------------------------------------------

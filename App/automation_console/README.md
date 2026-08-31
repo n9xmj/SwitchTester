@@ -125,8 +125,27 @@ const uint8_t g_u8_acon_command_count =
 ```
 
 Helpers: `v_acon_emit()`, `v_acon_ok()`, `v_acon_err()`, `u8_acon_args()`,
-`b_acon_arg_u32()`, `pc_acon_op_name()`. Generic error mnemonics are `ACON_ERR_UNKNOWN`,
-`_ARGS`, `_RANGE`, `_OVERFLOW`; define your own domain codes locally.
+`b_acon_arg_u32()`, `pc_acon_op_name()`, `i16_acon_rx_poll()`. Generic error mnemonics are
+`ACON_ERR_UNKNOWN`, `_ARGS`, `_RANGE`, `_OVERFLOW`; define your own domain codes locally.
+
+### Long-running and streaming commands
+
+Most handlers answer and return. One that *streams* — emitting until the host stops it or a
+timeout expires — needs two more things, and getting either wrong is expensive:
+
+- **`i16_acon_rx_poll()`** reads one input byte without blocking (negative when nothing is
+  waiting), so the handler can watch for its host. Ordinary commands never need it: the core
+  reads the line and hands it over.
+- **`ACON_PUMP()` every pass**, exactly as the core's own reader does. Otherwise the RX ring
+  overflows and everything the main loop polls stalls behind your handler.
+
+Give such a command a **finite, bounded timeout**. The session idle timeout is not running
+while you are inside a dispatch, so your timeout is the only thing between a host that dies
+mid-stream and a console that never comes back — and bound it at the top as well as the
+bottom, since an unreasonably large value obeys the rule while defeating it.
+
+Stream with `ACON_SIG_EVENT` (`*`), and **do not put `K` in the terminator**: `K` means
+"payload follows" protocol-wide, and a host will block on it. Pick another key for a count.
 
 For a multi-line reply, declare the count in the header (`K<n>`) and follow with that many
 `ACON_SIG_PAYLOAD` lines. Declaring the count is what makes a truncated response

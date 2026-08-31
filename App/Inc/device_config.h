@@ -104,6 +104,20 @@
 
 #define ACON_MIN_CYCLE_PERIOD_US                                           50000
 
+// Longest monitor-mode (M) session a host may ask for, milliseconds.
+//
+// The finite-timeout requirement exists so a host that dies mid-monitor cannot
+// strand the console: the session idle timeout is not running while we are
+// inside a dispatch, so the monitor's own timeout is the only thing that ends
+// it. A ceiling is needed for the same reason the floor is -- without one a
+// host can ask for 0xFFFFFFFF mS, 49 days, and defeat the guard by obeying it.
+//
+// One hour: longer than any soak anyone would sit and watch, short enough that
+// a wedged console frees itself the same working day. Raise it if a real run
+// needs to; do not remove it. See event-path-plan.md (D1).
+
+#define ACON_MONITOR_MAX_MS                                              3600000
+
 // The console core's own settings -- build switch, ACON_MAX_ARGS, buffer sizes,
 // timeouts -- are NOT here. It is a vendored module and owns a settings file:
 // App/Inc/automation_console_config.h, copied from the template in

@@ -414,6 +414,18 @@ static int16_t i16_acon_rx_byte(uart_stream_h_t h_stream)
 }
 
 /*
+ * Public non-blocking poll, for a long-running command that has to watch its
+ * host while it streams. The core never uses this itself -- it reads through
+ * i16_acon_rx_byte() with the handle already in hand -- so this exists purely
+ * to give command authors the same capability without reaching around the
+ * module for the stream handle and re-deriving the getchar() fallback.
+ */
+int16_t i16_acon_rx_poll(void)
+{
+    return i16_acon_rx_byte(h_stdio_retarget_get_stream());
+}
+
+/*
  * SCRIPT reader: raw, byte at a time, no echo.
  *
  * CR terminates. LF is discarded wherever it appears -- not "CR or LF", and not

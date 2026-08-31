@@ -19,8 +19,8 @@ decisions land). **Entry point / source of scope:**
 
 **Status:** **PROVING SUBSET COMPLETE AND BENCH-VERIFIED** (2026-08-30) — switch events
 produced into `event_queue` and consumed end-to-end through **both** sinks: the commanded
-acon drain (`test_events.py` 23/23) and the human log in the debug menu. Remaining: acon
-monitor mode (D1 phase 2).
+acon drain, acon monitor mode and the human log in the debug menu —
+`test_events.py` 30/30. Nothing on the Big Board is open.
 **Working mode:** the user relays design in chat; one question at a time; the board holds
 everything else. Per [`decision-log-model.md`](decision-log-model.md).
 
@@ -43,9 +43,9 @@ rule, the arming model, and mode-handover behaviour.
 
 **Where the board stands.** The path is **proven end to end on hardware, through both
 sinks**: the production mask, the record, the queue instance, both producer hooks, the
-commanded acon consumer and the human log are built; 23 passing HIL tests cover the acon
-half and the log lines were read off the wire for all three switch classes. What remains is
-acon **monitor mode**, which is fully designed and unbuilt.
+commanded acon consumer, monitor mode and the human log are built; 30 passing HIL tests
+cover the acon halves and the log lines were read off the wire for all three switch classes.
+**Nothing on the Big Board is open.**
 
 ---
 
@@ -64,7 +64,7 @@ acon **monitor mode**, which is fully designed and unbuilt.
 | I3 | 🟢 | Per-pool label check; only the main params pool is renamed `"SwitchTester"` |
 | S7 | 🟢 | Emit on every level **request**, even a redundant one — no change-filtering |
 | S8 | 🟢 | Drop reporting is the side-channel counter only — no synthetic in-band record |
-| D1 | 🟢 | Sync drain BUILT: ops A (mask) / D (drain) / H (housekeeping); monitor still to build |
+| D1 | 🟢 | BOTH consumption commands built: A / D / H sync, and M monitor mode |
 | I6 | 🟢 | BOTH drains built: acon commanded `D`, menu batch of 8 in `v_debug_menu_service()` |
 | D2 | 🟢 | `LOG_EVENT` @ INFO, tag `EVENT`, bright white; one line per record |
 | I4 | 🟢 | Record struct (12 B) and the 16-bit event-type/class ID |
@@ -72,13 +72,13 @@ acon **monitor mode**, which is fully designed and unbuilt.
 | I7 | 🟢 | No wrapper layer: header for types, stack record, direct `x_event_queue_put()` |
 | I8 | 🟢 | TIM2 ISR order: capture `CCRx` → reschedule → put. 6 µs worst-case ISR budget |
 | T1 | 🟢 | Skeleton back-port DONE — placeholder label, the check, and a boot warning |
-| T2 | 🟢 | `scripts/hil/test_events.py` — **23/23 green on hardware**; acon 47, eventq 20, nvm 28 still green |
+| T2 | 🟢 | `scripts/hil/test_events.py` — **30/30 green on hardware**; acon 47, eventq 20, nvm 28 still green |
 
 ---
 
 ## Implementation status — producer side BUILT and VERIFIED (2026-08-30)
 
-Flashed and exercised on the bench; covered by `test_events.py` (23/23).
+Flashed and exercised on the bench; covered by `test_events.py` (30/30).
 
 | File | What landed |
 |---|---|
@@ -137,13 +137,13 @@ Three things worth recording:
 project forked from this one changes `PRODUCT_NAME` as a matter of course and inherits a
 distinct pool label for free, which is precisely the property S5's check relies on.
 
-**Not yet done:** acon monitor mode.
+**Not yet done:** nothing on the Big Board.
 
 ---
 
 ## Consumer side — sync drain BUILT and BENCH-VERIFIED (2026-08-30)
 
-**23/23 on hardware**, and the three existing suites are still green (acon 47, eventq 20,
+**30/30 on hardware**, and the three existing suites are still green (acon 47, eventq 20,
 nvm 28). The produce-and-consume path is proven end to end: switch transitions produced in
 ISR and main context, gated by the persisted mask, drained over the console.
 
@@ -220,9 +220,12 @@ command, after the response and before the next *blocking* read — so it can on
 events when commands are already flowing, which is exactly when a commanded drain would
 have moved them anyway. With consumption now host-commanded, the hook has no job.
 
-Leave the call site in place rather than deleting it: it is one empty static, it documents
-where async output *would* be legal under S7's deferral rule, and monitor mode may yet want
-that position. Worth revisiting only if the console module is ever tidied.
+**Monitor mode did not want that position either**, which settles the "may yet want it"
+caveat this section used to carry. `M` streams from inside its own dispatch, where it can
+pump and watch for input; the between-commands hook is neither where it needs to run nor
+long-lived enough. Leave the call site in place — one empty static that documents where
+async output *would* be legal under S7's deferral rule — but nothing is now expected to
+claim it.
 
 ### Sink selection is the re-entry lock, not the polling task
 
@@ -395,8 +398,8 @@ P              -> =P,W1               a real change committed
 **The vacuous test is replaced.** `nvm: the persist flag is what reaches flash, not the
 write` asserts on `P`'s `W` token — the in-band proof the old test had available and did not
 use: `W1` after a persisting write, `W0` after a non-persisting one. It also covers `A,,1`
-and checks that a bad persist field is refused *before* the mask moves. Suite is now
-**23 tests**.
+and checks that a bad persist field is refused *before* the mask moves. That took the suite
+to 23 tests; monitor mode later brought it to **30**.
 
 ---
 
@@ -408,13 +411,14 @@ nothing lives only here.
 **Built and bench-verified (2026-08-30):** the mask subsystem (**S1–S6, I1–I3**), the
 producer (**S7, I4, I5, I7, I8**), drop accounting (**S8**), the commanded acon consumer
 (**D1** sync half, **I6** acon half), the human log sink (**D2**, **I6** menu half) and the
-HIL suite (**T2**). `test_events.py` 23/23, with acon 47 / eventq 20 / nvm 28 still green
+HIL suite (**T2**). `test_events.py` 30/30, with acon 47 / eventq 20 / nvm 28 still green
 alongside it.
 
 | What is left | Rows | Note |
 |---|---|---|
-| **acon monitor mode** | **D1** phase 2 | Fully specified in D1 — finite timeout, explicit exit byte, XON/XOFF, pump every pass, `*` sigil. Unbuilt |
+| ~~acon monitor mode~~ | ~~**D1** phase 2~~ | **BUILT 2026-08-30** — op `M`, 7 HIL tests including the same-events-as-drain equivalence check |
 | ~~acon mask writes do not persist~~ | ~~S4~~ | **FIXED 2026-08-30** — `A[,mask[,persist]]`, proven across a reset. See the DEFECT section |
+| **Application-queue overflow** | **T2** gap | The drop path has never been exercised on the real 8 KB ring — `test_eventq.py` proves it against the module's own test queue instead. Now reachable: arm, cycle, and let a monitor session sit suspended |
 | **Skeleton back-port** | ~~T1~~ | **DONE** — placeholder, check and boot warning all shipped (`e0a2f0e`) |
 
 ---
@@ -1450,7 +1454,7 @@ The two sub-questions the row left open, both answered by building it:
   every handover. Draining stays unconditional regardless, so the ring cannot fill and start
   charging the drop counter for records nobody wanted to see.
 
-**Resolution:** both drains built and exercised on hardware. acon: `test_events.py` 23/23.
+**Resolution:** both drains built and exercised on hardware. acon: `test_events.py` 30/30.
 Menu: log lines read off the wire for all three switch classes, in the documented
 production order — the cycle start's manual ON, the auto edges, the halt's manual OFF, then
 the completion.
@@ -1599,7 +1603,7 @@ Adding the in-band record later would change no existing behaviour, so nothing i
 
 ### D1 — acon command surface
 
-**Status:** 🟢 for the sync drain (built, 23/23 on hardware) · monitor mode designed, unbuilt
+**Status:** 🟢 — **both halves BUILT and verified on hardware** (30/30)
 
 **RESOLVED — the consumption model (user, 2026-08-30): TWO commands.**
 
@@ -1682,9 +1686,50 @@ Fully deterministic; this is what HIL tests assert against, permanently.
 proof of the entire event produce and consume path."* Monitor mode second, and it can be
 checked against the sync command: the same stimulus should yield the same events either way.
 
-**Still open — the wire syntax.** Op letters, parameter format, the event response line
-layout and the terminator layout. Constraint: `'Q'` is the builtin quit and cannot be
-shadowed; `'F'` is taken by the event_queue test harness.
+**RESOLVED — the wire syntax (2026-08-30, built).** `M` was the free mnemonic letter; the
+opcode-space audit at the time of the sync drain had already ruled out `Q` (builtin quit) and
+`F` (event_queue test harness), and `M` collided with neither.
+
+```
+M,<timeout_ms>
+
+=M,T<timeout>                                  ack
+*I<cls>,C<ch>,S<st>,T<tim>,M<ms>               one per event, live
+=M,<TMO|CAN>,C<emitted>,D<drops>,N<remaining>  terminator
+```
+
+**Event lines reuse `D`'s payload tokens exactly.** Same stimulus, same records either way —
+which is this row's own acceptance criterion — and one host parser serves both. Only the
+sigil differs, and `*` says "nobody asked for this line specifically", which is exactly true
+of a streamed event and exactly false of a drain's reply.
+
+**`C` for the emitted count, NOT `K` — and this was a real bug caught before it shipped.**
+The first draft used `K`, which reads naturally and is wrong: `K<n>` in a header is reserved
+protocol-wide for *"exactly this many `+` payload lines follow"*. A conforming host — ours
+included — would have blocked in `read_frame()` waiting for payload that was never coming.
+The bench smoke test did not catch it because it read raw bytes; the HIL test written against
+the real driver did. `test_events.py` now asserts the terminator carries no `K` at all, so
+the mistake cannot come back.
+
+**Timeout bounds: `0` refused, and a ceiling too.** `ACON_MONITOR_MAX_MS` = 1 hour, in
+`device_config.h` beside `ACON_MIN_CYCLE_PERIOD_US` as a sibling application-command limit.
+A ceiling matters as much as the floor the row specified: without one a host asks for
+`0xFFFFFFFF` mS — 49 days — and defeats the guard by obeying it. Both refusals are `RNG`, not
+`ARG`: the field parsed fine, the value is out of bounds, and a host switching on the mnemonic
+can tell "malformed" from "I will not do that".
+
+**One module change was needed**, and it is a general capability rather than a SwitchTester
+quirk: `i16_acon_rx_poll()`, a public non-blocking input read for a command that runs long
+enough to have to watch its host. Without it a handler must reach around the module for the
+stream handle and re-derive the `getchar()` fallback. Documented in the module README
+alongside the requirement to pump every pass.
+
+**The cancelling byte is consumed, not executed.** So `ACON_EXIT` cancels the monitor without
+also leaving the session; a host wanting out sends it again after the terminator. Uniform
+rule, no special cases.
+
+**`M` is the only op that answers twice** — ack, stream, terminator — so it cannot be driven
+by a send-one-read-one helper. `acon.py` gained `monitor()`, `suspend()` and `resume()`.
 
 **Original question, for the record:**
 
@@ -1694,12 +1739,16 @@ the drop and put counters. Plus the async frame format itself — how a host dis
 unsolicited event frame from a command response, given S7's deferral rule already keeps them
 out of each other's way.
 
-**Resolution (2026-08-30):** the sync drain is **built and verified** as ops `A` / `D` / `H`
-— see *Consumer side* above for the wire contract, the opcode-space audit and the `K`/`+`
-payload rationale. **Monitor mode remains unbuilt**, with its behaviour fully specified in
-this row: finite timeout required, explicit exit byte, XON/XOFF suspend/resume with the
-timeout still running, `ACON_PUMP()` every pass, and `*` (`ACON_SIG_EVENT`) as the natural
-sigil for its streamed lines.
+**Resolution (2026-08-30):** **both commands built and verified on hardware.** The sync drain
+is ops `A` / `D` / `H` — see *Consumer side* above for the wire contract, the opcode-space
+audit and the `K`/`+` payload rationale. **Monitor mode is op `M`**, with the syntax above and
+every behaviour this row specified: finite bounded timeout, any-byte cancel with the CR/LF
+carve-out, XON/XOFF suspend/resume with the timeout still running while suspended,
+`ACON_PUMP()` every pass, and `*` for its streamed lines.
+
+`test_events.py` is **30 tests**, seven of them monitor mode, including the row's own
+acceptance criterion — *the same stimulus yields the same events as the sync drain* — which
+passes against an identical 3-repeat cycle collected each way.
 
 ---
 
@@ -1764,12 +1813,12 @@ production mask is the first and is unaffected by either.
 
 **Status:** 🟢 · **Needs user:** no
 
-**Resolution (2026-08-30):** `scripts/hil/test_events.py`, **23 tests, all passing on
+**Resolution (2026-08-30):** `scripts/hil/test_events.py`, **30 tests, all passing on
 hardware.** A new suite rather than an extension of `test_acon.py`, and distinct from
 `test_eventq.py` — that one drives the vendored module against a dedicated test queue,
 this one drives the real application path.
 
-Regression net is now **acon 47 · nvm 28 · eventq 20 · events 23**, all green together.
+Regression net is now **acon 47 · nvm 28 · eventq 20 · events 30**, all green together.
 
 Coverage: mask round-trip, filler-bit retention and read purity; the three gating cases
 (disarmed, global-clear, per-channel); masked sources moving no counters; record content
@@ -1914,21 +1963,25 @@ Travels with T1 and W1 rather than causing its own excursion.
 
 **The proving subset is DONE and verified on hardware, through both sinks.** Switch events
 are produced in both ISR and main context, gated by a persisted mask, and consumed end to
-end — over acon (`test_events.py` 23/23, with the three existing suites still green) and
+end — over acon (`test_events.py` 30/30, with the three existing suites still green) and
 into the human log in the debug menu.
 
-**Open:** nothing on the Big Board. **W1 / W2 / W3** 🔵 are banked by intent, not
-oversights, and **acon monitor mode** (D1 phase 2) is fully designed and unbuilt — a build
-task, not a decision.
+**Open:** nothing on the Big Board, and no unbuilt design. **W1 / W2 / W3** 🔵 are banked by
+intent, not oversights.
+
+**The one known test gap:** the application queue's overflow/drop path has never been
+exercised. `test_eventq.py` proves it against the vendored module's own test queue; the real
+8 KB ring behind `switch_out.c` has never been filled. Monitor mode makes it reachable — arm,
+cycle, and let a suspended session sit until the ring wraps.
 
 **One defect was found and closed this session:** acon mask writes never reached NVM, so
 arming from a host was not sticky across reset the way S4 says it is. Root cause, the
 `A[,mask[,persist]]` fix and the reset-crossing proof are in *DEFECT — acon mask writes
 never reach NVM* above. The vacuous test that could not have caught it is replaced.
 
-**Next natural step** is whichever the user picks: acon monitor mode, or moving on to
-roadmap task 1 (sense), which now plugs into a path already carrying real traffic through
-both consumers and has its four sense mask bits and menu toggles already wired and waiting.
+**Next natural step** is roadmap task 1 (sense). It now plugs into a path already carrying
+real traffic through every consumer — commanded drain, live monitor and human log — with its
+four mask bits and menu toggles wired and waiting for a producer.
 
 **Known tidy, not stale content:** the Big Board and the detail sections have drifted out of
 the model's prescribed D → S → I → T ordering as rows were added mid-session. Worth a
