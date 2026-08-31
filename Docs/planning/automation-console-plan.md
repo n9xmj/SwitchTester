@@ -150,9 +150,37 @@ session afterwards.
 
 **Notes for whoever builds it:**
 
-- **SCRIPT mode is unambiguous.** One clause beside the `ACON_EXIT` check. Ctrl-C is already
-  a control-character quit alias, so the precedent is established, and ESC is outside the
-  0x21..0x7E printable range reserved for command opcodes — nothing is given up.
+- **SCRIPT mode is now specified too (user, 2026-08-30):** *"much like human mode with a few
+  exceptions."*
+
+  | Entry | Today | Specified |
+  |---|---|---|
+  | Null line | bare CR → `=Z` | no-op — **already correct** |
+  | `Q` | quits | quits, the canonical exit — **already correct** |
+  | Exit sentinel `0xA5` | `return ACON_LINE_QUIT` | quits — **already correct** |
+  | **ESC** (0x1B) | an ordinary byte in the line buffer | **quits** — one clause beside the `ACON_EXIT` check |
+  | Ctrl-C | see below | **optional**, *"if it makes things simpler"* |
+
+  ESC costs nothing here: it is outside the 0x21..0x7E printable range reserved for command
+  opcodes, and Ctrl-C already sets the precedent for a control-character exit.
+
+- **Recommendation on SCRIPT-mode Ctrl-C: do NOT intercept it — leave it exactly as it is.**
+  The user made it optional, and taking the option is a net loss.
+
+  It is worth being precise about what it does today, because it is *not* the same mechanism
+  as HUMAN mode's. The SCRIPT reader does not intercept 0x03 at all; the byte lands in the
+  line buffer and only acts when the line is dispatched, as the `ACON_OP_CANCEL` builtin in
+  the **opcode position**. So `0x03 CR` quits, while `AB 0x03 CR` treats it as an ordinary
+  argument character. It is a whole-line command, not an interrupt.
+
+  Intercepting it in the reader to add line-cancel would therefore **shadow that builtin and
+  make it unreachable in SCRIPT mode** — trading away a documented exit route to add a
+  feature with no user: a script composes the whole line before sending it, so it has no
+  half-typed entry to cancel. Leave it alone.
+
+  The consequence is the asymmetry already named below — Ctrl-C quits a script, cancels a
+  line for a human — which is the right way round, since only one of the two has a line in
+  progress.
 - **HUMAN mode is now specified (user, 2026-08-30).** The earlier "always quit vs two-tier"
   question is answered, and by a better route than either: ESC always quits, and **Ctrl-C
   takes over the cancel job**, so nothing is lost.
@@ -203,17 +231,41 @@ session afterwards.
   path never reaches the dispatcher).
 - **`$` (echo raw text) loses the ability to carry an ESC byte.** Almost certainly fine; worth
   naming so it is a decision rather than a surprise.
-- **Arrow keys, and the one thing worth building alongside.** ESC is the lead byte of every
-  ANSI sequence, and `i_getline()` treats a bare 0x1B as cancel *without consuming the rest*
-  — so arrow keys already cancel a line in HUMAN mode today. That is pre-existing, not
-  something this wish creates. But with ESC promoted to *exit*, a stray Up-arrow stops
-  costing you a line and starts costing you the session.
+#### What `i_getline()` actually supports today
 
-  The fix is standard and small: **consume the rest of the sequence.** On 0x1B, peek for a
-  following `[` or `O` and swallow the final byte, treating only a *bare* ESC as the exit.
-  That distinguishes a real ESC keypress from an arrow key, and it belongs in `i_getline()`
-  where it also stops arrow keys silently eating menu input. Worth doing in the same change
-  rather than discovering it the first time someone reaches for history recall.
+Surveyed 2026-08-30, because HUMAN-mode acon entry is deliberately shaped on it rather than
+growing its own editing feel. It is a **five-key** editor:
+
+| Key | Byte | Effect | Returns |
+|---|---|---|---|
+| Enter | `\r` 0x0D | echo CRLF, done | `i_len` (≥ 0) |
+| Backspace | `\b` 0x08 | destructive erase of one character (`\b \b`), stays in | — |
+| ESC | 0x1B | erase the whole line, print `<Cancel>\r\n`, done | **−1** |
+| Ctrl-X | 0x18 | erase the whole line, **stays in** — re-enter | — |
+| Ctrl-C | 0x03 | done, **silently**: no erase, no CRLF, no `<Cancel>` | **−2** |
+| printable | ≥ 0x20 | echo and append if room | — |
+
+No cursor movement, no history, no insert — strictly append and erase-from-the-end. Four
+gaps, all pre-existing and all shared with the debug menu:
+
+- **`\n` is not a terminator.** Only `\r`. A bare LF falls through every branch (it is
+  < 0x20) and is silently dropped, so a CRLF host is fine but a bare-LF one hangs forever.
+- **DEL (0x7F) is not handled, and it is ≥ 0x20** — so it is appended to the line as a
+  literal character and echoed. Any terminal whose Backspace key sends DEL rather than 0x08
+  has no working backspace at all.
+- **Arrow keys leave residue.** ESC hits the ESC branch and cancels the line; the `[` and `A`
+  that follow are still in the stream and get echoed into the *next* line. An Up-arrow costs
+  the current line **and** injects `[A` into the next one.
+- **Overflow is silent** — characters past the limit are dropped with no echo and no bell, so
+  it looks like the terminal stopped responding. (The SCRIPT reader is better here: it tracks
+  overflow and answers `TOOLONG`.)
+
+**The arrow-key gap is the one that must be fixed alongside W6**, not merely noted. It is
+pre-existing, but ESC's promotion to *exit* changes its price: a stray Up-arrow stops costing
+a line and starts costing the session. The fix is standard and small — on 0x1B, peek for a
+following `[` or `O` and swallow the final byte, treating only a **bare** ESC as the exit.
+It belongs in `i_getline()`, where it also stops arrow keys corrupting menu input. DEL is
+worth the same visit; the other two are ordinary bugs that can wait.
 - **Tests:** the `acon.py` driver already has `leave(how='sentinel'|'quit'|'cancel')`, which
   asserts all three routes produce the same `=~,BYE`. ESC becomes a fourth `how`.
 
