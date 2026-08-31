@@ -301,6 +301,34 @@ Event enable register    : C000 0884
 access is atomic on Cortex-M0+ (I2), so the worst an interrupt landing mid-`^=` sees is the
 before or the after value.
 
+#### Queue housekeeping — `[e]` `[F]` and the main menu's `[g]` gag
+
+Added 2026-08-30, closing the menu/acon asymmetry: the menu could arm events but could not
+see or clear the queue, which mattered once the console was allowed to be outrun.
+
+**`[e]` `[F]` — flush.** Consumption side only; the mask is untouched and the log resumes
+with the next event. **It reports 0 discarded most of the time and that is correct** — the
+menu drains every service pass, so the queue is empty whenever the console sits at a prompt.
+It has something to discard only for records queued while the menu was not draining (an acon
+session), and even then the 8-per-pass trickle clears a full ring in under a millisecond.
+Its value is the guarantee, not the count.
+
+**Main menu `[g]` — gag. Unconditional, not a toggle** (user, 2026-08-30: *"it's not a
+toggle - it's an unconditional CLEAR of the global event enable flag"*). Top level so it is
+one keystroke from anywhere when the log runs away with the console — and *not* a toggle
+precisely because in that state a toggle is a coin flip: press it twice and you are back
+where you started with no way to read the screen to find out. Pressing this twice leaves you
+quiet.
+
+- **Clears only bit 31.** Per-source arming survives, so `[e]`'s `[g]` restores exactly what
+  you had. Gagging is not disarming.
+- **Clear first, flush second.** Once bit 31 is down nothing new can be produced, so the
+  flush cannot race a producer and leave a straggler.
+- **It stops the logging, not the hardware.** A cycling run keeps running across a gag —
+  verified: `=R,L8,M8,R8` after the console went silent.
+- **Persists**, like every menu-side mask change. Verified end to end: gag, `P` → `W1`, soft
+  reset, `=A,M40000088` — global down, D auto + D manual + cycle-complete still armed.
+
 ---
 
 ### DEFECT — acon mask writes never reach NVM (S4 half-built)

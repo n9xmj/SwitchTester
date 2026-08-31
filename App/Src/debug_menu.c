@@ -53,6 +53,8 @@ static void v_cycle_stop_all(void);
 static void v_event_help_text(void);
 static void v_event_key_toggle(char c_key, uint8_t u8_index);
 static void v_event_dump(void);
+static void v_event_flush(void);
+static void v_event_gag(void);
 static void v_debug_nvm_dump(void);
 static void v_debug_nvm_erase(void);
 static void v_debug_soft_reset(void);
@@ -887,6 +889,74 @@ static void v_event_dump(void)
 }
 
 /*
+ * [F] in the event submenu -- discard whatever is queued.
+ *
+ * Consumption side only: the mask is untouched, so production carries straight
+ * on and the log resumes with the next event. This is "I do not care about the
+ * backlog", not "stop" -- [g] on the main menu is "stop".
+ *
+ * EXPECT IT TO REPORT 0 MOST OF THE TIME, and that is not a fault. The menu
+ * drains every service pass, so whenever the console is sitting at a prompt the
+ * queue is already empty. It has something to discard only when records were
+ * queued while the menu was NOT draining -- during an acon session, essentially
+ * -- and even then the 8-per-pass trickle clears a full ring in well under a
+ * millisecond once the menu is back. Its value is the guarantee, not the count:
+ * a deterministic empty before a measurement, and the human-side counterpart of
+ * acon's H,F.
+ */
+static void v_event_flush(void)
+{
+    uint16_t u16_discarded = u16_event_queue_count(&g_x_event_queue);
+
+    (void) x_event_queue_flush(&g_x_event_queue);
+
+    printf("Event queue flushed -- %u record(s) discarded\r\n",
+           (unsigned) u16_discarded);
+}
+
+/*
+ * [g] on the MAIN menu -- gag the event path. UNCONDITIONAL, not a toggle.
+ *
+ * Not a toggle on purpose. This is the key you reach for when the console is
+ * scrolling faster than you can read it, and in that state a toggle is a coin
+ * flip: press it twice and you are back where you started, with no way to tell
+ * from the screen which way it went. Pressing this twice leaves you quiet.
+ *
+ * It clears ONLY the global enable, so the per-source arming survives intact
+ * and [e]'s [g] puts back exactly what you had -- gagging is not disarming.
+ *
+ * Clear first, flush second. Once bit 31 is down nothing new can be produced,
+ * so the flush cannot race a producer and leave a straggler behind. The flush
+ * is needed at all because the backlog would otherwise keep printing for
+ * several passes after the source went quiet, which is the opposite of what
+ * somebody pressing a gag key wants.
+ *
+ * Persists, like every other mask change made from a menu: a gag that the next
+ * reset undoes is not much of a gag.
+ */
+static void v_event_gag(void)
+{
+    uint16_t u16_discarded = u16_event_queue_count(&g_x_event_queue);
+    bool     b_saved;
+
+    /* Whole-word clear rather than a bitfield assignment: ISRs read this
+     * register as one 32-bit load, and an aligned 32-bit store is atomic on
+     * Cortex-M0+. A volatile bitfield write is not guaranteed to be one. */
+    g_x_event_control.u32_all &= ~EVENT_MASK_GLOBAL_ENABLE;
+
+    b_saved = b_event_control_nvm_save();
+    (void) x_event_queue_flush(&g_x_event_queue);
+
+    printf("\r\nEVENT GAG -- global enable cleared, %u queued record(s) discarded.\r\n"
+           "Per-source arming is unchanged (register %04lX %04lX).\r\n"
+           "Re-enable from [e], key [g].%s\r\n",
+           (unsigned) u16_discarded,
+           (unsigned long) (g_x_event_control.u32_all >> 16),
+           (unsigned long) (g_x_event_control.u32_all & 0xFFFFUL),
+           b_saved ? "" : "\r\n*** NVM save FAILED -- the gag will not survive a reset ***");
+}
+
+/*
  * Switch-output submenu. The key-list entries are invisible to the menu help
  * printer (MENU_ITEM_KEY_LIST_FUNCTION never prints), so the key map has to be
  * spelled out in the fixed help text below.
@@ -1000,6 +1070,12 @@ static const menu_item_t x_event_menu[] =
         .c_key = 'p',
         .p_c_text = "Dump the event enable register",
         .pfn_function = v_event_dump
+    },
+    {
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = 'F',
+        .p_c_text = "Flush (clear) event queue",
+        .pfn_function = v_event_flush
     },
     {
         .x_type = MENU_ITEM_RETURN_TO_PREVIOUS_MENU,
@@ -1118,6 +1194,14 @@ static const menu_item_t x_debug_top_menu[] =
         .c_key = 'e',
         .p_c_text = "Event logging configuration",
         .p_x_menu = x_event_menu
+    },
+    {
+        /* Top level on purpose: it has to be reachable in one keystroke from
+         * wherever you are when the log runs away with the console. */
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = 'g',
+        .p_c_text = "GAG events (clear global enable + flush queue)",
+        .pfn_function = v_event_gag
     },
     {
         .x_type = MENU_ITEM_FUNCTION,
