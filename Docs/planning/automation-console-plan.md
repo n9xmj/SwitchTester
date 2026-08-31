@@ -120,8 +120,22 @@ The value is exactly that it needs no thinking. `0xA5` is not a key anyone can t
 Ctrl-C work but have to be recalled. ESC is what the hand does on its own, and it is already
 the return-from-submenu key throughout the debug menu.
 
-**ESC means three different things today**, which is the whole reason this is not a one-line
-change. Anyone building it starts here:
+**The mechanism already exists in both readers** (user, 2026-08-30): *"acon's
+getline-equivalent would be able to exit, returning an appropriate status, if an ESC was
+encountered in the input stream — just like how the console's `i_getline()` does it."*
+Correct, and an earlier draft of this row wrongly implied otherwise. `acon_line_t` **is** that
+pattern and `ACON_LINE_QUIT` is the status; ESC simply was never wired to it.
+
+- **SCRIPT:** `x_acon_read_script()` already has
+  `if ((uint8_t) i16_ch == ACON_EXIT) { return ACON_LINE_QUIT; }`. ESC is one added clause.
+- **HUMAN:** `i_getline()` **already returns a distinguishable ESC status**, and
+  `x_acon_read_human()` already receives it — then deliberately discards it (`i_length < 0`
+  → clear the line, return `ACON_LINE_OK`). Returning `ACON_LINE_QUIT` instead is one line.
+
+So the work is two one-line changes plus tests. What is left is a **policy** call, not a
+mechanism problem: see the HUMAN-mode note below.
+
+**ESC means three different things today.** Anyone building it starts here:
 
 | Context | ESC today |
 |---|---|
@@ -135,20 +149,27 @@ session afterwards.
 
 **Notes for whoever builds it:**
 
-- **SCRIPT mode is the easy, safe half.** Add ESC beside the `ACON_EXIT` check in
-  `x_acon_read_script()`. Ctrl-C is already a quit alias, so a control-character exit is
-  established precedent, and ESC is outside the 0x21..0x7E printable range reserved for
-  command opcodes — nothing is given up.
-- **HUMAN mode is the one that needs a decision**, because ESC there already has a job. The
-  obvious shape is two-tier: **ESC on an empty line exits the session, ESC on a non-empty
-  line clears it** — which is how plenty of shells behave and preserves both muscle memories.
-  Spamming still works: the first press clears, the second exits.
+- **SCRIPT mode is unambiguous.** One clause beside the `ACON_EXIT` check. Ctrl-C is already
+  a control-character quit alias, so the precedent is established, and ESC is outside the
+  0x21..0x7E printable range reserved for command opcodes — nothing is given up.
+- **HUMAN mode carries the only open decision:** does ESC *always* quit, or only on an empty
+  line?
+  - **Always quit** matches the debug menu, where ESC backs out a level unconditionally, and
+    is the purer muscle-memory answer. Cost: the existing ESC-clears-the-line editing
+    behaviour goes away, and the console stops sharing the menu's editing feel — which was
+    a deliberate choice, not an accident.
+  - **Two-tier — empty line exits, non-empty line clears** — preserves both behaviours and is
+    how many shells work. Spamming still gets you out: first press clears, second exits.
+    Costs one `i_getline()` call-site check on the returned length.
 - **`$` (echo raw text) loses the ability to carry an ESC byte.** Almost certainly fine; worth
   naming so it is a decision rather than a surprise.
 - **Pre-existing, not caused by this:** ESC is the lead byte of every arrow-key/ANSI sequence,
   and `i_getline()` already treats a bare 0x1B as cancel without consuming the rest. So arrow
-  keys already cancel a line in HUMAN mode. This wish does not create that; it would just
-  raise the stakes of it, which is another argument for the empty-line tier.
+  keys already cancel a line in HUMAN mode. This wish does not create that — but "always
+  quit" would upgrade a stray arrow key from *cancels your line* to *drops you out of the
+  session*, which is the strongest argument for the two-tier form.
+- **Tests:** the `acon.py` driver already has `leave(how='sentinel'|'quit'|'cancel')`, which
+  asserts all three routes produce the same `=~,BYE`. ESC becomes a fourth `how`.
 
 ---
 
