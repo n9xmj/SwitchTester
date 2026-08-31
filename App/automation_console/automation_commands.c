@@ -402,23 +402,41 @@ static void v_acon_op_persist(char c_op, char *pc_line)
  *==========================================================================*/
 
 /*
- * A[,mask] -- read or write the event production mask.
+ * A[,mask[,persist]] -- read or write the event production mask.
  *
- * With no argument this reads. With one it writes, and the reply echoes what
+ * With no argument this reads. With a mask it writes, and the reply echoes what
  * actually landed so a host never has to assume the write took. The value is
  * the whole event_control_t as one hex word: the global enable is bit 31, so
  * "0" is the disarm-everything shorthand.
  *
- * Deliberately NOT persisted here -- P is the existing persist-to-NVM op and
- * this stays consistent with the cycling parameters, which are also set live
- * and committed separately.
+ * A non-zero <persist> ALSO stores the register to the NVM pool, which is what
+ * makes arming survive a reset (plan S4). It is an explicit opt-in rather than
+ * automatic because a HIL suite rewrites this register dozens of times per run,
+ * and dirtying the pool on every one of those would turn a test pass into a
+ * string of flash erases. The host asks for the write it actually wants kept.
+ *
+ * An earlier revision of this comment claimed P alone was enough. It was wrong,
+ * and the bug outlived it: P commits whatever the pool's RAM shadow holds, and
+ * nothing on this path ever wrote the mask into that shadow, so a host-set mask
+ * was silently lost at every reset. See the DEFECT section in the plan doc.
+ *
+ * Both fields are optional and independent, so "A,,1" persists whatever the
+ * register currently holds -- useful after arming across several commands.
+ *
+ * W1 in the reply means the SHADOW was updated, NOT that flash was written; the
+ * erase happens on the pool's deferred auto-commit, or at the next P.
+ *
+ * Both fields are fully parsed before either is applied: a bad persist flag
+ * must not leave the mask half-written.
  */
 static void v_acon_op_event_mask(char c_op, char *pc_line)
 {
-    char    *ap_c_arg[1];
+    char    *ap_c_arg[2];
     char     ac_op[4];
-    uint8_t  u8_argc = u8_acon_args(pc_line, ap_c_arg, 1);
-    uint32_t u32_mask;
+    uint8_t  u8_argc      = u8_acon_args(pc_line, ap_c_arg, 2);
+    uint8_t  u8_have_mask = 0u;
+    uint32_t u32_mask     = 0UL;
+    uint32_t u32_persist  = 0UL;
 
     if ((u8_argc >= 1u) && (ap_c_arg[0][0] != '\0'))
     {
@@ -427,13 +445,35 @@ static void v_acon_op_event_mask(char c_op, char *pc_line)
             v_acon_err(c_op, ACON_ERR_ARGS);
             return;
         }
+        u8_have_mask = 1u;
+    }
 
+    if ((u8_argc >= 2u) && (ap_c_arg[1][0] != '\0'))
+    {
+        if (!b_acon_arg_u32(ap_c_arg[1], &u32_persist))
+        {
+            v_acon_err(c_op, ACON_ERR_ARGS);
+            return;
+        }
+    }
+
+    if (u8_have_mask)
+    {
         g_x_event_control.u32_all = u32_mask;
     }
 
-    v_acon_emit(ACON_SIG_OK, "%s,M%X",
+    if ((u32_persist != 0UL) && (!b_event_control_nvm_save()))
+    {
+        /* The live register still holds the new value -- only the persist
+         * failed. Say so rather than reporting success on a half-done job. */
+        v_acon_err(c_op, ACON_ERR_NVM);
+        return;
+    }
+
+    v_acon_emit(ACON_SIG_OK, "%s,M%X,W%X",
                 pc_acon_op_name(c_op, ac_op),
-                (unsigned) g_x_event_control.u32_all);
+                (unsigned) g_x_event_control.u32_all,
+                (unsigned) ((u32_persist != 0UL) ? 1u : 0u));
 }
 
 /*
@@ -1133,7 +1173,7 @@ const acon_op_t g_x_acon_command[] =
     { 'E', v_acon_op_errors,      "transport error count"        },
     { 'N', v_acon_op_nvm_test,    "nvm test: sub[,args]"         },
     { 'F', v_acon_op_eventq_test, "event queue (fifo) test: sub[,args]" },
-    { 'A', v_acon_op_event_mask,  "event mask: [hex] (bit31=global enable)" },
+    { 'A', v_acon_op_event_mask,  "event mask: [hex[,persist]] (bit31=global enable)" },
     { 'D', v_acon_op_event_drain, "drain events: [max] (0=all)"           },
     { 'H', v_acon_op_event_house, "event queue: [S=status,F=flush,R=reset]" },
     { 'Y', v_acon_op_spiflash,    "spi flash probe: [I=id,S=status,T=dma rw test,L=loopback,N=ncs lb,J=sck lb,C[,0|1]=park cs,K=clock burst] (temp)" },

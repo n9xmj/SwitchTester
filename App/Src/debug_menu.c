@@ -25,6 +25,7 @@
 #include "nvm_list.h"                /* x_nvm_list() pool dump -- not part of the module */
 #include "globals.h"                 /* g_x_nvm_param */
 #include "automation_console.h"      /* Host/script command interface */
+#include "app_events.h"              /* Event queue + record layout (human sink) */
 
 /*============================================================================
  * PRIVATE PROTOTYPES
@@ -49,6 +50,9 @@ static void v_cycle_help_text(void);
 static void v_cycle_key_param(char c_key, uint8_t u8_index);
 static void v_cycle_key_startstop(char c_key, uint8_t u8_index);
 static void v_cycle_stop_all(void);
+static void v_event_help_text(void);
+static void v_event_key_toggle(char c_key, uint8_t u8_index);
+static void v_event_dump(void);
 static void v_debug_nvm_dump(void);
 static void v_debug_nvm_erase(void);
 static void v_debug_soft_reset(void);
@@ -702,6 +706,186 @@ static void v_debug_soft_reset(void)
  * MENU DEFINITION
  *==========================================================================*/
 
+/* ---------------------------------------------------------------------------
+ * Event-logging configuration submenu.
+ *
+ * Every line is a toggle on one bit of g_x_event_control, the production mask
+ * described in app_events.h. The mask gates events at PRODUCTION -- a bit that
+ * is off means those records never enter the queue at all, so this menu is the
+ * cheapest control in the system, not a display filter.
+ *
+ * ONE table drives three consumers -- the menu listing, the toggle handler and
+ * the register dump -- so a bit cannot be renamed in one view and not another.
+ * It is in ascending bit order, which groups the channels the way the register
+ * does; the dump walks it backwards to get the descending order a datasheet
+ * would print.
+ *
+ * EVENT_TOGGLE_KEYS is positionally tied to that table: the key-list handler
+ * receives the index of the key that matched and uses it as the table index, so
+ * the two must stay the same length and the same order. Keeping the keys in one
+ * string rather than a per-row member is what makes that relationship checkable
+ * at a glance -- and the _Static_assert below makes it checkable at build time.
+ *
+ * Key choice follows the switch-output submenu: lowercase/uppercase/shifted
+ * splits one concept three ways across the same four channel positions.
+ * ------------------------------------------------------------------------- */
+
+#define EVENT_TOGGLE_KEYS       "ABCD" "abcd" "!@#$" "y" "g"
+
+typedef struct
+{
+    uint8_t     u8_bit;
+    const char *pc_label;
+}
+event_mask_row_t;
+
+static const event_mask_row_t x_event_mask_row[] =
+{
+    {  0, "Switch A auto events"         },
+    {  1, "Switch B auto events"         },
+    {  2, "Switch C auto events"         },
+    {  3, "Switch D auto events"         },
+    {  4, "Switch A manual events"       },
+    {  5, "Switch B manual events"       },
+    {  6, "Switch C manual events"       },
+    {  7, "Switch D manual events"       },
+    {  8, "Sense A events"               },
+    {  9, "Sense B events"               },
+    { 10, "Sense C events"               },
+    { 11, "Sense D events"               },
+    { 30, "Switch cycle-complete events" },
+    { 31, "GLOBAL event enable"          },
+};
+
+#define EVENT_MASK_ROW_COUNT    (sizeof(x_event_mask_row) / sizeof(x_event_mask_row[0]))
+
+/* sizeof() on the string literal counts its NUL, hence the -1. */
+_Static_assert(sizeof(EVENT_TOGGLE_KEYS) - 1u == EVENT_MASK_ROW_COUNT,
+               "EVENT_TOGGLE_KEYS must have exactly one key per x_event_mask_row "
+               "entry, in the same order -- the key-list index IS the row index");
+
+/* Reserved field: bits 12..29, the _u32_unused member of event_control_t. */
+#define EVENT_RESERVED_MASK     0x3FFFF000UL
+#define EVENT_RESERVED_SHIFT    12U
+
+/* Column width shared by the menu listing and the dump, so the two line up
+ * with each other and not just internally. */
+#define EVENT_LABEL_WIDTH       "32"
+
+static const char * pc_event_state(uint32_t u32_mask, uint8_t u8_bit)
+{
+    return ((u32_mask >> u8_bit) & 1UL) ? "Enabled" : "Disabled";
+}
+
+static void v_event_help_text(void)
+{
+    uint32_t u32_mask = g_x_event_control.u32_all;
+    uint8_t  u8_i;
+
+    v_newline();
+
+    for (u8_i = 0; u8_i < EVENT_MASK_ROW_COUNT; u8_i++)
+    {
+        const event_mask_row_t *p_x_row = &x_event_mask_row[u8_i];
+
+        /* A blank line between the groups the register itself defines: the
+         * four auto bits, the four manual bits, the four sense bits, then the
+         * two globals. */
+        if ((u8_i != 0) && ((u8_i % 4u) == 0u))
+        {
+            v_newline();
+        }
+
+        printf("[%c] %-" EVENT_LABEL_WIDTH "s: %s\r\n",
+               EVENT_TOGGLE_KEYS[u8_i],
+               p_x_row->pc_label,
+               pc_event_state(u32_mask, p_x_row->u8_bit));
+    }
+
+    v_newline();
+}
+
+static void v_event_key_toggle(char c_key, uint8_t u8_index)
+{
+    const event_mask_row_t *p_x_row;
+    bool b_saved;
+
+    (void) c_key;
+
+    if (u8_index >= EVENT_MASK_ROW_COUNT)
+    {
+        return;                     /* cannot happen; the assert above binds */
+    }
+
+    p_x_row = &x_event_mask_row[u8_index];
+
+    /* Read-modify-write of a whole 32-bit word. ISRs only ever READ this
+     * register, and an aligned 32-bit access is atomic on Cortex-M0+, so the
+     * worst an interrupt landing mid-sequence sees is the before or the after
+     * value -- never a half-applied one. No critical section needed. */
+    g_x_event_control.u32_all ^= (1UL << p_x_row->u8_bit);
+
+    /* Arming is sticky across reset (plan S4). This updates the pool's RAM
+     * shadow; the deferred auto-commit in v_timer_update() does the flash
+     * write, which is what stops a run of toggles becoming a run of erases.
+     *
+     * The menu persists unconditionally, unlike the acon path where it is an
+     * explicit per-command opt-in: a human toggling a bit means it, and does so
+     * a handful of times rather than dozens per test run. */
+    b_saved = b_event_control_nvm_save();
+
+    printf("%-" EVENT_LABEL_WIDTH "s: %s%s\r\n",
+           p_x_row->pc_label,
+           pc_event_state(g_x_event_control.u32_all, p_x_row->u8_bit),
+           b_saved ? "" : "   *** NVM save FAILED, not sticky across reset ***");
+}
+
+/*
+ * Register dump: one line per defined bit, highest first, then the raw value.
+ *
+ * The reserved field gets one row rather than eighteen -- printing 18 lines of
+ * "(reserved) 0" would bury the 14 rows that carry information. Its value is
+ * shown, not assumed, because a non-zero there means something wrote the
+ * register with a stale or foreign layout and that is worth seeing.
+ */
+static void v_event_dump(void)
+{
+    uint32_t u32_mask = g_x_event_control.u32_all;
+    uint8_t  u8_i;
+
+    printf("\r\nEvent enable register bitmap\r\n\r\n"
+           "  %5s  %-10s  %-" EVENT_LABEL_WIDTH "s %s\r\n"
+           "  %5s  %-10s  %-" EVENT_LABEL_WIDTH "s %s\r\n",
+           "Bit", "Mask", "Field", "State",
+           "-----", "----------", "--------------------------------", "--------");
+
+    for (u8_i = EVENT_MASK_ROW_COUNT; u8_i > 0u; u8_i--)
+    {
+        const event_mask_row_t *p_x_row = &x_event_mask_row[u8_i - 1u];
+
+        if (p_x_row->u8_bit == (EVENT_RESERVED_SHIFT - 1u))
+        {
+            printf("  %5s  0x%08lX  %-" EVENT_LABEL_WIDTH "s %lu\r\n",
+                   "29-12", (unsigned long) EVENT_RESERVED_MASK, "(reserved)",
+                   (unsigned long) ((u32_mask & EVENT_RESERVED_MASK)
+                                    >> EVENT_RESERVED_SHIFT));
+        }
+
+        printf("  %5u  0x%08lX  %-" EVENT_LABEL_WIDTH "s %s\r\n",
+               (unsigned) p_x_row->u8_bit,
+               (unsigned long) (1UL << p_x_row->u8_bit),
+               p_x_row->pc_label,
+               pc_event_state(u32_mask, p_x_row->u8_bit));
+    }
+
+    /* Two 16-bit halves rather than one 32-bit field: at a glance it separates
+     * the two global bits in the high half from the per-source bits in the low
+     * half, which is how the register is actually reasoned about. */
+    printf("\r\nEvent enable register    : %04lX %04lX\r\n",
+           (unsigned long) (u32_mask >> 16),
+           (unsigned long) (u32_mask & 0xFFFFUL));
+}
+
 /*
  * Switch-output submenu. The key-list entries are invisible to the menu help
  * printer (MENU_ITEM_KEY_LIST_FUNCTION never prints), so the key map has to be
@@ -769,6 +953,55 @@ static const menu_item_t x_switch_menu[] =
     {
         /* ESC is the canonical return-from-submenu key throughout. The framework
          * already renders 0x1B as "ESC" via pc_char_to_str(). */
+        .x_type = MENU_ITEM_RETURN_TO_PREVIOUS_MENU,
+        .c_key = 0x1B,
+        .p_c_text = "Return to previous menu"
+    },
+    {
+        .x_type = MENU_ITEM_END_OF_LIST,
+    }
+};
+
+/*
+ * Event-logging submenu. Like the cycling menu, every toggle line is drawn by
+ * v_event_help_text() so it can show its live state; the keys are bound by the
+ * single key-list entry, which prints nothing of its own.
+ */
+static const menu_item_t x_event_menu[] =
+{
+    {
+        .x_type = MENU_ITEM_HELP_TEXT_FIXED,
+        .c_key = 0,
+        .p_c_text = "\r\n--- Event logging configuration (production mask) ---"
+    },
+    {
+        .x_type = MENU_ITEM_HELP_TEXT_VARIABLE,
+        .c_key = 0,
+        .p_c_text = NULL,
+        .pfn_help_text_function = v_event_help_text
+    },
+    {
+        .x_type = MENU_ITEM_HELP,
+        .c_key = '?',
+        .p_c_text = NULL
+    },
+    {
+        .x_type = MENU_ITEM_HELP_HIDDEN,
+        .c_key = '\r',
+        .p_c_text = NULL
+    },
+    {
+        .x_type = MENU_ITEM_KEY_LIST_FUNCTION,
+        .p_c_key_list = EVENT_TOGGLE_KEYS,
+        .pfn_key_list_function = v_event_key_toggle
+    },
+    {
+        .x_type = MENU_ITEM_FUNCTION,
+        .c_key = 'p',
+        .p_c_text = "Dump the event enable register",
+        .pfn_function = v_event_dump
+    },
+    {
         .x_type = MENU_ITEM_RETURN_TO_PREVIOUS_MENU,
         .c_key = 0x1B,
         .p_c_text = "Return to previous menu"
@@ -881,6 +1114,12 @@ static const menu_item_t x_debug_top_menu[] =
         .p_x_menu = x_cycle_menu
     },
     {
+        .x_type = MENU_ITEM_CALL_MENU,
+        .c_key = 'e',
+        .p_c_text = "Event logging configuration",
+        .p_x_menu = x_event_menu
+    },
+    {
         .x_type = MENU_ITEM_FUNCTION,
         .c_key = 'a',
         .p_c_text = "Automation console (human-driven)",
@@ -951,6 +1190,92 @@ static void v_debug_menu_exec(char c_key)
     v_menu_exec(&x_debug_menu_control, c_key);
 }
 
+/*============================================================================
+ * EVENT LOG -- the human-side sink
+ *
+ * The other half of the XOR sink model: acon active -> the host drains with the
+ * D command; menu active -> this drains. Which one runs is decided structurally
+ * rather than by a mode flag, and the mechanism is subtler than it looks --
+ * see the comment at the call site in v_debug_menu_service().
+ *
+ * Draining is UNCONDITIONAL and emission is separate. Whatever the logging tier
+ * or the class table say, every record that comes out is consumed, because the
+ * alternative is a ring that fills up and starts charging the drop counter for
+ * events nobody asked to see.
+ *==========================================================================*/
+
+/* Records drained per service pass. An unbounded drain would hold the polling
+ * loop for the length of whatever backlog it found -- and there is a real way
+ * to accumulate one: an acon session that arms the mask, runs a soak and exits
+ * without issuing D leaves up to ~512 records behind for the menu to inherit.
+ * A small batch trickles that out over successive passes instead, and the pass
+ * rate is orders of magnitude above any event rate the switch path can produce.
+ */
+#define EVENT_LOG_BATCH                 8
+
+/*
+ * Class -> display label. NULL for anything this table does not know, which is
+ * the "no log emission for classes not defined yet" rule: an unrecognised
+ * record is still consumed, just not printed.
+ */
+static const char * pc_event_class_name(uint16_t u16_class)
+{
+    switch ((event_class_t) u16_class)
+    {
+        case EVENT_CLASS_SWITCH_MANUAL:         return "SW-Man";
+        case EVENT_CLASS_SWITCH_AUTO:           return "SW-Auto";
+        case EVENT_CLASS_SWITCH_CYCLE_COMPLETE: return "SW-Done";
+        case EVENT_CLASS_SENSE_LEVEL:           return "Sense";
+        default:                                return NULL;
+    }
+}
+
+static void v_event_log_drain(void)
+{
+    uint8_t u8_i;
+
+    for (u8_i = 0; u8_i < EVENT_LOG_BATCH; u8_i++)
+    {
+        switch_event_data_t  x_data;
+        event_queue_record_t x_record =
+        {
+            .u16_buf_size = (uint16_t) sizeof(x_data),
+            .pv_data      = &x_data
+        };
+        event_queue_status_t x_status;
+        const char          *pc_name;
+
+        x_status = x_event_queue_get(&g_x_event_queue, &x_record);
+
+        /* EQ_STATUS_EMPTY ends the batch; so does NOT_INIT, which is what a
+         * v_debug_delay() spin sees if one ever runs before the queue exists.
+         * TRUNCATED is not a failure -- the record came out, only an oversized
+         * payload was clipped, and every payload here is one size. */
+        if ((x_status != EQ_OK) && (x_status != EQ_STATUS_TRUNCATED))
+        {
+            break;
+        }
+
+        pc_name = pc_event_class_name(x_record.u16_id);
+        if (pc_name == NULL)
+        {
+            continue;               /* consumed, deliberately not printed */
+        }
+
+        /* %lu + an explicit (unsigned long) cast on the 32-bit members: it is
+         * correct whether the toolchain's uint32_t is unsigned int or unsigned
+         * long, which %u is not. The 16-bit members promote to int, so %X with
+         * (unsigned) is the right pair for those. */
+        LOGCT(LOG_EVENT, "%04X %-8s ID:%c-%02X Tick:%-8lu TIM:%-8lu",
+              (unsigned) x_record.u16_id,
+              pc_name,
+              pc_switch_out_name(x_data.u8_channel)[0],
+              (unsigned) x_data.u16_state,
+              (unsigned long) x_data.u32_tick,
+              (unsigned long) x_data.u32_tim_count);
+    }
+}
+
 void v_debug_menu_service(void)
 {
     static uint8_t u8_reentry_lock;
@@ -990,6 +1315,18 @@ void v_debug_menu_service(void)
         v_debug_menu_exec((char) i_key);
     }
     while (1);
+
+    /* Human-side event drain. Inside the re-entry lock ON PURPOSE, and this is
+     * load-bearing: ACON_PUMP() calls v_app_polling_task() on every spin of the
+     * console's line reader, so an acon session re-enters this function
+     * thousands of times per second. The lock turns those calls around at the
+     * top, which is the only thing keeping the menu sink from eating the very
+     * records the host's D command came to collect.
+     *
+     * Placed after the input loop rather than before it so that a menu key that
+     * drives a switch gets its events printed in the same pass that handled the
+     * key, not the next one. */
+    v_event_log_drain();
 
     u8_reentry_lock = 0;
 }

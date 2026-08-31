@@ -61,10 +61,17 @@ CLASS_NAME = {
 # ---------------------------------------------------------------------------
 # Test channels.
 #
-# SWITCH_A (channel 0) is DELIBERATELY NOT USED. It drives the user's DUT on
-# this bench, so a test run must not move it -- not even to force it low during
-# quiesce. Everything here works on SWITCH_D, with SWITCH_C as the second
+# SWITCH_A (channel 0) is DELIBERATELY NOT USED by this suite. It drives the
+# DUT on this bench, so a run here stays off it -- not even forcing it low
+# during quiesce. Everything works on SWITCH_D, with SWITCH_C as the second
 # channel where a test needs to contrast an armed source with a masked one.
+#
+# This is a CONVENTION for this suite, not a rule (user, 2026-08-30). Nothing in
+# the firmware restricts channel 0, and nothing should: HIL tests and ordinary
+# acon scripts are entitled to drive all four channels. test_acon.py does drive
+# SWITCH_A, on purpose -- its select-all/clear-all bitmap tests are exactly what
+# narrowing the mask would stop testing. The convention is worth keeping HERE
+# because this suite has no equivalent need.
 # ---------------------------------------------------------------------------
 
 CH_PRI = 3                      # SWITCH_D -- the workhorse
@@ -82,12 +89,13 @@ CH_SEC = 2                      # SWITCH_C -- second channel, DELIBERATE
 #
 # Expect ~2 single blinks plus one brief flicker on SWITCH_C per full run. Note
 # each output also drives a CD4066 control input, not just an indicator LED, so
-# a blink briefly closes an analog switch -- harmless here, but the reason
-# SWITCH_A (the DUT channel) is never touched at all.
+# a blink briefly closes an analog switch -- harmless here, and the reason this
+# suite leaves SWITCH_A (the DUT channel) alone when it has no need to move it.
 
 CH_SAFE_MASK = 0xE              # channels 1..3: everything except SWITCH_A
 
 M_PRI_MANUAL = M_SW_D_MANUAL
+M_PRI_AUTO   = M_SW_D_AUTO
 M_SEC_MANUAL = M_SW_C_MANUAL
 
 TESTS = []
@@ -150,13 +158,31 @@ def mask_read(con):
     return frame.tokens['M']
 
 
-def mask_write(con, value):
-    """Write the mask; returns what the device echoes back."""
-    frame = con.command('A,%X' % value)
-    check(frame is not None and frame.ok, "A,%X failed: %r"
-          % (value, frame.raw if frame else None))
+def mask_write(con, value, persist=None):
+    """Write the mask; returns what the device echoes back.
+
+    persist=None sends the one-field form (live register only, no NVM); pass 0
+    or 1 to exercise the explicit persist flag. Non-zero stores the register to
+    the pool's RAM shadow -- the flash write itself is the deferred auto-commit,
+    or the next P."""
+    text = 'A,%X' % value if persist is None else 'A,%X,%X' % (value, persist)
+    frame = con.command(text)
+    check(frame is not None and frame.ok, "%s failed: %r"
+          % (text, frame.raw if frame else None))
     check('M' in frame.tokens, "A reply %r has no M token" % frame.raw)
+    check('W' in frame.tokens, "A reply %r has no W token" % frame.raw)
+    check(frame.tokens['W'] == (1 if persist else 0),
+          "%s reported W%d" % (text, frame.tokens['W']))
     return frame.tokens['M']
+
+
+def persist(con):
+    """P -- returns 1 if a change was committed to flash, 0 for NO_CHANGE."""
+    frame = con.command('P')
+    check(frame is not None and frame.ok, "P failed: %r"
+          % (frame.raw if frame else None))
+    check('W' in frame.tokens, "P reply %r has no W token" % frame.raw)
+    return frame.tokens['W']
 
 
 def arm(con, bits):
@@ -602,11 +628,57 @@ def t_auto_complete_only(con):
 def t_nvm_persist(con):
     quiesce(con)
     want = M_PRI_MANUAL | M_SW_C_AUTO | M_CYCLE_COMPLETE | M_GLOBAL
-    mask_write(con, want)
-    con.command('P')
+    mask_write(con, want, persist=1)
     check(mask_read(con) == want, "mask changed across a persist")
     disarm(con)
-    con.command('P')                        # leave the board disarmed on disk
+    mask_write(con, 0, persist=1)           # leave the board disarmed on disk
+    persist(con)
+
+
+@test("nvm: the persist flag is what reaches flash, not the write")
+def t_nvm_persist_flag_gates(con):
+    """Regression for the defect this flag was added to fix.
+
+    Until 2026-08-30 the A command wrote only the live register, so a host-set
+    mask was silently lost at every reset and P had nothing to commit. The old
+    version of the test above could not catch it: it re-read the LIVE register
+    after P, which was never at risk.
+
+    P's W token is the in-band proof. W1 means the shadow genuinely differed
+    from what is stored and got written; W0 means nothing was dirty. So a
+    persisting write must be followed by W1, and a non-persisting one by W0."""
+    quiesce(con)
+    persist(con)                            # commit anything an earlier test dirtied
+
+    want = M_PRI_AUTO | M_GLOBAL
+    mask_write(con, want, persist=1)
+    check(persist(con) == 1,
+          "P reported no change after a persisting mask write -- "
+          "the value never reached the NVM shadow")
+
+    # Same command without the flag: the live register moves, the shadow must not.
+    mask_write(con, want | M_SEC_MANUAL)
+    check(persist(con) == 0,
+          "P committed a change after a NON-persisting mask write -- "
+          "the persist flag is not gating")
+
+    # "A,,1" -- persist whatever is live, without restating it.
+    frame = ok(con, 'A,,1')
+    check(frame.tokens['M'] == (want | M_SEC_MANUAL),
+          "A,,1 altered the mask: %#010x" % frame.tokens['M'])
+    check(frame.tokens['W'] == 1, "A,,1 reported W%d" % frame.tokens['W'])
+    check(persist(con) == 1, "A,,1 did not dirty the shadow")
+
+    # A bad persist field is refused, and refused BEFORE the mask is applied.
+    before = mask_read(con)
+    frame = con.command('A,0,zz')
+    check(frame is not None and not frame.ok, "A,0,zz was accepted")
+    check(mask_read(con) == before,
+          "A,0,zz was rejected but still moved the mask")
+
+    disarm(con)
+    mask_write(con, 0, persist=1)
+    persist(con)
 
 
 # ---------------------------------------------------------------------------

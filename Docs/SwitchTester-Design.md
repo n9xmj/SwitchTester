@@ -388,9 +388,17 @@ software merely claiming it does. Decision log:
 
 `App/{Inc,Src}/automation_console.*`. Named for what it is: **not** a test
 harness but the interface *for* one, and not test-only — it is how an external
-host drives the instrument. Full decision log:
+host drives the instrument.
+
+> **Using it: [`acon-reference.md`](acon-reference.md)** — the reference manual. Every op with
+> its syntax, reply tokens and failure modes, plus session entry/exit, frame grammar, worked
+> sequences and the host driver. **Keep it current in the same change that alters an op, the
+> protocol or a documented limit.**
+
+Full decision log:
 [`planning/automation-console-plan.md`](planning/automation-console-plan.md)
-(30 green, 9 deferred to phase 2, no open rows).
+(30 green, 9 deferred to phase 2, no open rows) — that is the *why*; the reference above is
+the *how*.
 
 Entered from the debug menu — the `ACON_ENTER` (0xDA) sentinel selects SCRIPT
 mode, the `[a]` menu key selects HUMAN mode — so the entry path carries the

@@ -7,18 +7,20 @@ commit to them.
 
 **Code home:** application-side event production in `App/{Inc,Src}/switch_out.*` — all
 low-level switch manipulation stays in that one module (I7); consumption at
-[automation_console.c:517](../../App/automation_console/automation_console.c:517)
-(`v_acon_flush_events()`) and [app_main.c:390](../../App/Src/app_main.c:390)
-(`v_app_polling_task()`). The queue itself is the already-vendored `App/event_queue/` and
-is **not** modified by this work.
+the `D` handler in `App/automation_console/automation_commands.c` (acon) and
+`v_event_log_drain()` in `App/Src/debug_menu.c` (human). Neither landed at the address this
+row first predicted — see *Sink selection* below for why the menu drain moved out of
+`v_app_polling_task()`. The queue itself is the already-vendored `App/event_queue/` and is
+**not** modified by this work.
 
 **Parent spec:** [`../SwitchTester-Design.md`](../SwitchTester-Design.md) (sync after
 decisions land). **Entry point / source of scope:**
 [`switchtester-roadmap.md`](switchtester-roadmap.md).
 
 **Status:** **PROVING SUBSET COMPLETE AND BENCH-VERIFIED** (2026-08-30) — switch events
-produced into `event_queue` and consumed end-to-end over acon, `test_events.py` 22/22 on
-hardware. Remaining: the menu-side human consumer (D2/I6) and monitor mode (D1 phase 2).
+produced into `event_queue` and consumed end-to-end through **both** sinks: the commanded
+acon drain (`test_events.py` 23/23) and the human log in the debug menu. Remaining: acon
+monitor mode (D1 phase 2).
 **Working mode:** the user relays design in chat; one question at a time; the board holds
 everything else. Per [`decision-log-model.md`](decision-log-model.md).
 
@@ -39,11 +41,11 @@ sense events (task 1 gates those), no per-cycle duty lists (task 4). What it mus
 is the set of unknowns every later task inherits — ISR-context enqueue cost, the deferral
 rule, the arming model, and mode-handover behaviour.
 
-**Where the board stands.** The path is **proven end to end on hardware**: the production
-mask, the record, the queue instance, both producer hooks and the commanded acon consumer
-are built and covered by 22 passing HIL tests. What remains is the *second* sink — the
-human-readable log drained by the polling task (D2, I6) — and acon **monitor mode**, which
-is fully designed and unbuilt.
+**Where the board stands.** The path is **proven end to end on hardware, through both
+sinks**: the production mask, the record, the queue instance, both producer hooks, the
+commanded acon consumer and the human log are built; 23 passing HIL tests cover the acon
+half and the log lines were read off the wire for all three switch classes. What remains is
+acon **monitor mode**, which is fully designed and unbuilt.
 
 ---
 
@@ -53,7 +55,7 @@ is fully designed and unbuilt.
 |----|--------|--------------------|
 | S1 | 🟢 | Mask **NVM default** is 0 / all-disabled; boot mask is the restored value (see S4) |
 | S2 | 🟢 | Flags persist across handover; ONE mask set shared by both interfaces |
-| S3 | 🟢 | Both surfaces control it — acon in this slice, debug-menu tooling eventually |
+| S3 | 🟢 | Both surfaces control it — acon ops A/D/H, and the `[e]` debug submenu |
 | S4 | 🟢 | Mask register **is** stored in and restored from NVM |
 | S5 | 🟢 | Pool-label ownership check; label is `"SwitchTester"`; mismatch → wipe and re-default |
 | S6 | 🟢 | Defer the mask's `x_nvm_get()` until after switch/sense init; register starts 0 |
@@ -63,20 +65,20 @@ is fully designed and unbuilt.
 | S7 | 🟢 | Emit on every level **request**, even a redundant one — no change-filtering |
 | S8 | 🟢 | Drop reporting is the side-channel counter only — no synthetic in-band record |
 | D1 | 🟢 | Sync drain BUILT: ops A (mask) / D (drain) / H (housekeeping); monitor still to build |
-| I6 | 🟡 | acon drain BUILT (commanded). Menu-side drain and the async hook still open |
-| D2 | 🔴 | Human log line format and its verbosity tier/class |
+| I6 | 🟢 | BOTH drains built: acon commanded `D`, menu batch of 8 in `v_debug_menu_service()` |
+| D2 | 🟢 | `LOG_EVENT` @ INFO, tag `EVENT`, bright white; one line per record |
 | I4 | 🟢 | Record struct (12 B) and the 16-bit event-type/class ID |
 | I5 | 🟢 | Queue instance: static 8 KB buffer, created at init, never destroyed; lock-fn pair |
 | I7 | 🟢 | No wrapper layer: header for types, stack record, direct `x_event_queue_put()` |
 | I8 | 🟢 | TIM2 ISR order: capture `CCRx` → reschedule → put. 6 µs worst-case ISR budget |
 | T1 | 🟢 | Skeleton back-port DONE — placeholder label, the check, and a boot warning |
-| T2 | 🟢 | `scripts/hil/test_events.py` — **22/22 green on hardware**; acon 47, eventq 20, nvm 28 still green |
+| T2 | 🟢 | `scripts/hil/test_events.py` — **23/23 green on hardware**; acon 47, eventq 20, nvm 28 still green |
 
 ---
 
 ## Implementation status — producer side BUILT and VERIFIED (2026-08-30)
 
-Flashed and exercised on the bench; covered by `test_events.py` (22/22).
+Flashed and exercised on the bench; covered by `test_events.py` (23/23).
 
 | File | What landed |
 |---|---|
@@ -135,14 +137,13 @@ Three things worth recording:
 project forked from this one changes `PRODUCT_NAME` as a matter of course and inherits a
 distinct pool label for free, which is precisely the property S5's check relies on.
 
-**Not yet done:** the menu-side human sink (D2, and I6's polling-task half) and acon
-monitor mode.
+**Not yet done:** acon monitor mode.
 
 ---
 
 ## Consumer side — sync drain BUILT and BENCH-VERIFIED (2026-08-30)
 
-**22/22 on hardware**, and the three existing suites are still green (acon 47, eventq 20,
+**23/23 on hardware**, and the three existing suites are still green (acon 47, eventq 20,
 nvm 28). The produce-and-consume path is proven end to end: switch transitions produced in
 ISR and main context, gated by the persisted mask, drained over the console.
 
@@ -223,6 +224,152 @@ Leave the call site in place rather than deleting it: it is one empty static, it
 where async output *would* be legal under S7's deferral rule, and monitor mode may yet want
 that position. Worth revisiting only if the console module is ever tidied.
 
+### Sink selection is the re-entry lock, not the polling task
+
+**Found while building the menu drain, and it invalidates the obvious siting.** The
+roadmap's sink model says console ownership is exclusive, so a drain in
+`v_app_polling_task()` should be safe. **It is not.** `ACON_PUMP()` is wired to
+`PUMP_POLLING_TASK()`
+([automation_console_config.h:30](../../App/Inc/automation_console_config.h:30)), and the
+console's line reader calls it on **every spin**
+([automation_console.c:439](../../App/automation_console/automation_console.c:439)) so that
+jobs, cycling and the watchdog keep running while a host session is open. A drain in the
+polling task would therefore run thousands of times per second *during* an acon session and
+eat the very records the host's `D` command came to collect. Both sinks would be live at
+once, which is exactly what the model forbids.
+
+**What is actually exclusive is `v_debug_menu_service()`'s re-entry lock.** acon is entered
+from inside that function with the lock held, so the nested calls arriving via `ACON_PUMP()`
+turn around at the top. Siting the drain inside the lock — after the input loop, before the
+release — gets the XOR for free and adds no new state:
+
+```
+app_main → v_app_polling_task → v_debug_menu_service   [lock := 1]
+                                   └─ v_automation_console_run
+                                        └─ x_acon_read_script → ACON_PUMP()
+                                             └─ v_app_polling_task
+                                                  └─ v_debug_menu_service  [lock held → return]
+```
+
+That lock was already documented in `debug_menu.c` as *"load-bearing, not tidiness"* for a
+different reason — stopping the nested call from stealing console input. It turns out to be
+the console-ownership token for the event path as well.
+
+**Placed after the input loop**, not before it, so a menu key that drives a switch gets its
+events printed in the same pass that handled the key.
+
+**The acon tests are the proof.** `drain: consumes`, `house: status reports queue depth
+without consuming` and `house: put counter tracks produced events` all measure queue depth
+across a round trip; if the menu sink were reachable during a session they would fail. They
+pass.
+
+### The `[e]` event-logging submenu (S3's menu half)
+
+Built 2026-08-30 to the user's relayed shape. `[e]` off the main menu; every line is a
+toggle on one bit of `g_x_event_control`, showing its live state, plus `[p]` to dump the
+register.
+
+**Keys follow the switch-output submenu's convention** — the same four channel positions
+split three ways by case and shift: `ABCD` auto, `abcd` manual, `!@#$` sense, plus `y`
+cycle-complete and `g` global enable.
+
+**One table drives three consumers.** `x_event_mask_row[]` (ascending bit order) is read by
+the menu listing, the toggle handler and the dump, so a bit cannot be renamed in one view
+and not another. The dump walks it backwards for descending datasheet order.
+`EVENT_TOGGLE_KEYS` is positionally tied to that table — the key-list handler uses the
+matched key's index directly as the row index — and a `_Static_assert` on the two lengths
+makes that relationship a build error rather than a silent off-by-one.
+
+**The dump gives the reserved field one row, not eighteen**, and prints its *value* rather
+than assuming zero: a non-zero there means something wrote the register with a stale or
+foreign layout, which is exactly the case worth seeing.
+
+```
+    Bit  Mask        Field                            State
+  -----  ----------  -------------------------------- --------
+     31  0x80000000  GLOBAL event enable              Enabled
+     30  0x40000000  Switch cycle-complete events     Enabled
+  29-12  0x3FFFF000  (reserved)                       0
+     11  0x00000800  Sense D events                   Enabled
+      ...
+      0  0x00000001  Switch A auto events             Disabled
+
+Event enable register    : C000 0884
+```
+
+**Toggling needs no critical section.** ISRs only read the register, and an aligned 32-bit
+access is atomic on Cortex-M0+ (I2), so the worst an interrupt landing mid-`^=` sees is the
+before or the after value.
+
+---
+
+### DEFECT — acon mask writes never reach NVM (S4 half-built)
+
+**Found 2026-08-30 while wiring the menu toggle to `v_event_control_nvm_save()`:** that
+function **had no callers at all.** S4 decided the mask is persisted; the save was written
+and never wired to a command surface.
+
+The menu path is now correct and proven — toggle `g`, wait out the 5 s deferred commit, soft
+reset, and the register comes back `8000 0000`. **The acon path is not:**
+
+```
+  A,80000000     -> =A,M80000000      live register set
+  P              -> =P,W0             W0 = NO_CHANGE -- the shadow was never dirtied
+  A              -> =A,M80000000      still set, in RAM only
+  [soft reset]
+  A              -> =A,M0             gone
+```
+
+`v_acon_op_event_mask()` writes `g_x_event_control.u32_all` and stops. Nothing calls
+`x_nvm_set()`, so `P` has nothing to commit.
+
+**`test_events.py::nvm: mask survives a persist and is readable back` passes vacuously.** It
+writes the mask, issues `P`, and reads the mask back — but the read returns the *live*
+register, which was never at risk. It cannot fail. The `W0` in the trace above is the tell
+the test already had available and did not assert on.
+
+#### FIXED 2026-08-30 — `A[,mask[,persist]]`, an explicit per-command opt-in
+
+**Resolution (user, 2026-08-30):** *"a second optional parameter, 0 or 1, that when != 0
+writes the updated register to NVM."* The parser already supports optional fields —
+`u8_acon_args()` returns the count actually present — so the flag is optional, not
+mandatory.
+
+**Opt-in rather than automatic on every write**, which is the point: a HIL suite rewrites
+this register dozens of times per run, and dirtying the pool on each would turn a test pass
+into a string of flash erases. The host asks for the write it wants kept. The debug menu
+takes the opposite default and persists unconditionally — a human toggling a bit means it,
+and does so a handful of times, not dozens per second.
+
+- **Both fields independent**, so `A,,1` persists whatever the register currently holds —
+  useful after arming across several commands.
+- **Both parsed before either is applied.** A bad persist flag must not leave the mask
+  half-written.
+- **Reply gains a `W` token: `=A,M<hex>,W<0|1>`.** `W1` means the *shadow* was updated, not
+  that flash was written; the erase is the deferred auto-commit
+  (`DEV_CONFIG_NVM_COMMIT_DELAY_MS` = 5000) or the next `P`.
+- **`b_event_control_nvm_save()` now returns `bool`** (was `void`). A failed store answers
+  `!A,NVM` rather than a success frame for a half-done job; the menu appends a visible
+  warning to the toggle line.
+
+**Proven on hardware, both ways round:**
+
+```
+A,40000000     -> =A,M40000000,W0     no flag: unchanged old behaviour
+P              -> =P,W0               nothing dirty
+[soft reset]   -> =A,M0,W0            still lost, by design
+
+A,C0000088,1   -> =A,MC0000088,W1
+P              -> =P,W1               a real change committed
+[soft reset]   -> =A,MC0000088,W0     survives
+```
+
+**The vacuous test is replaced.** `nvm: the persist flag is what reaches flash, not the
+write` asserts on `P`'s `W` token — the in-band proof the old test had available and did not
+use: `W1` after a persisting write, `W0` after a non-persisting one. It also covers `A,,1`
+and checks that a bad persist field is refused *before* the mask moves. Suite is now
+**23 tests**.
+
 ---
 
 ## Implementation readiness
@@ -232,13 +379,14 @@ nothing lives only here.
 
 **Built and bench-verified (2026-08-30):** the mask subsystem (**S1–S6, I1–I3**), the
 producer (**S7, I4, I5, I7, I8**), drop accounting (**S8**), the commanded acon consumer
-(**D1** sync half, **I6** acon half) and the HIL suite (**T2**). `test_events.py` 22/22,
-with acon 47 / eventq 20 / nvm 28 still green alongside it.
+(**D1** sync half, **I6** acon half), the human log sink (**D2**, **I6** menu half) and the
+HIL suite (**T2**). `test_events.py` 23/23, with acon 47 / eventq 20 / nvm 28 still green
+alongside it.
 
 | What is left | Rows | Note |
 |---|---|---|
-| **Menu-side human sink** | **D2**, **I6** menu half | Parked by the user, 2026-08-30. Needs the log-line format and the polling-task drain |
 | **acon monitor mode** | **D1** phase 2 | Fully specified in D1 — finite timeout, explicit exit byte, XON/XOFF, pump every pass, `*` sigil. Unbuilt |
+| ~~acon mask writes do not persist~~ | ~~S4~~ | **FIXED 2026-08-30** — `A[,mask[,persist]]`, proven across a reset. See the DEFECT section |
 | **Skeleton back-port** | ~~T1~~ | **DONE** — placeholder, check and boot warning all shipped (`e0a2f0e`) |
 
 ---
@@ -261,10 +409,14 @@ re-litigated here.** Each entry names where its rationale lives.
 **Sink model**
 
 - **One queue, one consumer, selected by console mode (R2).** acon active → acon is the
-  only consumer, drained at `v_acon_flush_events()`. Debug menu active → the polling task
-  is the only consumer, with optional log emission. The single-consumer contract is
-  satisfied structurally, by console ownership already being exclusive. No fan-out, no
-  second queue, no router.
+  only consumer. Debug menu active → the menu service is the only consumer, with optional
+  log emission. The single-consumer contract is satisfied structurally, by console
+  ownership already being exclusive. No fan-out, no second queue, no router.
+  > **Mechanism correction (2026-08-30, build time).** The decision above stands unchanged;
+  > the two call sites this bullet named do not. The acon drain is host-commanded (`D`),
+  > not `v_acon_flush_events()`, and the human drain is in `v_debug_menu_service()`, **not**
+  > `v_app_polling_task()` — which is not exclusive at all. See *Sink selection is the
+  > re-entry lock, not the polling task* below.
 - S12's "must not share S6's gate" requirement is honoured for free — the sinks are
   separated by mode, not by a shared flag.
 - The contract is **per queue**: a future subsystem may have its own.
@@ -436,7 +588,7 @@ flooded link. See S5 for the other half of that consequence.
 
 ### S2 — Mask lifetime across mode handover *(seeded from the roadmap; not locked)*
 
-**Status:** 🟡 · **Needs user:** yes
+**Status:** 🟢 · **Needs user:** no — resolved below
 
 **Question:** Does a mask set from one control surface survive entry to / exit from the
 other? Specifically: is a mask set from the debug menu visible to a host that enters acon
@@ -467,7 +619,7 @@ banked as **W2**, explicitly not to be worked now.
 
 ### S3 — Control surfaces for the mask *(seeded from the roadmap; not locked)*
 
-**Status:** 🟡 · **Needs user:** yes
+**Status:** 🟢 · **Needs user:** no — resolved below
 
 **Question:** Is production masking controlled from acon only, or from both the debug menu
 and acon?
@@ -517,7 +669,7 @@ producing nothing; every boot thereafter restores the last-written mask.
 
 ### S5 — Foreign or stale pool restoring an armed mask
 
-**Status:** 🟡 · **Needs user:** yes
+**Status:** 🟢 · **Needs user:** no — resolved below
 
 **Question:** What, if anything, protects the restored mask from a pool this firmware did
 not write?
@@ -665,7 +817,7 @@ explaining why it is late has an obvious home.
 
 ### S7 — `v_switch_out_force()` writes unconditionally: events for non-transitions
 
-**Status:** 🟡 · **Needs user:** yes
+**Status:** 🟢 · **Needs user:** no — resolved below
 
 **The finding:** `v_switch_out_force()` ([switch_out.c:89](../../App/Src/switch_out.c:89))
 rewrites `OCxM` **without checking the current level**. It is the choke point for *level
@@ -721,7 +873,7 @@ wants, since "the firmware commanded low here" is a real event.
 
 ### I1 — Mask register type: bitmapped union-struct
 
-**Status:** 🟡 · **Needs user:** yes (one residual — the cycle-complete bit)
+**Status:** 🟢 · **Needs user:** no — resolved below
 
 **Question:** What C type holds the production mask, and which sources get bits?
 
@@ -856,7 +1008,7 @@ exemption. Not decided; 18 filler bits are available for it.
 
 ### I2 — ISR reads the mask as one snapshot
 
-**Status:** 🟡 · **Needs user:** no (flagging, not asking)
+**Status:** 🟢 · **Needs user:** no — resolved below
 
 **Question:** How does the producer side read the mask, given the console writes it
 concurrently?
@@ -881,7 +1033,7 @@ as a question. Reopen if the production-layer design gives a reason to.
 
 ### I3 — Label check: placement, comparison, pool scope
 
-**Status:** 🟡 · **Needs user:** yes (pool scope)
+**Status:** 🟢 · **Needs user:** no — resolved below
 
 **Question:** Where does the check run, how does it compare, and which of this project's
 pools carry a project-unique label?
@@ -942,7 +1094,7 @@ nothing.
 
 ### T1 — Skeleton back-port: placeholder label, and the check itself
 
-**Status:** 🟡 · **Needs user:** yes (timing — nothing in `G0B1_Skeleton` has been touched)
+**Status:** 🟢 · **Needs user:** no — resolved below
 
 **Decided in principle (user, 2026-08-30):** `G0B1_Skeleton`'s pool label becomes
 **`"UNNAMED"`**, with a conspicuous notice that an adopter must change it to something
@@ -1238,30 +1390,42 @@ line to put it before.
 
 ### I6 — Drain implementations
 
-**Status:** 🟡 — acon half BUILT and verified; menu half open
+**Status:** 🟢 — **both halves BUILT and verified**
 
 **Question:** what do the two drain sites actually do?
 
 Two bodies to write, both already sited by LOCKED CONTEXT's XOR sink model:
 
-- **acon:** the body of `v_acon_flush_events()`
-  ([automation_console.c:517](../../App/automation_console/automation_console.c:517)),
-  honouring S7's deferral rule — async frames only *between* response frames, never inside
-  one. Called from the executive loop at
-  [:616](../../App/automation_console/automation_console.c:616).
-- **menu/human:** a drain in `v_app_polling_task()`
-  ([app_main.c:390](../../App/Src/app_main.c:390)), emitting log lines only when the
-  human-side emit option is on, but **draining unconditionally** either way.
+**Neither landed where the row first predicted.**
 
-**acon half — DONE.** Not `v_acon_flush_events()` after all: consumption is host-commanded,
-so the drain lives in the `D` handler. That hook stays empty (see *Consumer side*).
+**acon half — DONE.** Not `v_acon_flush_events()`: consumption is host-commanded, so the
+drain lives in the `D` handler. That hook stays empty (see *Consumer side*).
 
-**Menu half — still open**, and deliberately parked (user, 2026-08-30: holding off on the
-debug-menu consumer). Depends on D2 (log line). Open sub-questions unchanged: how many
-records to drain per pass — all, or a bounded batch so one drain cannot monopolise the
-polling loop — and whether the human side needs its own emit on/off separate from the mask.
+**Menu half — DONE (2026-08-30).** `v_event_log_drain()`, a static in
+[`debug_menu.c`](../../App/Src/debug_menu.c) called from `v_debug_menu_service()` — **not**
+`v_app_polling_task()`, which `ACON_PUMP()` makes non-exclusive. The reasoning is in *Sink
+selection is the re-entry lock, not the polling task* above; it is the one genuinely
+surprising thing this row turned up.
 
-**Resolution:** _(partial — acon drain built and verified; the polling-task drain is open)_
+The two sub-questions the row left open, both answered by building it:
+
+- **Bounded batch, `EVENT_LOG_BATCH` = 8 records per pass.** Not unbounded, and the reason
+  is concrete rather than theoretical: an acon session that arms the mask, runs a soak and
+  exits without issuing `D` hands the menu a backlog of up to ~512 records. An unbounded
+  drain would print all of them in one pass with the watchdog kick and every other polling
+  duty stalled behind it. Eight per pass trickles the backlog out over successive passes,
+  and the pass rate is orders of magnitude above anything the switch path can produce, so
+  the bound never binds in normal use.
+- **No separate human-side emit flag.** There are already two independent switches — the
+  production mask (runtime, per source, persisted) and `LOG_EVENT`'s tier (build time) — and
+  a third would have to be stored, exposed on two command surfaces and reasoned about at
+  every handover. Draining stays unconditional regardless, so the ring cannot fill and start
+  charging the drop counter for records nobody wanted to see.
+
+**Resolution:** both drains built and exercised on hardware. acon: `test_events.py` 23/23.
+Menu: log lines read off the wire for all three switch classes, in the documented
+production order — the cycle start's manual ON, the auto edges, the halt's manual OFF, then
+the completion.
 
 ---
 
@@ -1407,7 +1571,7 @@ Adding the in-band record later would change no existing behaviour, so nothing i
 
 ### D1 — acon command surface
 
-**Status:** 🟢 for the sync drain (built, 22/22 on hardware) · monitor mode designed, unbuilt
+**Status:** 🟢 for the sync drain (built, 23/23 on hardware) · monitor mode designed, unbuilt
 
 **RESOLVED — the consumption model (user, 2026-08-30): TWO commands.**
 
@@ -1513,23 +1677,58 @@ sigil for its streamed lines.
 
 ### D2 — Human log line format
 
-**Status:** 🔴 · **Needs user:** yes — **explicitly PARKED** (user, 2026-08-30: holding off
-on the debug-menu consumer for now). The row is open by choice, not by oversight.
-
-**Anticipated, not decided (user, 2026-08-30):** the debug-menu-state drain and log will
-probably follow the **fully async** pattern — which is available to it precisely because
-there is no request/response contract to disturb on the human side. Explicitly not being
-decided yet.
+**Status:** 🟢 · **Needs user:** no — **specified by the user, 2026-08-30**, and built.
 
 **Question:** what does an event look like in the human-readable log, and at which verbosity
 tier?
 
-The record carries channel, state, a 1 µs TIM2 count and a millisecond tick (I4). A log
-line need not show all four. Also open: which logging class/tier it belongs to, since the
-migrated logging API gives message classes a compile-time verbosity tier — an event line
-that cannot be compiled out would be a poor fit for a soak run.
+**Resolution (user, 2026-08-30).** A new logging class in
+[`logging_config.h`](../../App/Inc/logging_config.h), emitted with `LOGCT`:
 
-**Resolution:** _(pending)_
+```c
+#define LOG_EVENT                       LOG_LEVEL_INFO
+#define LOG_EVENT_TAG                   "EVENT"
+#define LOG_EVENT_COLOR                 LOGC_BRIGHT_WHITE
+```
+
+One line per record, showing all four payload members plus the class:
+
+```c
+LOGCT(LOG_EVENT, "%04X %-8s ID:%c-%02X Tick:%-8lu TIM:%-8lu", ...)
+```
+
+```
+0101 SW-Man   ID:D-01 Tick:160033   TIM:160020976
+0102 SW-Auto  ID:D-00 Tick:160133   TIM:160120985
+0103 SW-Done  ID:D-00 Tick:160533   TIM:160520985
+```
+
+Class labels: `SW-Man` / `SW-Auto` / `SW-Done` / `Sense`. The letter after `ID:` is the
+channel; the `%02X` after it is **the value** — switch level for the switch classes, ADC
+counts for sense (user, 2026-08-30). `%02X` is a minimum width, so a four-digit sense
+reading widens the column rather than truncating.
+
+**Anything the label table does not know is consumed but not printed** (user: *"no log
+emission for classes not defined yet"*). The consume-anyway half matters: silently dropping
+an unrecognised record is a cosmetic loss, but leaving it in the ring is a drop counter
+climbing for no reason.
+
+**Two details worth recording, since both were corrections to the first draft:**
+
+- **`%lu` with an explicit `(unsigned long)` cast** on the 32-bit members (user,
+  2026-08-30). It is correct whether the toolchain's `uint32_t` is `unsigned int` or
+  `unsigned long`; `%u` is not. The 16-bit members promote to `int`, so `%X` with
+  `(unsigned)` is the right pair there.
+- **The as-relayed format string and its worked example disagreed.** The string had `%8s`
+  and a comma before `ID:`; the example rendered left-justified with a space
+  (`SW-Auto  ID:`). Built to the example — right-justifying the label would defeat the point
+  of giving it a width at all, and the widths are what make a scrolling log scannable.
+
+**Tier: `LOG_LEVEL_INFO`**, not `DEBUG`. Dropping the global `LOG_LEVEL` one notch to
+`LOG_LEVEL_WARNING` silences the event stream without silencing anything that reports a
+fault — the setting a long soak actually wants. Non-`DEBUG` builds set `LOG_LEVEL_QUIET`, so
+the whole class compiles out there. This is the *second* of two independent switches: the
+production mask is the first and is unaffected by either.
 
 ---
 
@@ -1537,12 +1736,12 @@ that cannot be compiled out would be a poor fit for a soak run.
 
 **Status:** 🟢 · **Needs user:** no
 
-**Resolution (2026-08-30):** `scripts/hil/test_events.py`, **22 tests, all passing on
+**Resolution (2026-08-30):** `scripts/hil/test_events.py`, **23 tests, all passing on
 hardware.** A new suite rather than an extension of `test_acon.py`, and distinct from
 `test_eventq.py` — that one drives the vendored module against a dedicated test queue,
 this one drives the real application path.
 
-Regression net is now **acon 47 · nvm 28 · eventq 20 · events 22**, all green together.
+Regression net is now **acon 47 · nvm 28 · eventq 20 · events 23**, all green together.
 
 Coverage: mask round-trip, filler-bit retention and read purity; the three gating cases
 (disarmed, global-clear, per-channel); masked sources moving no counters; record content
@@ -1555,10 +1754,17 @@ armed with transitions masked; and mask persistence across a commit.
 8 KB ring through the console would take ~512 events per round trip; `test_eventq.py`
 already proves the drop path against the module directly, so this suite trusts it.
 
-**Bench constraint baked into the suite: SWITCH_A is never driven.** It is the user's DUT
-channel on this bench. Tests use SWITCH_D (`CH_PRI`), with SWITCH_C (`CH_SEC`) as the
-masked-contrast channel, and `quiesce()` stops/clears channels 1..3 only via
-`CH_SAFE_MASK`.
+**Bench convention followed by this suite: it stays off SWITCH_A.** That is the DUT channel
+on this bench. Tests use SWITCH_D (`CH_PRI`), with SWITCH_C (`CH_SEC`) as the masked-contrast
+channel, and `quiesce()` stops/clears channels 1..3 only via `CH_SAFE_MASK`.
+
+**It is a convention, not a rule (user, 2026-08-30):** *"HIL tests — and 'regular' acon
+scripts — should not be firmware-locked out of manipulating switch A."* Nothing in the
+firmware restricts channel 0 (`b_acon_arg_channel()` accepts 0..3) and nothing should;
+`CH_SAFE_MASK` is host-side, in this one file. **`test_acon.py` drives SWITCH_A on purpose**
+and is staying that way — its select-all/clear-all bitmap tests are exactly what narrowing
+the mask would stop testing. This suite keeps the convention because it has no such need,
+not because a rule forbids it.
 
 ---
 
@@ -1676,34 +1882,35 @@ Travels with T1 and W1 rather than causing its own excursion.
 - **Regression net:** `test_acon.py` 47, `test_nvm.py` 28, `test_eventq.py` 20. Run after
   anything structural. Close Tera Term first — it holds COM3.
 
-**Plan status summary (2026-08-30):** 18 🟢 · 1 🟡 · 1 🔴 · 3 🔵.
+**Plan status summary (2026-08-30):** 20 🟢 · 3 🔵.
 
-**The proving subset is DONE and verified on hardware.** Switch events are produced in both
-ISR and main context, gated by a persisted mask, and consumed end to end over acon —
-`test_events.py` 22/22, with the three existing suites still green.
+**The proving subset is DONE and verified on hardware, through both sinks.** Switch events
+are produced in both ISR and main context, gated by a persisted mask, and consumed end to
+end — over acon (`test_events.py` 23/23, with the three existing suites still green) and
+into the human log in the debug menu.
 
-**Open:**
+**Open:** nothing on the Big Board. **W1 / W2 / W3** 🔵 are banked by intent, not
+oversights, and **acon monitor mode** (D1 phase 2) is fully designed and unbuilt — a build
+task, not a decision.
 
-- **D2** 🔴 — the human log line and its verbosity tier. Parked by the user.
-- **I6** 🟡 — acon half built; the polling-task drain waits on D2.
-- **W1 / W2 / W3** 🔵 — banked by intent, not oversights.
+**One defect was found and closed this session:** acon mask writes never reached NVM, so
+arming from a host was not sticky across reset the way S4 says it is. Root cause, the
+`A[,mask[,persist]]` fix and the reset-crossing proof are in *DEFECT — acon mask writes
+never reach NVM* above. The vacuous test that could not have caught it is replaced.
 
-**Next natural step** is whichever the user picks: the menu-side consumer, acon monitor
-mode, or moving on to roadmap task 1 (sense), which now plugs into a path already carrying
-real traffic.
+**Next natural step** is whichever the user picks: acon monitor mode, or moving on to
+roadmap task 1 (sense), which now plugs into a path already carrying real traffic through
+both consumers and has its four sense mask bits and menu toggles already wired and waiting.
 
 **Known tidy, not stale content:** the Big Board and the detail sections have drifted out of
 the model's prescribed D → S → I → T ordering as rows were added mid-session. Worth a
 resort next time this doc is opened; deliberately not done at suspend time, since it is
 whole-file surgery for no content change.
 
-**Two 🟡:** I7's residual (where the shared plumbing lives once sense needs it) and T1
-(Skeleton back-port, blocked on the label check existing here).
-**No shape has been relayed yet for the event record format, the production-layer module,
-the acon command surface, the human log format or HIL coverage** — those rows do not exist
-because they have not been discussed, not because they are settled.
-
-**The mask is now fully specified.** Everything needed to declare `event_control_t`, its
-bit-mask defines, its NVM object and its label-protected restore path is locked.
+**Detail-section status headers were audited 2026-08-30** and eight stale 🟡 markers
+(S2, S3, S5, S7, I1, I2, I3, T1) corrected to match their own Resolution blocks and the Big
+Board. The rows had been resolved in place without their headers being flipped. Worth a
+skim after any session that resolves several rows at once — the Resolution text is the
+authority, the header is a cache of it.
 
 **End of event-path-plan.md**

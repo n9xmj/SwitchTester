@@ -9,6 +9,9 @@ It is **not** a test harness and not test-only (**D7**): it is the interface *fo
 a host-side harness, and equally the way the instrument is driven in normal
 operation.
 
+- **Reference manual:** [`../acon-reference.md`](../acon-reference.md) — **this file is the
+  *why*; that one is the *how*.** Every op's syntax and reply lives there, and it is the file
+  to update when the command set or the protocol changes. Nothing here is a usage guide.
 - **Code home:** `App/Src/automation_console.c` + `App/Inc/automation_console.h` (**D7**)
 - **Transport:** [`uart-stream-integration-plan.md`](uart-stream-integration-plan.md) — **done and bench-verified**
 - **Parent spec:** [`../SwitchTester-Design.md`](../SwitchTester-Design.md) § "Automation console, phase 1"

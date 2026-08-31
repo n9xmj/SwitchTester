@@ -132,6 +132,11 @@ For a multi-line reply, declare the count in the header (`K<n>`) and follow with
 `ACON_SIG_PAYLOAD` lines. Declaring the count is what makes a truncated response
 *detectable*, which a terminator could not manage.
 
+**Document your op set in the adopting project's own docs, not here.** This README covers the
+module — protocol, config, command-author API — and stays project-neutral so it can be
+vendored unchanged. Your command reference belongs alongside your other project
+documentation, and `L` gives you the current list to generate it from.
+
 ## Port
 
 **No port source.** Everything crossing the boundary is either a macro in the config header

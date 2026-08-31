@@ -294,7 +294,10 @@ extern void v_event_control_nvm_init(void);
  * where it is in the init order -- moving it earlier resurrects those events. */
 extern void v_event_control_restore(void);
 
-/* Persist the current mask. */
-extern void v_event_control_nvm_save(void);
+/* Persist the current mask: copies the live register into the NVM pool's RAM
+ * shadow. The flash write itself is the pool's deferred auto-commit (or the
+ * next explicit commit), so a burst of calls costs one erase, not one each.
+ * Returns false if the pool rejected the store. */
+extern bool b_event_control_nvm_save(void);
 
 #endif /* APP_EVENTS_H */

@@ -91,6 +91,16 @@
 #define LOG_EXTI_TAG                    "EXTI"
 #define LOG_EXTI_COLOR                  LOGC_WHITE
 
+// Switch/sense event records, drained and printed by the human-side sink in
+// v_debug_menu_service(). INFO rather than DEBUG so that dropping the global
+// LOG_LEVEL one notch, to LOG_LEVEL_WARNING, silences the event stream without
+// silencing anything that reports a fault -- the setting a soak run wants.
+// Production is gated separately and independently by the event mask, so this
+// tier is the second of two switches, not the only one.
+#define LOG_EVENT                       LOG_LEVEL_INFO
+#define LOG_EVENT_TAG                   "EVENT"
+#define LOG_EVENT_COLOR                 LOGC_BRIGHT_WHITE
+
 //------------------------------------------------------------------------------
 // Pull in the macro sugar (LOGCT, LOG, LOGC, RPRINTF, DPRINTF, ...).
 // The class defines above must precede this include.

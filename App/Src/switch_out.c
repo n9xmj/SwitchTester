@@ -435,11 +435,12 @@ void v_event_control_restore(void)
     }
 }
 
-void v_event_control_nvm_save(void)
+bool b_event_control_nvm_save(void)
 {
     uint32_t u32_mask = g_x_event_control.u32_all;
 
-    x_nvm_set(&g_x_nvm_param, NVM_PARAM_EVENT_CONTROL, &u32_mask);
+    return (x_nvm_set(&g_x_nvm_param, NVM_PARAM_EVENT_CONTROL, &u32_mask)
+            == NVM_ERROR_NONE);
 }
 
 void v_switch_cycle_nvm_save(uint8_t u8_channel, uint8_t u8_parameter)
