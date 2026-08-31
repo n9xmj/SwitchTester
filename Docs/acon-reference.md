@@ -477,6 +477,11 @@ straggler would kill the monitor the instant it started.
 **not** then leave the session, because it was consumed as the cancel. Send it again once the
 terminator has arrived.
 
+> **If a script dies and leaves the board in monitor mode**, it ends itself within the
+> timeout you gave it (an hour at worst). To get out by hand: **any** keystroke cancels the
+> monitor — ESC included — then `Q` or Ctrl-C leaves the session. Note ESC does *not*
+> currently leave the session on its own; making it do so is banked as W6 in the console plan.
+
 **While suspended the timeout keeps running.** If XOFF paused it, a host that suspends and
 then crashes would strand the device — reintroducing exactly what the finite timeout fixes.
 Nothing is drained while suspended, so the queue fills and may overflow; that is a better

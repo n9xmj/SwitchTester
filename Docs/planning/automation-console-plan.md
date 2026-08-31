@@ -107,6 +107,48 @@ exists.
 | **W3** | Sense-channel ops — blocked on the sense design, which does not exist yet |
 | **W4** | Harness on a *second* UART so the console stays human while a script drives |
 | **W5** | Scripted sequence upload — host pushes a small program the tester runs unattended |
+| **W6** 🔵 | **ESC (0x1B) as an alternative exit** — from monitor mode *and* from the session. LOW priority; detail below |
+
+#### W6 — ESC as an alternative exit *(banked, low priority)*
+
+**Rationale (user, 2026-08-30):** *"If I ever encountered a case where acon (or its event
+monitor mode) was left active by an errant host script, it would be my 'muscle-memory'
+instinct to spam ESC to back out. It's what I do when I'm nested several levels deep in menus
+and want to get back to the main menu without having to think about it."*
+
+The value is exactly that it needs no thinking. `0xA5` is not a key anyone can type; `Q` and
+Ctrl-C work but have to be recalled. ESC is what the hand does on its own, and it is already
+the return-from-submenu key throughout the debug menu.
+
+**ESC means three different things today**, which is the whole reason this is not a one-line
+change. Anyone building it starts here:
+
+| Context | ESC today |
+|---|---|
+| Monitor mode (`M`) | **Already cancels** — it is "any byte". One ESC leaves the monitor. |
+| SCRIPT reader | An ordinary byte, accumulated into the line buffer. Spamming it does *nothing* until 512 characters trip `!~,OVF` — and you are still in the session. |
+| HUMAN reader | **Already means "cancel the line, stay in"**, via `i_getline()`'s `GETLINE_ESCAPE_EXIT` and the `i_length < 0` branch in `x_acon_read_human()`. Deliberate: the console shares the debug menu's editing feel rather than growing its own. |
+
+So the gap is narrower than it first looks: **the monitor half already works.** Spamming ESC
+gets you out of a monitor session on the first press; what it never does is leave the acon
+session afterwards.
+
+**Notes for whoever builds it:**
+
+- **SCRIPT mode is the easy, safe half.** Add ESC beside the `ACON_EXIT` check in
+  `x_acon_read_script()`. Ctrl-C is already a quit alias, so a control-character exit is
+  established precedent, and ESC is outside the 0x21..0x7E printable range reserved for
+  command opcodes — nothing is given up.
+- **HUMAN mode is the one that needs a decision**, because ESC there already has a job. The
+  obvious shape is two-tier: **ESC on an empty line exits the session, ESC on a non-empty
+  line clears it** — which is how plenty of shells behave and preserves both muscle memories.
+  Spamming still works: the first press clears, the second exits.
+- **`$` (echo raw text) loses the ability to carry an ESC byte.** Almost certainly fine; worth
+  naming so it is a decision rather than a surprise.
+- **Pre-existing, not caused by this:** ESC is the lead byte of every arrow-key/ANSI sequence,
+  and `i_getline()` already treats a bare 0x1B as cancel without consuming the rest. So arrow
+  keys already cancel a line in HUMAN mode. This wish does not create that; it would just
+  raise the stakes of it, which is another argument for the empty-line tier.
 
 ---
 
