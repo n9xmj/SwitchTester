@@ -132,8 +132,9 @@ pattern and `ACON_LINE_QUIT` is the status; ESC simply was never wired to it.
   `x_acon_read_human()` already receives it — then deliberately discards it (`i_length < 0`
   → clear the line, return `ACON_LINE_OK`). Returning `ACON_LINE_QUIT` instead is one line.
 
-So the work is two one-line changes plus tests. What is left is a **policy** call, not a
-mechanism problem: see the HUMAN-mode note below.
+So the work is two one-line changes plus tests. The HUMAN-mode policy was open when this row
+was written and is **now specified** (see the table below), so nothing about W6 is undecided
+— it is a build task, held only by priority.
 
 **ESC means three different things today.** Anyone building it starts here:
 
@@ -152,22 +153,67 @@ session afterwards.
 - **SCRIPT mode is unambiguous.** One clause beside the `ACON_EXIT` check. Ctrl-C is already
   a control-character quit alias, so the precedent is established, and ESC is outside the
   0x21..0x7E printable range reserved for command opcodes — nothing is given up.
-- **HUMAN mode carries the only open decision:** does ESC *always* quit, or only on an empty
-  line?
-  - **Always quit** matches the debug menu, where ESC backs out a level unconditionally, and
-    is the purer muscle-memory answer. Cost: the existing ESC-clears-the-line editing
-    behaviour goes away, and the console stops sharing the menu's editing feel — which was
-    a deliberate choice, not an accident.
-  - **Two-tier — empty line exits, non-empty line clears** — preserves both behaviours and is
-    how many shells work. Spamming still gets you out: first press clears, second exits.
-    Costs one `i_getline()` call-site check on the returned length.
+- **HUMAN mode is now specified (user, 2026-08-30).** The earlier "always quit vs two-tier"
+  question is answered, and by a better route than either: ESC always quits, and **Ctrl-C
+  takes over the cancel job**, so nothing is lost.
+
+  | Entry | Today | Specified |
+  |---|---|---|
+  | Empty line | `=Z` no-op | no-op — **already correct** |
+  | `Q` | quits | quits — **already correct** |
+  | **Ctrl-C** (0x03) | `i_getline` → −2 → `ACON_LINE_QUIT`, **quits** | **discard the buffer, stay in** and answer as the null entry |
+  | **ESC** (0x1B) | `i_getline` → −1 → line cleared → dispatch's bare-CR no-op, **stays in** | **quits, exactly like `Q`** |
+
+  So it is a straight **swap of the two control keys** in `x_acon_read_human()`, and nothing
+  else. Note today's ESC path already lands on the null-entry no-op by clearing the line and
+  letting `v_acon_dispatch()` answer `=Z` — which is precisely the *"whatever is easiest and
+  most consistent"* the user offered for the new Ctrl-C. Both halves reuse behaviour that
+  already exists:
+
+  ```c
+  if (i_length == -1)          /* ESC: leave human mode, like Q */
+  {
+      return ACON_LINE_QUIT;
+  }
+  if (i_length < 0)            /* Ctrl-C: abandon the line, stay in */
+  {
+      s_ac_line[0] = '\0';     /* -> the bare-CR no-op */
+  }
+  return ACON_LINE_OK;
+  ```
+
+- **Two wrinkles the swap exposes, neither fatal.** `i_getline()`'s echo behaviour was tuned
+  for the *old* mapping, and it is shared with the debug menu — so it cannot simply be
+  swapped too:
+  - **ESC prints `<Cancel>\r\n`** on its way out. After the swap that is the wrong word for
+    an exit, and it is unframed output. Harmless in HUMAN mode, where an operator is
+    watching and `=~,BYE` follows anyway.
+  - **Ctrl-C deliberately emits nothing — "no `<Cancel>`, no CRLF, no erase"**, and the
+    comment in `utils.c` says why: *"The automation console uses this as its exit from human
+    mode and any unframed output there would be noise."* That rationale dies with the swap.
+    Worse, as the new *cancel* it would leave the abandoned text sitting on screen unerased.
+    Cheapest fix, with no `i_getline()` or menu impact: have the acon human reader emit a
+    bare `\r\n` after a Ctrl-C so the discarded line is visibly left behind. **Update that
+    `utils.c` comment in the same change** — it will otherwise document the opposite of what
+    the code does.
+- **SCRIPT-mode Ctrl-C is unaffected and stays a quit alias** (the `ACON_OP_CANCEL` builtin).
+  That leaves Ctrl-C meaning *quit* to a script and *cancel the line* to a human — an
+  asymmetry worth naming rather than discovering. It is defensible: a script has no
+  half-typed line to cancel, and the two are already handled at different layers (the human
+  path never reaches the dispatcher).
 - **`$` (echo raw text) loses the ability to carry an ESC byte.** Almost certainly fine; worth
   naming so it is a decision rather than a surprise.
-- **Pre-existing, not caused by this:** ESC is the lead byte of every arrow-key/ANSI sequence,
-  and `i_getline()` already treats a bare 0x1B as cancel without consuming the rest. So arrow
-  keys already cancel a line in HUMAN mode. This wish does not create that — but "always
-  quit" would upgrade a stray arrow key from *cancels your line* to *drops you out of the
-  session*, which is the strongest argument for the two-tier form.
+- **Arrow keys, and the one thing worth building alongside.** ESC is the lead byte of every
+  ANSI sequence, and `i_getline()` treats a bare 0x1B as cancel *without consuming the rest*
+  — so arrow keys already cancel a line in HUMAN mode today. That is pre-existing, not
+  something this wish creates. But with ESC promoted to *exit*, a stray Up-arrow stops
+  costing you a line and starts costing you the session.
+
+  The fix is standard and small: **consume the rest of the sequence.** On 0x1B, peek for a
+  following `[` or `O` and swallow the final byte, treating only a *bare* ESC as the exit.
+  That distinguishes a real ESC keypress from an arrow key, and it belongs in `i_getline()`
+  where it also stops arrow keys silently eating menu input. Worth doing in the same change
+  rather than discovering it the first time someone reaches for history recall.
 - **Tests:** the `acon.py` driver already has `leave(how='sentinel'|'quit'|'cancel')`, which
   asserts all three routes produce the same `=~,BYE`. ESC becomes a fourth `how`.
 
