@@ -803,6 +803,110 @@ def t_mon_flow_control(con):
 
 
 # ---------------------------------------------------------------------------
+# Tests -- session handover (S2b)
+# ---------------------------------------------------------------------------
+
+def produced_outside_acon(con, mask, persist_flag, settle=0.35):
+    """Arm `mask`, start SWITCH_D cycling, leave acon, and report how many
+    events were produced while outside.
+
+    The PUT COUNTER is the measurement, not the queue depth: once acon exits,
+    the debug menu owns the console and its log sink drains every record within
+    a pass or two, so anything counting queued records would read zero whatever
+    happened. Puts are cumulative and survive the drain.
+
+    Leaving acon also un-mutes stdout, so the menu's event log lines land in the
+    host's buffer as non-protocol noise -- hence the drain() before re-entering.
+    """
+    quiesce(con)
+    mask_write(con, 0, persist=1)               # NVM copy: known and disarmed
+    persist(con)
+    house(con, 'R')                             # zero the counters
+
+    mask_write(con, mask, persist=persist_flag)
+
+    # A FINITE run, deliberately: 20 x 50 ms = 1 s, which outlasts the settle
+    # window below but stops on its own. An infinite cycle here once survived an
+    # aborted test run and left the board flooding the console until it was
+    # reset by hand -- a test that manipulates state OUTSIDE its own session has
+    # to be able to end without the test being there to end it.
+    ok(con, 'W,%X,%X,%X,14' % (CH_PRI, 0x61A8, 0x61A8))
+    ok(con, 'C,%X' % (1 << CH_PRI))
+
+    con.leave()                                 # ON_EXIT: reload from NVM
+    time.sleep(settle)
+    con.drain()                                 # discard the menu's log noise
+    con.enter()                                 # ON_ENTER: park the live mask
+
+    counters = house(con, 'S')
+    quiesce(con)
+    mask_write(con, 0, persist=1)
+    persist(con)
+    return counters['P']
+
+
+@test("handover: I inherits the persisted mask into the live register")
+def t_handover_inherit(con):
+    """The escape hatch from the entry-clear: a session that wants the bench's
+    standing configuration asks for it, rather than being given it."""
+    quiesce(con)
+    want = M_PRI_MANUAL | M_GLOBAL
+    mask_write(con, want, persist=1)
+    persist(con)
+
+    mask_write(con, 0)                          # live register volatile-cleared
+    check(mask_read(con) == 0, "the volatile clear did not take")
+
+    frame = ok(con, 'I')
+    check(frame.tokens.get('M') == want,
+          "I answered M%#010x, expected %#010x" % (frame.tokens.get('M'), want))
+    check(mask_read(con) == want, "I did not reach the live register")
+
+    # It only loads: the persisted copy must be exactly as it was found.
+    quiesce(con)
+    mask_write(con, 0, persist=1)
+    persist(con)
+
+
+@test("handover: acon entry starts from a known disarmed state")
+def t_handover_entry_clears(con):
+    quiesce(con)
+    arm(con, M_PRI_MANUAL)                      # volatile, deliberately
+    check(mask_read(con) != 0, "the mask did not take")
+
+    con.leave()
+    time.sleep(0.1)
+    con.drain()
+    con.enter()
+
+    check(mask_read(con) == 0,
+          "a new acon session inherited mask %#010x -- entry must park it"
+          % mask_read(con))
+
+
+@test("handover: a volatile acon mask does not outlive the session")
+def t_handover_volatile_reverts(con):
+    """The human console's arming is what the exit restore puts back. With the
+    NVM copy disarmed, a volatile acon mask must produce nothing once the
+    session ends -- even though the cycling it started keeps running."""
+    puts = produced_outside_acon(con, M_PRI_AUTO | M_GLOBAL, persist_flag=None)
+    check(puts == 0,
+          "%d event(s) produced after exit from a VOLATILE arming -- "
+          "the exit restore did not put the NVM copy back" % puts)
+
+
+@test("handover: a persisted acon mask does outlive the session")
+def t_handover_persisted_survives(con):
+    """The other half: persisting writes the NVM copy, so the exit restore
+    hands that same value back and the script's deliberate change sticks.
+    Same stimulus as the test above -- only the persist flag differs."""
+    puts = produced_outside_acon(con, M_PRI_AUTO | M_GLOBAL, persist_flag=1)
+    check(puts > 0,
+          "no events produced after exit from a PERSISTED arming -- "
+          "the change did not survive its session")
+
+
+# ---------------------------------------------------------------------------
 # Tests -- persistence
 # ---------------------------------------------------------------------------
 

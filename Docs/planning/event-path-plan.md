@@ -20,7 +20,7 @@ decisions land). **Entry point / source of scope:**
 **Status:** **PROVING SUBSET COMPLETE AND BENCH-VERIFIED** (2026-08-30) — switch events
 produced into `event_queue` and consumed end-to-end through **both** sinks: the commanded
 acon drain, acon monitor mode and the human log in the debug menu —
-`test_events.py` 30/30. Nothing on the Big Board is open.
+`test_events.py` 34/34. Nothing on the Big Board is open.
 **Working mode:** the user relays design in chat; one question at a time; the board holds
 everything else. Per [`decision-log-model.md`](decision-log-model.md).
 
@@ -43,7 +43,7 @@ rule, the arming model, and mode-handover behaviour.
 
 **Where the board stands.** The path is **proven end to end on hardware, through both
 sinks**: the production mask, the record, the queue instance, both producer hooks, the
-commanded acon consumer, monitor mode and the human log are built; 30 passing HIL tests
+commanded acon consumer, monitor mode and the human log are built; 34 passing HIL tests
 cover the acon halves and the log lines were read off the wire for all three switch classes.
 **Nothing on the Big Board is open.**
 
@@ -54,7 +54,7 @@ cover the acon halves and the log lines were read off the wire for all three swi
 | ID | Status | Subject (one line) |
 |----|--------|--------------------|
 | S1 | 🟢 | Mask **NVM default** is 0 / all-disabled; boot mask is the restored value (see S4) |
-| S2 | 🟢 | Flags persist across handover; ONE mask set shared by both interfaces · **S2b** 🔵 proposes clear-on-entry / restore-on-exit |
+| S2 | 🟢 | ONE mask register, shared · **S2b** revises the handover: parked on acon entry, reloaded from NVM on exit, op `I` to inherit |
 | S3 | 🟢 | Both surfaces control it — acon ops A/D/H, and the `[e]` debug submenu |
 | S4 | 🟢 | Mask register **is** stored in and restored from NVM |
 | S5 | 🟢 | Pool-label ownership check; label is `"SwitchTester"`; mismatch → wipe and re-default |
@@ -72,13 +72,13 @@ cover the acon halves and the log lines were read off the wire for all three swi
 | I7 | 🟢 | No wrapper layer: header for types, stack record, direct `x_event_queue_put()` |
 | I8 | 🟢 | TIM2 ISR order: capture `CCRx` → reschedule → put. 6 µs worst-case ISR budget |
 | T1 | 🟢 | Skeleton back-port DONE — placeholder label, the check, and a boot warning |
-| T2 | 🟢 | `scripts/hil/test_events.py` — **30/30 green on hardware**; acon 47, eventq 20, nvm 28 still green |
+| T2 | 🟢 | `scripts/hil/test_events.py` — **34/34 green on hardware**; acon 47, eventq 20, nvm 28 still green |
 
 ---
 
 ## Implementation status — producer side BUILT and VERIFIED (2026-08-30)
 
-Flashed and exercised on the bench; covered by `test_events.py` (30/30).
+Flashed and exercised on the bench; covered by `test_events.py` (34/34).
 
 | File | What landed |
 |---|---|
@@ -143,7 +143,7 @@ distinct pool label for free, which is precisely the property S5's check relies 
 
 ## Consumer side — sync drain BUILT and BENCH-VERIFIED (2026-08-30)
 
-**30/30 on hardware**, and the three existing suites are still green (acon 47, eventq 20,
+**34/34 on hardware**, and the three existing suites are still green (acon 47, eventq 20,
 nvm 28). The produce-and-consume path is proven end to end: switch transitions produced in
 ISR and main context, gated by the persisted mask, drained over the console.
 
@@ -411,7 +411,7 @@ nothing lives only here.
 **Built and bench-verified (2026-08-30):** the mask subsystem (**S1–S6, I1–I3**), the
 producer (**S7, I4, I5, I7, I8**), drop accounting (**S8**), the commanded acon consumer
 (**D1** sync half, **I6** acon half), the human log sink (**D2**, **I6** menu half) and the
-HIL suite (**T2**). `test_events.py` 30/30, with acon 47 / eventq 20 / nvm 28 still green
+HIL suite (**T2**). `test_events.py` 34/34, with acon 47 / eventq 20 / nvm 28 still green
 alongside it.
 
 | What is left | Rows | Note |
@@ -428,7 +428,7 @@ alongside it.
 | ID | Status | Subject |
 |----|--------|---------|
 | W1 | 🔵 | **nvmparams:** public "peek a pool's label" without full pool init — LOW priority |
-| W2 | 🔵 | Separate mask sets for the human vs automation interfaces — deliberately deferred. **See S2b**, which gets the same benefit with one register and no per-site context check |
+| ~~W2~~ | ⛔ | ~~Separate mask sets for the human vs automation interfaces~~ — **OPTED OUT, do not implement.** S2b solves it a better way |
 | W3 | 🔵 | **nvmparams:** opt-in label-match check inside `x_nvm_pool_init()`, reported by return code |
 | W4 | 🔵 | **ESC as a SCRIPT-mode exit** (HUMAN mode unchanged) plus a stricter automation input alphabet — lives in [`automation-console-plan.md`](automation-console-plan.md) **W6**, cross-referenced here because monitor mode is specified in D1. Note ESC already cancels a monitor session today, being "any byte". LOW priority |
 
@@ -627,6 +627,11 @@ flooded link. See S5 for the other half of that consequence.
 other? Specifically: is a mask set from the debug menu visible to a host that enters acon
 afterwards, and does an acon session's mask persist after it exits?
 
+> **Superseded in part by S2b (built 2026-08-30).** "One mask set shared by both interfaces"
+> still holds and is the foundation. "Flags stay in place across a handover" does **not** any
+> more: the human console's survive an acon session, and an acon session's survive only if it
+> asked to persist. Read S2b below for what actually ships.
+
 **Resolution (user, 2026-08-30):** **event flags stay in place across a handover, and there
 is ONE mask set shared by both interfaces.** A mask set from the debug menu is visible to a
 host that enters acon afterwards, and an acon session's mask survives its exit.
@@ -649,10 +654,11 @@ banked as **W2**, explicitly not to be worked now.
   is the behaviour a script author should expect rather than be surprised by. **This is the
   consequence S2b below proposes to remove.**
 
-#### S2b — PROPOSED revision: clear on acon entry, restore from NVM on acon exit
+#### S2b — Clear the mask on acon entry, restore it from NVM on exit *(BUILT)*
 
-**Status:** 🔵 proposal, not scheduled. Raised by the user 2026-08-30; recorded rather than
-built. It supersedes nothing until the user says so — S2 above is still what ships.
+**Status:** 🟢 **BUILT and bench-verified 2026-08-30.** Supersedes S2's handover behaviour:
+flags no longer "stay in place across a handover" — the human console's do, and an acon
+session's do only if it asked. **W2 is opted out as a result** (see the wish list).
 
 **The proposal, in the user's terms:**
 
@@ -681,21 +687,49 @@ pool's **RAM shadow**, not flash, which is what makes both cases work:
 
 Exit is a call to the existing `v_event_control_restore()` verbatim; entry is one assignment.
 
-**The one behavioural trap, and it is worth deciding on before building:** *entry-clear stops
-production that is already running.* If a human arms events and starts a long soak, and a
-script then connects to observe it, **the act of connecting kills what the observer came to
-watch.** A script that sets up its own arming is unaffected; one that expects to inherit the
-bench's state is silently defeated.
+**The trap, and its answer — op `I`.** Entry-clear stops production that is *already running*:
+a human arms events, starts a soak, a script connects to observe it, and the act of connecting
+parks exactly the arming the observer came to watch. **`I` is the escape hatch** (user,
+2026-08-30) — it loads the persisted copy into the live register, so a session that wants the
+bench's standing configuration asks for it rather than being given it.
 
-The natural answer, if that case matters, is a **load-from-NVM option on `A`** — the mirror of
-the persist flag, letting a script say "adopt whatever the human configured". It costs one
-sub-option and reuses `v_event_control_restore()` a third time. Not proposed as part of this;
-noted so the trap is not discovered on the bench.
+A separate op rather than another field on `A`, because it is an *action* and not a modifier
+on a write: `A`'s contract stays `[mask[,persist]]` exactly as documented and tested, and
+neither existing field shifts meaning. Volatile by construction — it only loads, so a session
+that inherits and exits leaves the persisted copy exactly as it found it.
 
-**Also worth checking before building:** the HIL suites. They should be unaffected or helped —
-every test already calls `quiesce()`, so an entry-clear only makes the starting state more
-certain — but `t_nvm_persist` and `t_nvm_persist_flag_gates` reason about the shadow directly
-and want re-reading against the new entry/exit hooks.
+```
+I    ->    =I,M<mask>
+```
+
+**How it landed.** The module gained an optional, silent pair of session brackets —
+`ACON_ON_ENTER()` / `ACON_ON_EXIT()`, defaulting to no-ops — because the console core knows
+nothing about events and must not. This project points them at
+`v_event_control_suspend()` and the already-existing `v_event_control_restore()`.
+`ACON_ON_EXIT()` fires on **every** way out including the idle timeout's early return, which
+is the path a dead host actually takes and therefore the one that must not leak.
+
+`v_event_control_suspend()` clears the live register in **RAM only** — no `x_nvm_set()` of the
+cleared value. That asymmetry is the entire mechanism.
+
+**Verified on hardware, four tests**, all in `test_events.py`:
+
+| Test | Proves |
+|---|---|
+| `I inherits the persisted mask into the live register` | the escape hatch works and does not disturb the persisted copy |
+| `acon entry starts from a known disarmed state` | leave with a mask armed, re-enter, read 0 |
+| `a volatile acon mask does not outlive the session` | same stimulus, no persist flag → 0 events produced after exit |
+| `a persisted acon mask does outlive the session` | same stimulus, persist flag → events produced after exit |
+
+The last two measure the **put counter**, not queue depth: once acon exits the debug menu owns
+the console and its log sink drains every record within a pass or two, so anything counting
+queued records would read zero whatever happened.
+
+**A test-design lesson worth keeping.** The first version of that helper started an *infinite*
+cycle. An aborted run left it going with events armed, and the board flooded the console at
+~40 lines/second until it was reset by hand. **A test that manipulates state outside its own
+session has to be able to end without the test being there to end it** — it now uses a finite
+20-repeat run that stops on its own in a second.
 
 ---
 
@@ -1504,7 +1538,7 @@ The two sub-questions the row left open, both answered by building it:
   every handover. Draining stays unconditional regardless, so the ring cannot fill and start
   charging the drop counter for records nobody wanted to see.
 
-**Resolution:** both drains built and exercised on hardware. acon: `test_events.py` 30/30.
+**Resolution:** both drains built and exercised on hardware. acon: `test_events.py` 34/34.
 Menu: log lines read off the wire for all three switch classes, in the documented
 production order — the cycle start's manual ON, the auto edges, the halt's manual OFF, then
 the completion.
@@ -1653,7 +1687,7 @@ Adding the in-band record later would change no existing behaviour, so nothing i
 
 ### D1 — acon command surface
 
-**Status:** 🟢 — **both halves BUILT and verified on hardware** (30/30)
+**Status:** 🟢 — **both halves BUILT and verified on hardware** (34/34)
 
 **RESOLVED — the consumption model (user, 2026-08-30): TWO commands.**
 
@@ -1796,7 +1830,7 @@ every behaviour this row specified: finite bounded timeout, any-byte cancel with
 carve-out, XON/XOFF suspend/resume with the timeout still running while suspended,
 `ACON_PUMP()` every pass, and `*` for its streamed lines.
 
-`test_events.py` is **30 tests**, seven of them monitor mode, including the row's own
+`test_events.py` is **34 tests**, seven of them monitor mode, including the row's own
 acceptance criterion — *the same stimulus yields the same events as the sync drain* — which
 passes against an identical 3-repeat cycle collected each way.
 
@@ -1863,12 +1897,12 @@ production mask is the first and is unaffected by either.
 
 **Status:** 🟢 · **Needs user:** no
 
-**Resolution (2026-08-30):** `scripts/hil/test_events.py`, **30 tests, all passing on
+**Resolution (2026-08-30):** `scripts/hil/test_events.py`, **34 tests, all passing on
 hardware.** A new suite rather than an extension of `test_acon.py`, and distinct from
 `test_eventq.py` — that one drives the vendored module against a dedicated test queue,
 this one drives the real application path.
 
-Regression net is now **acon 47 · nvm 28 · eventq 20 · events 30**, all green together.
+Regression net is now **acon 47 · nvm 28 · eventq 20 · events 34**, all green together.
 
 Coverage: mask round-trip, filler-bit retention and read purity; the three gating cases
 (disarmed, global-clear, per-channel); masked sources moving no counters; record content
@@ -1924,10 +1958,21 @@ together rather than causing two excursions.
 
 ---
 
-### W2 — Separate mask sets for the human and automation interfaces *(banked)*
+### W2 — Separate mask sets for the human and automation interfaces *(OPTED OUT)*
 
-**Status:** 🔵 · **Needs user:** no — **deliberately deferred (user, 2026-08-30):** *"another
-thing I don't want to get bogged down on."* S2 locks a single shared set for now.
+**Status:** ⛔ **CLOSED — do not implement (user, 2026-08-30).** An alternative management
+method was built instead: **S2b**, which parks the single register on acon entry and reloads
+it from NVM on exit, with op `I` to inherit the standing configuration deliberately.
+
+**Why that closes it rather than deferring it.** W2 existed to stop the two control surfaces
+disturbing each other's arming. S2b delivers exactly that — the human console's settings
+survive an acon session untouched, and every session starts from a known state — using **one**
+register, **no** second copy to keep coherent, and **no** context test at any production site.
+The cost is two calls per session instead of a swap at handover or a branch per event. There
+is no remaining benefit for a second register set to provide.
+
+Kept below for the reasoning, not as a proposal. Do not reopen it without a requirement S2b
+genuinely cannot meet.
 
 **The idea:** two mask registers rather than one, so the human console and the automation
 console can arm different sources — e.g. an operator watching manual operations at the menu
@@ -2013,11 +2058,11 @@ Travels with T1 and W1 rather than causing its own excursion.
 
 **The proving subset is DONE and verified on hardware, through both sinks.** Switch events
 are produced in both ISR and main context, gated by a persisted mask, and consumed end to
-end — over acon (`test_events.py` 30/30, with the three existing suites still green) and
+end — over acon (`test_events.py` 34/34, with the three existing suites still green) and
 into the human log in the debug menu.
 
-**Open:** nothing on the Big Board, and no unbuilt design. **W1 / W2 / W3** 🔵 are banked by
-intent, not oversights.
+**Open:** nothing on the Big Board, and no unbuilt design. **W1 / W3 / W4** 🔵 are banked by
+intent, not oversights; **W2 is closed — opted out**, superseded by S2b.
 
 **The one known test gap:** the application queue's overflow/drop path has never been
 exercised. `test_eventq.py` proves it against the vendored module's own test queue; the real
@@ -2029,9 +2074,11 @@ arming from a host was not sticky across reset the way S4 says it is. Root cause
 `A[,mask[,persist]]` fix and the reset-crossing proof are in *DEFECT — acon mask writes
 never reach NVM* above. The vacuous test that could not have caught it is replaced.
 
-**Next natural step** is roadmap task 1 (sense). It now plugs into a path already carrying
-real traffic through every consumer — commanded drain, live monitor and human log — with its
-four mask bits and menu toggles wired and waiting for a producer.
+**Next natural step** is roadmap task 1 (sense) — the last wide gap in the design. It plugs
+into a path already carrying real traffic through every consumer (commanded drain, live
+monitor, human log), with its four mask bits, its class ID and its menu toggles already wired
+and waiting for a producer. `switch_event_data_t`'s `u16_state` is 16 bits wide precisely so a
+sense reading can use the same record shape.
 
 **Known tidy, not stale content:** the Big Board and the detail sections have drifted out of
 the model's prescribed D → S → I → T ordering as rows were added mid-session. Worth a

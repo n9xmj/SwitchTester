@@ -424,6 +424,24 @@ void v_event_control_nvm_init(void)
  * Fails safe: if the get() does not succeed the register keeps its zero, so the
  * failure mode is "nothing is armed" rather than "everything is".
  */
+/*
+ * Park the live mask, leaving the persisted copy alone (plan S2b).
+ *
+ * RAM only, deliberately: no x_nvm_set() of the cleared value. That asymmetry
+ * is the whole mechanism -- the NVM copy stays the human console's arming while
+ * the live register is whatever the current acon session has asked for, and
+ * v_event_control_restore() on the way out puts the former back.
+ *
+ * An acon command that DOES persist writes the NVM copy, so the restore hands
+ * that same value back and a script's deliberate change survives its session.
+ * Both cases fall out of one register with no context test at any production
+ * site -- see S2b for why that beat keeping two register sets.
+ */
+void v_event_control_suspend(void)
+{
+    g_x_event_control.u32_all = 0UL;
+}
+
 void v_event_control_restore(void)
 {
     uint32_t u32_mask = 0UL;

@@ -288,7 +288,19 @@ extern void v_event_queue_init(void);
  * pool writes every object in one flash write. Does NOT read the value back. */
 extern void v_event_control_nvm_init(void);
 
-/* Read the persisted mask into the live register. Deliberately deferred until
+/* Park the live mask without touching the persisted copy: every source goes
+ * quiet, and v_event_control_restore() puts back whatever NVM holds.
+ *
+ * The pair brackets an automation-console session (plan S2b). A host therefore
+ * always starts from a known all-disabled state and cannot leave the human
+ * console's arming disturbed on the way out -- while an acon command that asks
+ * to persist writes the NVM copy, so the restore hands that same value back and
+ * a deliberate change still sticks. One register, no per-production-site
+ * context test; the cost is two calls per session rather than one per event. */
+extern void v_event_control_suspend(void);
+
+/* Read the persisted mask into the live register. Also the acon session-exit
+ * half of the pair above. Deliberately deferred at boot until
  * AFTER switch/sense init: the register is all-zero until this runs, so the
  * forced-off writes in v_switch_out_init() produce nothing. Keep this call
  * where it is in the init order -- moving it earlier resurrects those events. */

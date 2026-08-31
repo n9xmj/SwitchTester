@@ -107,6 +107,8 @@ the periodic tick and the watchdog all keep running. Two consequences worth know
 - The debug menu's re-entry lock is held for the session's lifetime, which is what stops the
   menu from stealing input — **and** what keeps the menu-side event log from draining the
   event queue out from under your `D` command. See *Sink selection* in the event-path plan.
+- **The event mask is parked on entry and reloaded on exit.** A session starts disarmed and
+  cannot disturb the operator's arming on the way out. See *Mask handover* under `A`.
 
 ---
 
@@ -381,6 +383,40 @@ each would turn a test pass into a string of flash erases.
 
 Both fields are fully parsed before either is applied, so a bad persist flag cannot leave the
 mask half-written.
+
+##### Mask handover — what a session inherits, and what it leaves behind
+
+**Every acon session starts with the mask parked at zero**, whatever the debug menu had armed,
+and **the menu's arming is reloaded when the session ends** — on every exit path, the idle
+timeout included.
+
+| A session does | While it runs | After it exits |
+|---|---|---|
+| nothing | disarmed | the menu's arming, untouched |
+| `A,<mask>` — volatile | that mask | the menu's arming, untouched |
+| `A,<mask>,1` — persisted | that mask | **that mask** — the script meant it |
+| `I` | the menu's arming | the menu's arming, untouched |
+
+A host and an operator therefore cannot disturb each other's arming by accident, and a script
+always starts from a known state rather than whatever the bench was left in. There is still
+only **one** register — producers test one word and have no notion of which console is
+talking.
+
+**If you want the bench's standing configuration, ask for it with `I`.** One case makes this
+matter: an operator arms events, starts a long soak, and a script connects to *observe* it.
+Without `I`, the act of connecting parks exactly the arming the observer came to watch.
+
+#### `I` — inherit the persisted mask
+
+```
+I    ->    =I,M<mask>
+```
+
+Loads the **persisted** mask into the live register — the standing configuration the debug
+menu set, which a session otherwise never sees (see *Mask handover* below).
+
+Volatile by construction: it only loads, so a session that inherits and then exits leaves the
+persisted copy exactly as it found it.
 
 #### `D` — drain events
 
@@ -682,7 +718,7 @@ The suites, all run against a live board:
 | Suite | Tests | Covers |
 |---|---:|---|
 | `test_acon.py` | 47 | The protocol itself, switch ops, cycling, persistence |
-| `test_events.py` | 30 | The application event path — mask, gating, records, drain, monitor mode, persistence |
+| `test_events.py` | 34 | The application event path — mask, gating, records, drain, monitor mode, session handover, persistence |
 | `test_eventq.py` | 20 | The vendored `event_queue` module, via `F` |
 | `test_nvm.py` | 28 | The vendored `nvmparams` module, via `N` |
 

@@ -30,6 +30,27 @@
 #define ACON_PUMP()                     PUMP_POLLING_TASK()
 
 //------------------------------------------------------------------------------
+// Session brackets -- the event-mask handover (event-path-plan.md, S2b)
+//------------------------------------------------------------------------------
+// Optional in the module; this project uses them to keep the two control
+// surfaces from disturbing each other WITHOUT a second mask register.
+//
+//   enter  park the live mask, leaving the NVM copy alone -> every acon session
+//          starts from a known all-disabled state
+//   exit   reload the live mask from NVM -> the human console's arming comes
+//          back untouched, and an acon command that asked to persist wrote that
+//          NVM copy, so a deliberate change survives instead
+//
+// One register and no context test at any production site; the whole cost is
+// these two calls per session. ACON_ON_EXIT() runs on every way out, the idle
+// timeout included.
+
+#include "app_events.h"         // v_event_control_suspend/_restore
+
+#define ACON_ON_ENTER()                 v_event_control_suspend()
+#define ACON_ON_EXIT()                  v_event_control_restore()
+
+//------------------------------------------------------------------------------
 // Identity, reported by the V builtin
 //------------------------------------------------------------------------------
 

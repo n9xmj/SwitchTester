@@ -74,6 +74,22 @@
 #define ACON_TICK_MS()          0u
 #endif
 
+/*
+ * Session brackets. Optional, and silent when unset -- unlike the two above,
+ * omitting these costs nothing, so there is no #warning.
+ *
+ * ACON_ON_EXIT() runs on EVERY way out: quit, exit sentinel, and the idle
+ * timeout's early return. Anything it undoes must be undone on all three, or
+ * the one path a dead host actually takes is the one that leaks.
+ */
+#ifndef ACON_ON_ENTER
+#define ACON_ON_ENTER()         do { } while (0)
+#endif
+
+#ifndef ACON_ON_EXIT
+#define ACON_ON_EXIT()          do { } while (0)
+#endif
+
 /* Unsigned wrap does the right thing at rollover, so no special case. */
 #define ACON_ELAPSED_MS(ts)     (ACON_TICK_MS() - (ts))
 
@@ -592,6 +608,10 @@ void v_automation_console_run(acon_mode_t x_mode)
         v_stdout_mute(1);
     }
 
+    /* Before the banner: a host that sees =~,V1 is entitled to assume the
+     * session's starting state is already established. */
+    ACON_ON_ENTER();
+
     v_acon_emit(ACON_SIG_OK, "%c,V%X", ACON_OP_SESSION, ACON_PROTOCOL_VERSION);
     v_acon_check_op_table();
 
@@ -610,6 +630,7 @@ void v_automation_console_run(acon_mode_t x_mode)
             /* '!' rather than '=': the host did not ask to leave. Drive state is
              * untouched, so a soak run started earlier keeps running. */
             v_acon_emit(ACON_SIG_ERR, "%c,TMO", ACON_OP_SESSION);
+            ACON_ON_EXIT();
             if (s_x_mode == ACON_MODE_SCRIPT)
             {
                 v_stdout_mute(0);
@@ -629,6 +650,7 @@ void v_automation_console_run(acon_mode_t x_mode)
     }
 
     v_acon_emit(ACON_SIG_OK, "%c,BYE", ACON_OP_SESSION);
+    ACON_ON_EXIT();
     if (s_x_mode == ACON_MODE_SCRIPT)
     {
         v_stdout_mute(0);

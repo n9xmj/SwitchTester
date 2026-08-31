@@ -76,6 +76,30 @@
 #define ACON_PUMP()                     PUMP_POLLING_TASK()
 
 //------------------------------------------------------------------------------
+// Session brackets (OPTIONAL)
+//------------------------------------------------------------------------------
+// ACON_ON_ENTER() / ACON_ON_EXIT()
+//   Run once as a session opens and once as it closes. Unlike the two hooks
+//   above, leaving these undefined is free and silent -- they default to no-ops
+//   and nothing warns.
+//
+//   For state that a host session should own for its duration and hand back
+//   afterwards. ACON_ON_ENTER() runs BEFORE the =~,V<n> banner, so a host that
+//   sees the banner can assume the starting state is already established.
+//
+//   ACON_ON_EXIT() runs on EVERY way out -- quit, exit sentinel, AND the idle
+//   timeout. Anything the enter hook changes must be undone in all three, or
+//   the one path a dead host actually takes is the one that leaks.
+//
+//   Example: SwitchTester parks its event-production mask on entry and reloads
+//   it from NVM on exit, so an automation session always starts from a known
+//   state and cannot leave the operator's console settings disturbed -- without
+//   needing a second copy of the register.
+//
+// #define ACON_ON_ENTER()              v_my_session_begin()
+// #define ACON_ON_EXIT()               v_my_session_end()
+
+//------------------------------------------------------------------------------
 // Identity, reported verbatim by the V builtin (EDIT THESE)
 //------------------------------------------------------------------------------
 // Enough for a host to pin exactly what it is talking to. Any of them may be

@@ -563,6 +563,38 @@ static void v_acon_op_event_drain(char c_op, char *pc_line)
 }
 
 /*
+ * I -- inherit the persisted mask into the live register.
+ *
+ * The read counterpart of A's persist flag, and the deliberate escape hatch
+ * from S2b's entry-clear: a session that wants the bench's STANDING
+ * configuration, rather than the known-empty one every session starts from,
+ * asks for it explicitly. Without this there is no way for a script to observe
+ * a soak the operator set up, because the act of connecting would have parked
+ * exactly the arming it came to watch.
+ *
+ * A separate op rather than another field on A, because it is an action and not
+ * a modifier on a write: A's contract stays "[mask[,persist]]" exactly as
+ * documented and tested, and nothing about the existing two fields shifts
+ * meaning.
+ *
+ * Volatile by construction. It only loads, so a session that inherits and then
+ * exits leaves the persisted copy exactly as it found it -- the restore on the
+ * way out reads back the same value it just handed over.
+ */
+static void v_acon_op_event_inherit(char c_op, char *pc_line)
+{
+    char ac_op[4];
+
+    (void) pc_line;
+
+    v_event_control_restore();
+
+    v_acon_emit(ACON_SIG_OK, "%s,M%X",
+                pc_acon_op_name(c_op, ac_op),
+                (unsigned) g_x_event_control.u32_all);
+}
+
+/*
  * M,<timeout_ms> -- monitor mode. Stream events as they happen, until the host
  * says stop or the timeout expires.
  *
@@ -1366,6 +1398,7 @@ const acon_op_t g_x_acon_command[] =
     { 'A', v_acon_op_event_mask,  "event mask: [hex[,persist]] (bit31=global enable)" },
     { 'D', v_acon_op_event_drain, "drain events: [max] (0=all)"           },
     { 'H', v_acon_op_event_house, "event queue: [S=status,F=flush,R=reset]" },
+    { 'I', v_acon_op_event_inherit, "inherit the persisted (console) event mask" },
     { 'M', v_acon_op_event_monitor, "monitor events: timeout_ms (required, finite)" },
     { 'Y', v_acon_op_spiflash,    "spi flash probe: [I=id,S=status,T=dma rw test,L=loopback,N=ncs lb,J=sck lb,C[,0|1]=park cs,K=clock burst] (temp)" },
     { 'U', v_acon_op_uart_stress, "uart loopback stress: idx[,first,last,bursts]" },
