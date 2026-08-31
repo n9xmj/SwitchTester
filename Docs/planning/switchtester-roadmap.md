@@ -1,7 +1,16 @@
 # SwitchTester — forward roadmap
 
 **Purpose:** the user's stated intent for finishing SwitchTester, written down so a
-new session can pick the work up cold. Recorded 2026-08-27.
+new session can pick the work up cold. Recorded 2026-08-27, **updated 2026-08-30.**
+
+> **Two of the four tasks are done.** Tasks 2 and 3 — the event path and its consumers —
+> were built and bench-verified 2026-08-30 (`event-path-plan.md`, nothing open). What
+> remains:
+>
+> - **Task 4, switching lists** — approach now settled (extend the compare-ISR engine with
+>   an interval list; DMA rejected). The narrower gap, and unblocked.
+> - **Task 1, sense inputs** — the wide gap, still blocked on one user answer: what should
+>   each channel measure?
 
 **This is a roadmap, not a decision-log board.** It says *what* is wanted, in what
 order, and *what is already designed* — it does not resolve design questions. Each
@@ -20,10 +29,11 @@ Everything below is built, bench-verified on the NUCLEO-G0B1RE, and on `main`:
 |---|---|
 | Switch outputs, manual | Done. Levels set by rewriting each TIM2 channel's `OCxM` (`FORCED_ACTIVE`/`FORCED_INACTIVE`) — pins stay permanently AF2/TIM2, **no GPIO remuxing, no PWM output mode** |
 | Switch cycling | Done. TIM2 compare ISR, per-channel `u32_on_time_us` / `u32_off_time_us` / `u32_repeat_count`, NVM-persisted |
-| Automation console, phase 1 | Done. 47/47 HIL |
+| Automation console | **Phases 1 and 2 done.** 47/47 HIL. Phase 2 is monitor mode (op `M`) — live event streaming, bounded timeout, XON/XOFF |
+| **Event path (tasks 2 + 3)** | **DONE and bench-verified 2026-08-30, 34/34 HIL.** Production mask, both producer hooks, commanded drain, monitor mode, human log, `[e]` config submenu, `[g]` gag, S2b mask handover. Board `event-path-plan.md` has nothing open |
 | logging, menusystem, uart_stream | Done, vendored |
 | nvmparams | Phase 1 done, 28/28 HIL. Wear levelling unbuilt (phase 2) |
-| **event_queue** | **Phase 1 done, 17/17 HIL. Vendored and adopted here; also vendored into Skeleton wired-but-unused.** The enabler for tasks 2–4 below |
+| **event_queue** | **Phase 1 done, 20/20 HIL. Vendored and adopted here; also vendored into Skeleton wired-but-unused.** The enabler for tasks 2–4 below |
 | Sense front-end | **Configured but inert.** Comparators are `TriggerMode NONE` and not started; DAC channels not driven |
 
 The four sense channels are deliberately asymmetric — see
@@ -52,14 +62,20 @@ refusing the dual assignment (PA1 is the candidate, ~20 pF S&H loading is the co
 ### Task 2 — Tie event_queue into SWITCH and SENSE events
 > *"Tie in event queue support for SWITCH and SENSE events."*
 
-The switch half can be built **today** — the events already exist (TIM2 compare
-transitions, `JOB_CYCLE_COMPLETE`). The sense half is gated on task 1.
+**SWITCH HALF DONE and bench-verified 2026-08-30.** Both producer hooks, the production
+mask, the 12-byte record and the 8 KB queue instance. The sense half is still gated on task 1
+— but its mask bits, its class ID (`0x0201`) and its `[e]` menu toggles are already wired and
+waiting for a producer, and `switch_event_data_t`'s `u16_state` is 16 bits wide precisely so
+an ADC reading uses the same record shape. Board: `event-path-plan.md`.
 
 ### Task 3 — Consume those events, two ways
 > *"Consume events generated in SWITCH and SENSE ISRs via the automation console,
 > and (alternatively) in the human-readable log output."*
 
-Depends on task 2. **Largely designed already** — see *Existing design to reuse*.
+**DONE and bench-verified 2026-08-30**, and it turned out to be three ways rather than two:
+the commanded acon drain (`D`), acon **monitor mode** (`M`) streaming live, and the human log
+in the debug menu. Sink selection is structural — the debug menu's re-entry lock, not a mode
+flag; see *Sink selection* in `event-path-plan.md` for why the obvious siting was wrong.
 
 ### Task 4 — Interrupt-driven "switching lists"
 > *"At present, interrupt-driven switching is essentially a low-frequency
@@ -69,7 +85,15 @@ Depends on task 2. **Largely designed already** — see *Existing design to reus
 > some software interrupt generation support so the switch state changes could be
 > logged via the event queue."*
 
-Independent of sense; wants task 2's event plumbing for the logging half.
+Independent of sense. **Its event plumbing is now built and proven** (task 2/3, done
+2026-08-30), so this task inherits arming, overflow policy and all three consumers rather
+than having to settle them.
+
+**The drive-architecture fork is RESOLVED (user, 2026-08-30): extend the compare-ISR engine
+with a list of interval values; DMA is rejected.** Full mechanism, the four notes that matter
+before writing code, and the two genuinely open questions are in *Task 4 — the design fork,
+RESOLVED* below. **This is the next-easiest gap** — narrower than sense, and the only one with
+its approach already settled.
 
 ---
 
@@ -94,9 +118,15 @@ commits to them.
 After that the two remaining tracks are independent and can be taken in either
 order:
 
-- **Task 1 → rest of task 2/3** (sense events), blocked on the user's "what should
-  each channel measure" answer.
-- **Task 4**, blocked on a drive-architecture decision (below).
+- **Task 1 → the sense half of 2/3**, still blocked on the user's "what should each channel
+  measure" answer. The widest remaining gap.
+- **Task 4**, no longer blocked — the drive-architecture decision was taken 2026-08-30
+  (extend the ISR engine). The narrower of the two, and the one that can start immediately.
+
+**Status 2026-08-30: the proving subset became the whole of tasks 2 and 3.** Switch events are
+produced from both hooks, gated by a persisted mask, and consumed three ways — commanded
+drain, live monitor stream, and the human log. Only the *sense* producer is outstanding, and
+that is task 1's job.
 
 ---
 
@@ -465,34 +495,75 @@ alone are the same judgement, not two different ones.
 
 ---
 
-## Task 4 — the design fork worth knowing before that session starts
+## Task 4 — the design fork, RESOLVED (user, 2026-08-30)
 
-The current engine does **not** use PWM output mode. It sets a level by rewriting
-`OCxM` to forced-active/inactive and schedules the next edge by writing `CCRx` and
-taking a compare interrupt. That was a deliberate locked decision (no GPIO↔AF
-remuxing, polarity lives in `CCER.CCxP`).
+**Extend the compare-ISR engine with a timing list. DMA is rejected.**
 
-A DMA-fed duty list points the other way — toward real PWM output with DMA'd `CCRx`,
-and, because varying *duty per cycle* at a varying *period* also means varying `ARR`,
-most likely TIM DMA **burst** mode (`DCR`/`DMAR`) writing several registers per
-update event. That is a different drive mechanism from the one currently locked, so
-task 4 should open by deciding whether to:
+> *"I was considering using DMA to set this up but there's not much point, as you still need
+> an interrupt to get the switch transition events logged. DMA would just complicate this.
+> The list vs two-state ontime/offtime adds only a small extra overhead (LUT lookup, index
+> management) to the TIM compare ISR."*
 
-- extend the existing compare-ISR engine to pull each cycle's on/off pair from a
-  list (simplest, keeps every existing property and the event hooks, costs one ISR
-  per edge — which is what it already costs), or
-- move to DMA-fed PWM for autonomous operation (highest fidelity at high rates, but
-  changes the drive scheme and complicates the "log every state change" requirement
-  the user explicitly wants to keep).
+That is the decisive argument and it is worth keeping stated plainly: **the event-logging
+requirement already forces an interrupt per edge.** DMA's entire benefit is *not* taking one.
+Once you must take it anyway, DMA buys nothing and costs a different drive scheme (real PWM
+output mode, burst `DCR`/`DMAR` writes to vary `ARR` as well as `CCRx`), abandoning the
+locked forced-`OCxM` decision, and DMA channels this board does not have spare — DMA1
+Channels 1 and 2 are already claimed by SPI3 RX/TX.
 
-Resource facts to check against when that is decided: all four TIM2 channels
-(CH1–CH4) are already in use, one per switch, each with its own `CCRx`; **DMA1
-Channel 1 and Channel 2 are already claimed by SPI3 RX/TX** for the SPI-flash work.
-A per-channel DMA scheme needs channels beyond those.
+### The mechanism
 
-Also note: per-cycle-varying duty multiplies event volume, which makes **S9**
-(subscription/arming) and **S7** (overflow policy) load-bearing rather than
-nice-to-have. Decide those in the proving subset, not after.
+A per-channel list of **interval** values, walked by the compare ISR:
+
+- Each entry is a **delta added to the present `CCRx`**, not an absolute — so the list is a
+  sequence of "time until the next transition", and each entry produces exactly one edge.
+- The list is **variable length**.
+- At end of list: index resets to 0, the repeat tally advances, and the list runs again.
+- When the repeats are exhausted, the run stops exactly as it does today.
+- **Repeat count 1 gives a one-shot variable-width pulse train**, which is the headline
+  capability.
+
+### Four notes for whoever opens that session
+
+**1. The existing engine is the two-entry case of this.** `u32_on_time_us` / `u32_off_time_us`
+is precisely a 2-element list. So the list model *generalises* what is already built rather
+than replacing it — the current NVM parameters, the `W`/`G` acon ops and the `[c]` menu can
+keep working as the degenerate case, and the ISR gets one code path instead of two. That is
+worth designing for deliberately; it is most of the risk reduction available here.
+
+**2. An odd-length list inverts the phase every pass.** Each entry is one transition, so a
+3-entry list ends its first pass with the output at the opposite level from where it started,
+and the second pass runs inverted. Either a feature (a 2N-cycle pattern from an N-entry list)
+or a trap, depending on what the operator expected — but it must be a *decision*, not a
+discovery. The two-entry case is even, which is why the question has never come up.
+
+**3. Advance the tally, do not decrement it.** The user asked *"decremented (incremented?)"* —
+the existing engine increments `u32_cycles_done` and compares it against `u32_repeat_count`,
+and that is deliberate: repeat 0 means "run until stopped", so a *remaining* counter would
+encode three different situations as zero. The `G` op's contract already reports cycles
+**done** for exactly this reason. Keep it.
+
+**4. The ISR budget has headroom, and it is already measured.** `SWITCH_CYCLE_TIME_MIN_US` is
+a 10 µs phase floor and `SWITCH_CYCLE_MIN_LEAD_US` is 4 µs, leaving ~6 µs — about 384 cycles
+at 64 MHz — for the worst case. A list index bump, a bounds test and a table read are a
+handful of instructions against that. See the event-path plan's **I8** for the existing
+analysis, including the coupling trap: raising the lead above the phase floor silently
+*stretches* phases rather than rejecting them.
+
+### Two things that genuinely are open
+
+- **Where the list lives, and whether it persists.** Three `uint32_t` per channel is one
+  thing; four channels of variable-length lists is another, and the NVM pool is internal
+  flash with no wear levelling. RAM-only-per-run is the cheap default and probably right for
+  a bench instrument; persisted lists would want a hard cap on length.
+- **The upload surface.** `W,ch,on,off,rpt` does not extend naturally to N values. A separate
+  append-an-entry op, or a bulk load, plus a way to clear a list and read one back. `ACON_MAX_ARGS`
+  is 14 and `ACON_LINE_MAX` is 512, so a modest list fits one line — but not an arbitrary one.
+
+**Event volume is the reason S9 and S7 had to be settled first.** Per-cycle-varying timing
+multiplies the event rate, which is what made arming and overflow policy load-bearing rather
+than nice-to-have. Both are now built and proven, so this task inherits them rather than
+having to decide them.
 
 ---
 
@@ -505,8 +576,8 @@ One per task, to be asked **one at a time** when its session opens
 |---|---|---|
 | 1 | **What should each SENSE channel measure?** The channels are asymmetric; this precedes all sense design work | Task 1, and the sense half of 2/3 |
 | 2 | ~~One queue or two?~~ ~~Flush on handover?~~ **BOTH RESOLVED** — XOR by console mode (R2); flush is a dedicated host-commanded acon command | — |
-| 3 | **S9 — arming:** mask model, production-side gating and no masked-source counting all resolved. **Residuals, with leanings recorded (not locked): all-masked-by-default, menu + acon control, and whether the mask is NVM-persisted (TBD — note it largely supersedes the default)** | The proving subset |
-| 4 | **Task 4 — extend the compare-ISR engine, or move to DMA-fed PWM?** | Task 4 |
+| 3 | ~~**S9 — arming**~~ **RESOLVED and BUILT 2026-08-30.** Mask is NVM-persisted, all-disarmed by default, controlled from both surfaces, parked on acon entry and reloaded on exit (S2b). See `event-path-plan.md` | — |
+| 4 | ~~**Task 4 — extend the compare-ISR engine, or move to DMA-fed PWM?**~~ **RESOLVED 2026-08-30: extend the ISR engine, DMA rejected** — the event-logging requirement already forces an interrupt per edge, which is exactly what DMA exists to avoid. Two smaller questions take its place: where the list lives / whether it persists, and the upload surface | Task 4 |
 
 ---
 
