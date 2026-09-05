@@ -46,9 +46,9 @@ static void v_switch_set_pulse_width(void);
 static void v_switch_show_state(void);
 static void v_switch_all_off(void);
 
-static void v_cycle_help_text(void);
-static void v_cycle_key_param(char c_key, uint8_t u8_index);
-static void v_cycle_key_startstop(char c_key, uint8_t u8_index);
+static void v_cycle_channel_help(uint8_t u8_channel);
+static void v_cycle_value_param(uint8_t u8_value);
+static void v_cycle_value_startstop(uint8_t u8_channel);
 static void v_cycle_stop_all(void);
 static void v_event_help_text(void);
 static void v_event_key_toggle(char c_key, uint8_t u8_index);
@@ -444,18 +444,25 @@ static void v_switch_all_off(void)
  * SWITCH_A..D automatic cycling.
  *
  * Twelve editable parameters -- repeat / on-time / off-time for each of four
- * channels -- are bound by a single MENU_ITEM_KEY_LIST_FUNCTION over the key
- * list below. The framework hands the handler the key's index within that list,
- * which decodes straight to a (channel, parameter) pair with the same
- * arithmetic the NVM IDs use.
+ * channels -- plus four start/stop keys are bound by MENU_ITEM_VALUE_FUNCTION,
+ * one entry per key, each carrying its target in .u8_value. For the parameters
+ * that value is channel * SWITCH_CYCLE_PARAM_COUNT + parameter, the same
+ * arithmetic the NVM IDs use; for start/stop it is just the channel.
  *
- * Key-list entries print nothing in the menu help, so the whole table is drawn
- * by v_cycle_help_text() via MENU_ITEM_HELP_TEXT_VARIABLE, which lets each line
- * carry its live value.
+ * These entries print nothing of their own (.p_c_text is NULL), because every
+ * line needs a live value beside it. The listing is drawn instead by four
+ * MENU_ITEM_HELP_TEXT_VARIABLE_VALUE entries, one per channel, all bound to
+ * v_cycle_channel_help() -- the menu array does the iterating that the emitter
+ * used to do in an outer loop.
+ *
+ * The keys are contiguous runs, so the help emitter derives the character it
+ * prints from the base defines below rather than from a second key table. Keep
+ * the .c_key column in x_cycle_menu in step with them; the two are adjacent in
+ * this file precisely so a mismatch is visible at a glance.
  * ------------------------------------------------------------------------- */
 
-#define CYCLE_PARAM_KEYS        "abcdefghijkl"
-#define CYCLE_RUN_KEYS          "1234"
+#define CYCLE_PARAM_KEY_BASE    'a'     /* 'a'..'l', channel-major             */
+#define CYCLE_RUN_KEY_BASE      '1'     /* '1'..'4', one per channel           */
 
 static const char * apc_cycle_param_label[SWITCH_CYCLE_PARAM_COUNT] =
 {
@@ -475,83 +482,82 @@ static void v_cycle_print_us(uint32_t u32_us)
            (unsigned long) (u32_us % 1000UL));
 }
 
-static void v_cycle_help_text(void)
+/*
+ * One channel's slice of the cycling listing: its three editable parameters
+ * followed by its run state. Called once per MENU_ITEM_HELP_TEXT_VARIABLE_VALUE
+ * entry, with that entry's .u8_value as the channel -- so grouping everything
+ * about a channel together is the menu array's doing, not this function's.
+ */
+static void v_cycle_channel_help(uint8_t u8_channel)
 {
-    uint8_t u8_channel;
+    const switch_cycle_t *p_x_cycle;
+    const char *pc_name;
+    uint8_t u8_key_base;
 
-    v_newline();
-
-    for (u8_channel = 0; u8_channel < SWITCH_OUT_COUNT; u8_channel++)
+    if (u8_channel >= SWITCH_OUT_COUNT)
     {
-        const switch_cycle_t *p_x_cycle = &g_x_switch_cycle[u8_channel];
-        const char *pc_name = pc_switch_out_name(u8_channel);
-        uint8_t u8_key_base = u8_channel * SWITCH_CYCLE_PARAM_COUNT;
-
-        printf("[%c] Switch %s %s ",
-               CYCLE_PARAM_KEYS[u8_key_base + SWITCH_CYCLE_PARAM_REPEAT],
-               pc_name, apc_cycle_param_label[SWITCH_CYCLE_PARAM_REPEAT]);
-        if (p_x_cycle->u32_repeat_count == 0)
-        {
-            printf("%10s\r\n", "infinite");
-        }
-        else
-        {
-            printf("%10lu\r\n", (unsigned long) p_x_cycle->u32_repeat_count);
-        }
-
-        printf("[%c] Switch %s %s ",
-               CYCLE_PARAM_KEYS[u8_key_base + SWITCH_CYCLE_PARAM_ON],
-               pc_name, apc_cycle_param_label[SWITCH_CYCLE_PARAM_ON]);
-        v_cycle_print_us(p_x_cycle->u32_on_time_us);
-        v_newline();
-
-        printf("[%c] Switch %s %s ",
-               CYCLE_PARAM_KEYS[u8_key_base + SWITCH_CYCLE_PARAM_OFF],
-               pc_name, apc_cycle_param_label[SWITCH_CYCLE_PARAM_OFF]);
-        v_cycle_print_us(p_x_cycle->u32_off_time_us);
-        v_newline();
-
-        v_newline();
+        return;
     }
 
-    for (u8_channel = 0; u8_channel < SWITCH_OUT_COUNT; u8_channel++)
+    p_x_cycle   = &g_x_switch_cycle[u8_channel];
+    pc_name     = pc_switch_out_name(u8_channel);
+    u8_key_base = u8_channel * SWITCH_CYCLE_PARAM_COUNT;
+
+    printf("[%c] Switch %s %s ",
+           (char) (CYCLE_PARAM_KEY_BASE + u8_key_base + SWITCH_CYCLE_PARAM_REPEAT),
+           pc_name, apc_cycle_param_label[SWITCH_CYCLE_PARAM_REPEAT]);
+    if (p_x_cycle->u32_repeat_count == 0)
     {
-        const switch_cycle_t *p_x_cycle = &g_x_switch_cycle[u8_channel];
+        printf("%10s\r\n", "infinite");
+    }
+    else
+    {
+        printf("%10lu\r\n", (unsigned long) p_x_cycle->u32_repeat_count);
+    }
 
-        printf("[%c] Start/stop Switch %s cycling    ",
-               CYCLE_RUN_KEYS[u8_channel], pc_switch_out_name(u8_channel));
+    printf("[%c] Switch %s %s ",
+           (char) (CYCLE_PARAM_KEY_BASE + u8_key_base + SWITCH_CYCLE_PARAM_ON),
+           pc_name, apc_cycle_param_label[SWITCH_CYCLE_PARAM_ON]);
+    v_cycle_print_us(p_x_cycle->u32_on_time_us);
+    v_newline();
 
-        if (! p_x_cycle->u8_running)
-        {
-            printf("-- idle --\r\n");
-        }
-        else if (p_x_cycle->u32_repeat_count)
-        {
-            printf("RUNNING, %lu of %lu\r\n",
-                   (unsigned long) p_x_cycle->u32_cycles_done,
-                   (unsigned long) p_x_cycle->u32_repeat_count);
-        }
-        else
-        {
-            printf("RUNNING, %lu cycles\r\n",
-                   (unsigned long) p_x_cycle->u32_cycles_done);
-        }
+    printf("[%c] Switch %s %s ",
+           (char) (CYCLE_PARAM_KEY_BASE + u8_key_base + SWITCH_CYCLE_PARAM_OFF),
+           pc_name, apc_cycle_param_label[SWITCH_CYCLE_PARAM_OFF]);
+    v_cycle_print_us(p_x_cycle->u32_off_time_us);
+    v_newline();
+
+    printf("[%c] Start/stop Switch %s cycling    ",
+           (char) (CYCLE_RUN_KEY_BASE + u8_channel), pc_name);
+
+    if (! p_x_cycle->u8_running)
+    {
+        printf("-- idle --\r\n");
+    }
+    else if (p_x_cycle->u32_repeat_count)
+    {
+        printf("RUNNING, %lu of %lu\r\n",
+               (unsigned long) p_x_cycle->u32_cycles_done,
+               (unsigned long) p_x_cycle->u32_repeat_count);
+    }
+    else
+    {
+        printf("RUNNING, %lu cycles\r\n",
+               (unsigned long) p_x_cycle->u32_cycles_done);
     }
 
     v_newline();
 }
 
-static void v_cycle_key_param(char c_key, uint8_t u8_index)
+static void v_cycle_value_param(uint8_t u8_value)
 {
-    uint8_t u8_channel   = u8_index / SWITCH_CYCLE_PARAM_COUNT;
-    uint8_t u8_parameter = u8_index % SWITCH_CYCLE_PARAM_COUNT;
+    uint8_t u8_channel   = u8_value / SWITCH_CYCLE_PARAM_COUNT;
+    uint8_t u8_parameter = u8_value % SWITCH_CYCLE_PARAM_COUNT;
     switch_cycle_t *p_x_cycle = &g_x_switch_cycle[u8_channel];
     uint32_t u32_value;
     uint32_t u32_min;
     uint32_t u32_max;
     char str_prompt[48];
-
-    (void) c_key;
 
     if (u8_parameter == SWITCH_CYCLE_PARAM_REPEAT)
     {
@@ -606,31 +612,29 @@ static void v_cycle_key_param(char c_key, uint8_t u8_index)
     }
 }
 
-static void v_cycle_key_startstop(char c_key, uint8_t u8_index)
+static void v_cycle_value_startstop(uint8_t u8_channel)
 {
-    (void) c_key;
-
-    if (u8_switch_cycle_running(u8_index))
+    if (u8_switch_cycle_running(u8_channel))
     {
         printf("Switch %s cycling stopped after %lu cycles\r\n",
-               pc_switch_out_name(u8_index),
-               (unsigned long) g_x_switch_cycle[u8_index].u32_cycles_done);
-        v_switch_cycle_stop(u8_index);
+               pc_switch_out_name(u8_channel),
+               (unsigned long) g_x_switch_cycle[u8_channel].u32_cycles_done);
+        v_switch_cycle_stop(u8_channel);
         return;
     }
 
-    v_switch_cycle_start(u8_index);
+    v_switch_cycle_start(u8_channel);
 
-    if (! u8_switch_cycle_running(u8_index))
+    if (! u8_switch_cycle_running(u8_channel))
     {
         printf("Switch %s not started - check on/off times (%lu..%lu uS)\r\n",
-               pc_switch_out_name(u8_index),
+               pc_switch_out_name(u8_channel),
                (unsigned long) SWITCH_CYCLE_TIME_MIN_US,
                (unsigned long) SWITCH_CYCLE_TIME_MAX_US);
         return;
     }
 
-    printf("Switch %s cycling started\r\n", pc_switch_out_name(u8_index));
+    printf("Switch %s cycling started\r\n", pc_switch_out_name(u8_channel));
 }
 
 static void v_cycle_stop_all(void)
@@ -1088,23 +1092,31 @@ static const menu_item_t x_event_menu[] =
 };
 
 /*
- * Cycling submenu. Every parameter line is drawn by v_cycle_help_text() so it
- * can show its live value; the keys themselves are bound by the two key-list
- * entries, which print nothing of their own.
+ * Cycling submenu. Four MENU_ITEM_HELP_TEXT_VARIABLE_VALUE entries draw the
+ * listing, one per channel, so every line can show its live value; the keys
+ * themselves are MENU_ITEM_VALUE_FUNCTION entries carrying their target in
+ * .u8_value, and print nothing of their own.
  */
 static const menu_item_t x_cycle_menu[] =
 {
     {
+        /* Trailing CR/LF gives the blank line between the title and channel A;
+           the framework adds its own newline after this text. */
         .x_type = MENU_ITEM_HELP_TEXT_FIXED,
         .c_key = 0,
-        .p_c_text = "\r\n--- Switch cycling (SWITCH_A..D) ---"
+        .p_c_text = "\r\n--- Switch cycling (SWITCH_A..D) ---\r\n"
     },
-    {
-        .x_type = MENU_ITEM_HELP_TEXT_VARIABLE,
-        .c_key = 0,
-        .p_c_text = NULL,
-        .pfn_help_text_function = v_cycle_help_text
-    },
+
+    /* The listing: one entry per channel, all sharing v_cycle_channel_help(). */
+    { .x_type = MENU_ITEM_HELP_TEXT_VARIABLE_VALUE, .u8_value = 0,
+      .pfn_help_text_value_function = v_cycle_channel_help },
+    { .x_type = MENU_ITEM_HELP_TEXT_VARIABLE_VALUE, .u8_value = 1,
+      .pfn_help_text_value_function = v_cycle_channel_help },
+    { .x_type = MENU_ITEM_HELP_TEXT_VARIABLE_VALUE, .u8_value = 2,
+      .pfn_help_text_value_function = v_cycle_channel_help },
+    { .x_type = MENU_ITEM_HELP_TEXT_VARIABLE_VALUE, .u8_value = 3,
+      .pfn_help_text_value_function = v_cycle_channel_help },
+
     {
         .x_type = MENU_ITEM_HELP,
         .c_key = '?',
@@ -1115,16 +1127,46 @@ static const menu_item_t x_cycle_menu[] =
         .c_key = '\r',
         .p_c_text = NULL
     },
-    {
-        .x_type = MENU_ITEM_KEY_LIST_FUNCTION,
-        .p_c_key_list = CYCLE_PARAM_KEYS,
-        .pfn_key_list_function = v_cycle_key_param
-    },
-    {
-        .x_type = MENU_ITEM_KEY_LIST_FUNCTION,
-        .p_c_key_list = CYCLE_RUN_KEYS,
-        .pfn_key_list_function = v_cycle_key_startstop
-    },
+
+    /* Twelve parameter editors, .u8_value = channel * SWITCH_CYCLE_PARAM_COUNT
+       + parameter (repeat / on / off). Keys run 'a'..'l' = CYCLE_PARAM_KEY_BASE
+       upward; .p_c_text stays NULL because the listing above draws these lines
+       with their live values. */
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = 'a', .u8_value =  0,
+      .pfn_value_function = v_cycle_value_param },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = 'b', .u8_value =  1,
+      .pfn_value_function = v_cycle_value_param },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = 'c', .u8_value =  2,
+      .pfn_value_function = v_cycle_value_param },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = 'd', .u8_value =  3,
+      .pfn_value_function = v_cycle_value_param },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = 'e', .u8_value =  4,
+      .pfn_value_function = v_cycle_value_param },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = 'f', .u8_value =  5,
+      .pfn_value_function = v_cycle_value_param },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = 'g', .u8_value =  6,
+      .pfn_value_function = v_cycle_value_param },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = 'h', .u8_value =  7,
+      .pfn_value_function = v_cycle_value_param },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = 'i', .u8_value =  8,
+      .pfn_value_function = v_cycle_value_param },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = 'j', .u8_value =  9,
+      .pfn_value_function = v_cycle_value_param },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = 'k', .u8_value = 10,
+      .pfn_value_function = v_cycle_value_param },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = 'l', .u8_value = 11,
+      .pfn_value_function = v_cycle_value_param },
+
+    /* Start/stop, .u8_value = channel. Keys '1'..'4' = CYCLE_RUN_KEY_BASE up. */
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = '1', .u8_value = 0,
+      .pfn_value_function = v_cycle_value_startstop },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = '2', .u8_value = 1,
+      .pfn_value_function = v_cycle_value_startstop },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = '3', .u8_value = 2,
+      .pfn_value_function = v_cycle_value_startstop },
+    { .x_type = MENU_ITEM_VALUE_FUNCTION, .c_key = '4', .u8_value = 3,
+      .pfn_value_function = v_cycle_value_startstop },
+
     {
         .x_type = MENU_ITEM_FUNCTION,
         .c_key = '0',

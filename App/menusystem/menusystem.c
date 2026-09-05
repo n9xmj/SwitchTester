@@ -216,6 +216,22 @@ void v_menu_help(const menu_item_t *p_x_menu_list)
                 }
                 break;
 
+            case MENU_ITEM_HELP_TEXT_VARIABLE_VALUE:
+                // As HELP_TEXT_VARIABLE, but the emitter is told which entry
+                // called it. Several entries can then share one emitter, each
+                // rendering its own slice of a repeated block.
+                b_print_entry = false;
+                if (p_x_entry->p_c_text != NULL)
+                {
+                    printf("%s", p_c_text);
+                    v_newline(p_x_entry->b_no_newline);
+                }
+                if (p_x_entry->pfn_help_text_value_function != NULL)
+                {
+                    p_x_entry->pfn_help_text_value_function(p_x_entry->u8_value);
+                }
+                break;
+
             case MENU_ITEM_HELP:
                 if (p_x_entry->p_c_text == NULL)
                 {
@@ -231,6 +247,7 @@ void v_menu_help(const menu_item_t *p_x_menu_list)
                 break;
 
             case MENU_ITEM_FUNCTION:
+            case MENU_ITEM_VALUE_FUNCTION:
             case MENU_ITEM_KEY_FUNCTION:
                 if (p_x_entry->p_c_text == NULL)
                 {
@@ -385,6 +402,21 @@ void v_menu_exec(menu_control_t *p_x_menu_control, char c_key)
                     }
                     break;
 
+                case MENU_ITEM_VALUE_FUNCTION:
+                    // Deliberately NOT merged with MENU_ITEM_FUNCTION above:
+                    // both handlers live in the same union slot, so falling
+                    // through would call a void(uint8_t) through a void(void)
+                    // prototype - which compiles silently.
+                    if (p_x_entry->b_not_implemented || (p_x_entry->pfn_value_function == NULL))
+                    {
+                        b_report_not_implemented = true;
+                    }
+                    else
+                    {
+                        p_x_entry->pfn_value_function(p_x_entry->u8_value);
+                    }
+                    break;
+
                 case MENU_ITEM_KEY_FUNCTION:
                     if (p_x_entry->b_not_implemented || (p_x_entry->pfn_key_function == NULL))
                     {
@@ -463,6 +495,7 @@ void v_menu_exec(menu_control_t *p_x_menu_control, char c_key)
                 case MENU_ITEM_IGNORE:
                 case MENU_ITEM_HELP_TEXT_FIXED:
                 case MENU_ITEM_HELP_TEXT_VARIABLE:
+                case MENU_ITEM_HELP_TEXT_VARIABLE_VALUE:
                 default:
                     // Do nothing
                     break;

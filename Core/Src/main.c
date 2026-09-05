@@ -23,6 +23,7 @@
 #include "crc.h"
 #include "dac.h"
 #include "dma.h"
+#include "i2c.h"
 #include "usart.h"
 #include "rtc.h"
 #include "spi.h"
@@ -119,6 +120,8 @@ int main(void)
   MX_USART6_UART_Init();
   MX_SPI3_Init();
   MX_CRC_Init();
+  MX_I2C1_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
 
   v_stdio_retarget(&DEBUG_UART_HANDLE);

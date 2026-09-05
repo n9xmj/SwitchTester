@@ -79,10 +79,8 @@ extern SPI_HandleTypeDef hspi3;         /* SPI flash bus (temporary; MX25R80 bri
 #define TEST_INPUT_GPIO_Port GPIOC
 #define SENSE_A_Pin GPIO_PIN_1
 #define SENSE_A_GPIO_Port GPIOA
-#define DEBUG_TX_Pin GPIO_PIN_2
-#define DEBUG_TX_GPIO_Port GPIOA
-#define DEBUG_RX_Pin GPIO_PIN_3
-#define DEBUG_RX_GPIO_Port GPIOA
+#define SENSE_B_Pin GPIO_PIN_3
+#define SENSE_B_GPIO_Port GPIOA
 #define NUCLEO_LED_Pin GPIO_PIN_5
 #define NUCLEO_LED_GPIO_Port GPIOA
 #define SENSE_D_Pin GPIO_PIN_7
@@ -103,12 +101,14 @@ extern SPI_HandleTypeDef hspi3;         /* SPI flash bus (temporary; MX25R80 bri
 #define SWCLK_GPIO_Port GPIOA
 #define SPIFLASH_NCS_Pin GPIO_PIN_15
 #define SPIFLASH_NCS_GPIO_Port GPIOA
+#define DEBUG_TX_Pin GPIO_PIN_5
+#define DEBUG_TX_GPIO_Port GPIOD
+#define DEBUG_RX_Pin GPIO_PIN_6
+#define DEBUG_RX_GPIO_Port GPIOD
 #define SPIFLASH_SCK_Pin GPIO_PIN_3
 #define SPIFLASH_SCK_GPIO_Port GPIOB
 #define SPIFLASH_MISO_Pin GPIO_PIN_4
 #define SPIFLASH_MISO_GPIO_Port GPIOB
-#define SENSE_B_Pin GPIO_PIN_6
-#define SENSE_B_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

@@ -65,9 +65,11 @@ typedef enum __attribute__((packed))
     MENU_ITEM_IGNORE,               /**< Placeholder; never printed, never dispatched.                     */
     MENU_ITEM_HELP_TEXT_FIXED,      /**< Static title / section text printed in the listing.               */
     MENU_ITEM_HELP_TEXT_VARIABLE,   /**< Fixed text followed by output from @c pfn_help_text_function.      */
+    MENU_ITEM_HELP_TEXT_VARIABLE_VALUE, /**< As above, but the emitter receives @c u8_value.                */
     MENU_ITEM_HELP,                 /**< Reprints the whole menu (the classic @c '?').                     */
     MENU_ITEM_HELP_HIDDEN,          /**< Reprints the menu but stays off the listing (e.g. a bare Enter).   */
     MENU_ITEM_FUNCTION,             /**< Runs @c pfn_function (@c void(void)).                              */
+    MENU_ITEM_VALUE_FUNCTION,       /**< Runs @c pfn_value_function, passing @c u8_value.                   */
     MENU_ITEM_KEY_FUNCTION,         /**< Runs @c pfn_key_function, passing the key that selected it.        */
     MENU_ITEM_KEY_LIST_FUNCTION,    /**< One handler bound to several keys listed in @c p_c_key_list.       */
     MENU_ITEM_GOTO_MENU,            /**< Replaces the current menu with @c p_x_menu (no stack push).        */
@@ -127,6 +129,23 @@ struct menu_item_s
         };
     };
 
+    /**
+     * @brief Free-form byte handed to the @c *_VALUE handlers; ignored by every
+     *        other item type.
+     *
+     * The module attaches no meaning to it - it is whatever small integer the
+     * menu author finds useful (a channel number, a parameter index, a bit
+     * mask, a non-sequential tag). It lets one handler serve many entries, the
+     * way @c KEY_LIST_FUNCTION's index does, but chosen per entry rather than
+     * derived from a key's position in a list.
+     *
+     * @note It costs nothing: this slot is the padding byte ahead of the
+     *       4-byte-aligned pointer unions below, which is why it sits here
+     *       rather than at the end. The @c _Static_assert after this struct
+     *       pins that down.
+     */
+    uint8_t             u8_value;
+
     union
     {
         const char      *p_c_text;      /**< Help text; @c NULL suppresses the listing line.  */
@@ -135,12 +154,25 @@ struct menu_item_s
     union
     {
         void (*pfn_function)(void);                 /**< @c FUNCTION handler.                          */
+        void (*pfn_value_function)(uint8_t);        /**< @c VALUE_FUNCTION handler (receives @c u8_value). */
         void (*pfn_key_function)(char);             /**< @c KEY_FUNCTION handler (receives the key).   */
         void (*pfn_key_list_function)(char, uint8_t); /**< @c KEY_LIST_FUNCTION handler (key + index).  */
         void (*pfn_help_text_function)(void);       /**< @c HELP_TEXT_VARIABLE text emitter.           */
+        void (*pfn_help_text_value_function)(uint8_t); /**< @c HELP_TEXT_VARIABLE_VALUE text emitter.  */
         const menu_item_t *p_x_menu;                /**< @c GOTO_MENU / @c CALL_MENU target.           */
     };
 };
+
+/* u8_value must live in padding, not cost a word. Compare against the same
+ * struct without it: if a future field reordering pushes the item over, this
+ * fails rather than quietly taxing every menu entry in the project. */
+_Static_assert(sizeof(menu_item_t) == sizeof(struct {
+                   menu_item_type_t x_type;
+                   char             c_key;
+                   uint8_t          u8_options;
+                   const char       *p_c_text;
+                   void            (*pfn_function)(void); }),
+               "menu_item_t::u8_value must occupy existing padding");
 
 /* The option flags must pack into a single byte. GCC lays bool:1 bitfields out
  * LSB-first into one byte, aliasing u8_options; a compiler that widened them

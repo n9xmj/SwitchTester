@@ -234,12 +234,21 @@ discovery, poor for repeatability. A crystal timebase is wish-list **W2**.
 | `0` | stop all cycling, outputs off |
 | `?` `Esc` | help / return |
 
-Parameter lines are drawn by a `MENU_ITEM_HELP_TEXT_VARIABLE` handler so each
-shows its live value; the keys are bound by two `MENU_ITEM_KEY_LIST_FUNCTION`
-entries, with `channel = index / 3` and `parameter = index % 3` — the same
-arithmetic the NVM IDs use. Times display as raw µs plus an integer-derived
-`(500.000 mS)` gloss; repeat 0 shows as `infinite`; start/stop lines carry live
-run status.
+The listing is drawn by four `MENU_ITEM_HELP_TEXT_VARIABLE_VALUE` entries — one
+per channel, all bound to the same emitter, each passing its channel number in
+`.u8_value` — so every line shows its live value and a channel's parameters and
+run state appear together. The keys are sixteen `MENU_ITEM_VALUE_FUNCTION`
+entries (twelve parameters, four start/stop) whose `.u8_value` is
+`channel * 3 + parameter` and `channel` respectively — the same arithmetic the
+NVM IDs use. Times display as raw µs plus an integer-derived `(500.000 mS)`
+gloss; repeat 0 shows as `infinite`; start/stop lines carry live run status.
+
+This replaced a pair of `MENU_ITEM_KEY_LIST_FUNCTION` entries plus a single
+monolithic `MENU_ITEM_HELP_TEXT_VARIABLE` emitter (2026-09-05), when the two
+`*_VALUE` item types were added to `menusystem`. It costs 16 more menu entries
+(+188 bytes of flash across both changes, no RAM) and buys per-entry keys that
+are visible in the table rather than derived from a key-list string's position,
+and an emitter that renders one channel instead of looping over four.
 
 ## NVM pool — inherited-data hazard
 

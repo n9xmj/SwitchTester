@@ -110,6 +110,11 @@ you need them.
   `.pfn_help_text_function` every time the menu is printed, so the line can show
   a *live* value. Any `.p_c_text` prints first as a fixed lead-in. See *Showing
   live parameter values* below.
+- **`MENU_ITEM_HELP_TEXT_VARIABLE_VALUE`** — as `HELP_TEXT_VARIABLE`, but the
+  emitter is `void(uint8_t)` (`.pfn_help_text_value_function`) and receives this
+  entry's `.u8_value`. Several entries can then share one emitter, each
+  rendering its own slice of a repeated block — the framework does the
+  iterating instead of the emitter looping internally.
 - **`MENU_ITEM_HELP`** — reprints the whole menu; the conventional `?` key. With
   `.p_c_text = NULL` it lists itself as "Help - show this menu".
 - **`MENU_ITEM_HELP_HIDDEN`** — the same reprint action, but kept off the
@@ -118,6 +123,11 @@ you need them.
 - **`MENU_ITEM_FUNCTION`** — runs a `void(void)` handler (`.pfn_function`) when
   `.c_key` is pressed; the workhorse command entry. NULL `.p_c_text` hides it; a
   NULL handler (or `.b_not_implemented`) makes it report "Not implemented yet".
+- **`MENU_ITEM_VALUE_FUNCTION`** — like `FUNCTION`, but the handler is
+  `void(uint8_t)` (`.pfn_value_function`) and receives this entry's `.u8_value`.
+  Lets one handler serve several entries, each supplying its own tag. Hiding and
+  "not implemented" behave exactly as for `FUNCTION`. See *One handler, many
+  entries*.
 - **`MENU_ITEM_KEY_FUNCTION`** — like `FUNCTION`, but the handler is `void(char)`
   and receives the key that selected it (`.pfn_key_function`) — for when a
   single-key entry still wants to know which key ran it.
@@ -204,8 +214,90 @@ static void v_edit_test_value(char c_key, uint8_t u8_index)
 A `KEY_LIST_FUNCTION` prints nothing itself, so pair it with the
 `HELP_TEXT_VARIABLE` block above: that block is both the key legend **and** the
 live readout, and the two together give a compact "press *N* to edit value *N*,
-here are their current values" panel. This is exactly how SwitchTester's *Switch
-cycling* submenu presents its per-channel timing parameters.
+here are their current values" panel.
+
+### One handler, many entries (`VALUE_FUNCTION`)
+
+`VALUE_FUNCTION` reaches the same goal from the other direction. Instead of one
+entry covering a run of keys, you write one entry **per** key and give each its
+own `.u8_value`, which the framework hands to the shared handler:
+
+```c
+/* One editor behind four entries. u8_value says which one ran it. */
+static void v_edit_test_value(uint8_t u8_value)
+{
+    char str_prompt[32];
+
+    snprintf(str_prompt, sizeof(str_prompt), "Test value %u", (unsigned) (u8_value + 1));
+    (void) u8_entry_u32(str_prompt, 0, 0xFFFFFFFFUL, &u32_test_values[u8_value]); /* your line editor */
+}
+
+    {
+        .x_type             = MENU_ITEM_VALUE_FUNCTION,
+        .c_key              = '1',
+        .u8_value           = 0,
+        .p_c_text           = "Edit test value 1",
+        .pfn_value_function = v_edit_test_value
+    },
+    {
+        .x_type             = MENU_ITEM_VALUE_FUNCTION,
+        .c_key              = '2',
+        .u8_value           = 1,
+        .p_c_text           = "Edit test value 2",
+        .pfn_value_function = v_edit_test_value
+    },
+    /* ...and so on */
+```
+
+**Which of the two to use.** Neither supersedes the other; they trade different
+things:
+
+| | `KEY_LIST_FUNCTION` | `VALUE_FUNCTION` |
+|---|---|---|
+| Array entries | one, for all N keys | one per key |
+| Help line | none — needs a `HELP_TEXT_*` legend | its own `.p_c_text` per entry |
+| Value passed | the key's position in the list | `.u8_value`, chosen per entry |
+| Keys | a contiguous run reads best | arbitrary, unrelated keys are fine |
+
+So: `KEY_LIST_FUNCTION` when the keys form a family and one legend describes
+them all; `VALUE_FUNCTION` when each key deserves its own help text, or when the
+value you want to pass is not the key's ordinal position — a sparse or
+non-sequential tag, a channel number, a bit mask.
+
+### Live values on repeated entries (`HELP_TEXT_VARIABLE_VALUE`)
+
+One thing a `VALUE_FUNCTION` entry cannot do is carry a *live* help line: the
+executive and the text emitter share the same union slot, so an entry has one or
+the other, not both. When a set of entries each needs a refreshed readout, keep
+the readout in separate `HELP_TEXT_VARIABLE_VALUE` entries and let `.u8_value`
+pick out which slice each one draws:
+
+```c
+/* Called once per entry, with that entry's .u8_value. */
+static void v_channel_help(uint8_t u8_channel)
+{
+    printf("[%c] Channel %u  = %lu\r\n",
+           "1234"[u8_channel], (unsigned) u8_channel,
+           (unsigned long) u32_test_values[u8_channel]);
+}
+
+    {
+        .x_type                       = MENU_ITEM_HELP_TEXT_VARIABLE_VALUE,
+        .u8_value                     = 0,
+        .pfn_help_text_value_function = v_channel_help
+    },
+    /* ...one per channel */
+```
+
+Compared with a single `HELP_TEXT_VARIABLE` emitter that loops internally, this
+moves the iteration into the menu array: the emitter renders exactly one slice
+and stays short, and entries can be reordered, hidden or interleaved with other
+items without touching it.
+
+**The value byte.** `.u8_value` is free-form and costs nothing — it occupies a
+padding byte the entry already had. The module attaches no meaning to it and
+only the two `*_VALUE` types read it; every other item type ignores it, so
+leaving it unset (`0`) in existing menus is correct and changes nothing.
 
 **Option flags.** Each item carries a byte of option bits, settable two ways —
 by named bitfield or by OR-mask:
