@@ -300,11 +300,98 @@ static void v_debug_spi_pin_probe(void)
 #define SWITCH_PULSE_WIDTH_MIN_MS       1
 #define SWITCH_PULSE_WIDTH_MAX_MS       60000
 
+/* How u8_debug_entry_u32() should parse what the user typed. */
+typedef enum
+{
+    ENTRY_PLAIN,        /* base-10 integer, no suffix -- counts, milliseconds */
+    ENTRY_TIME_US       /* strtoul base 0 plus an optional u/m/s scale suffix */
+}
+debug_entry_mode_t;
+
+/*
+ * Parse a time-in-microseconds entry: a strtoul() base-0 integer (so 500,
+ * 0x1F4 and 0764 all mean the same thing) followed by an optional scaling
+ * suffix -- 'u' or nothing for microseconds, 'm' for milliseconds, 's' for
+ * seconds. Upper case is accepted too; there is no mega- anything here for 'M'
+ * to collide with. Fractions are deliberately NOT accepted (D7 in
+ * Docs/planning/switch-cycling-plan.md: no floating point in this codebase), so
+ * 12.345m is rejected rather than quietly truncated.
+ *
+ *   500 / 500u -> 500      10m -> 10000       5s -> 5000000
+ *   0x100m     -> 256000   0377m -> 256000
+ *
+ * Overflow needs no errno: an input too large for 32 bits comes back as
+ * ULONG_MAX, which every caller's range check rejects, and a suffix that would
+ * push the product past 32 bits is caught by the divide-first guard below.
+ *
+ * Returns nonzero and writes *p_u32_us on success; 0 leaves it untouched.
+ */
+static uint8_t u8_parse_time_us(const char *pc_text, uint32_t *p_u32_us)
+{
+    unsigned long ul_value;
+    unsigned long ul_scale = 1UL;
+    const char *pc_scan;
+    char *pc_end;
+
+    if ((pc_text == NULL) || (p_u32_us == NULL))
+    {
+        return 0;
+    }
+
+    /* strtoul() would happily wrap a negative into a huge positive. */
+    pc_scan = pc_text;
+    while ((*pc_scan == ' ') || (*pc_scan == '\t'))
+    {
+        pc_scan++;
+    }
+    if ((*pc_scan == '-') || (*pc_scan == '+'))
+    {
+        return 0;
+    }
+
+    ul_value = strtoul(pc_text, &pc_end, 0);
+    if (pc_end == pc_text)
+    {
+        return 0;                       /* no digits at all */
+    }
+
+    switch (*pc_end)
+    {
+        case 'u': case 'U':  ul_scale = 1UL;        pc_end++;  break;
+        case 'm': case 'M':  ul_scale = 1000UL;     pc_end++;  break;
+        case 's': case 'S':  ul_scale = 1000000UL;  pc_end++;  break;
+        default:                                               break;
+    }
+
+    while ((*pc_end == ' ') || (*pc_end == '\t'))
+    {
+        pc_end++;
+    }
+    if (*pc_end != 0)
+    {
+        return 0;                       /* trailing junk, e.g. "12.345m" */
+    }
+
+    /* Divide rather than multiply-then-check: the product would already have
+     * wrapped by the time we could look at it. */
+    if (ul_value > (0xFFFFFFFFUL / ul_scale))
+    {
+        return 0;
+    }
+
+    *p_u32_us = (uint32_t) (ul_value * ul_scale);
+    return 1;
+}
+
 /*
  * Standard numeric entry. The prompt shows the present setting; an empty entry
  * keeps it, ESC abandons it unchanged, and anything unparseable or out of range
  * warns and re-prompts. The re-prompt loop is unbounded with ESC as the way out,
  * so a bad entry can never trap the user.
+ *
+ * x_mode picks the parser: ENTRY_PLAIN keeps the historical base-10 read (so a
+ * leading zero stays decimal for counts and millisecond values), ENTRY_TIME_US
+ * uses u8_parse_time_us() above.
  *
  * i_getline() is the only input path used anywhere in the menu -- it keeps
  * v_app_polling_task() pumped while it blocks.
@@ -312,16 +399,20 @@ static void v_debug_spi_pin_probe(void)
  * Returns nonzero if *p_u32_value was updated.
  */
 static uint8_t u8_debug_entry_u32(const char *pc_prompt, uint32_t u32_min,
-                                  uint32_t u32_max, uint32_t *p_u32_value)
+                                  uint32_t u32_max, uint32_t *p_u32_value,
+                                  debug_entry_mode_t x_mode)
 {
     char str_entry[16];
     int i_length;
+    uint32_t u32_parsed;
     unsigned long ul_value;
     char *pc_end;
+    uint8_t u8_parsed_ok;
 
     do
     {
-        printf("%s [now %lu]: ", pc_prompt, (unsigned long) *p_u32_value);
+        printf("%s [now %lu]%s: ", pc_prompt, (unsigned long) *p_u32_value,
+               (x_mode == ENTRY_TIME_US) ? " (u/m/s)" : "");
 
         i_length = i_getline(str_entry, sizeof(str_entry) - 1);
 
@@ -336,15 +427,29 @@ static uint8_t u8_debug_entry_u32(const char *pc_prompt, uint32_t u32_min,
             return 0;
         }
 
-        ul_value = strtoul(str_entry, &pc_end, 10);
-        if ((*pc_end == 0) && (ul_value >= u32_min) && (ul_value <= u32_max))
+        if (x_mode == ENTRY_TIME_US)
         {
-            *p_u32_value = (uint32_t) ul_value;
+            u8_parsed_ok = u8_parse_time_us(str_entry, &u32_parsed);
+        }
+        else
+        {
+            ul_value = strtoul(str_entry, &pc_end, 10);
+            u8_parsed_ok = (*pc_end == 0) ? 1 : 0;
+            u32_parsed = (uint32_t) ul_value;
+        }
+
+        if (u8_parsed_ok && (u32_parsed >= u32_min) && (u32_parsed <= u32_max))
+        {
+            *p_u32_value = u32_parsed;
             return 1;
         }
 
         printf("Invalid entry [%s] - range is %lu..%lu\r\n",
                str_entry, (unsigned long) u32_min, (unsigned long) u32_max);
+        if (x_mode == ENTRY_TIME_US)
+        {
+            printf("  uS, or suffix m = mS, s = seconds; 0x / leading-0 accepted\r\n");
+        }
     }
     while (1);
 }
@@ -403,9 +508,11 @@ static void v_switch_set_pulse_width(void)
 {
     uint32_t u32_width = u32_switch_out_get_pulse_width();
 
+    /* Milliseconds, not microseconds -- the u/m/s suffixes would mean something
+       different here, so this prompt keeps the plain base-10 read. */
     if (u8_debug_entry_u32("Pulse width, mS",
                            SWITCH_PULSE_WIDTH_MIN_MS, SWITCH_PULSE_WIDTH_MAX_MS,
-                           &u32_width))
+                           &u32_width, ENTRY_PLAIN))
     {
         v_switch_out_set_pulse_width(u32_width);
         printf("Pulse width now %lu mS\r\n", (unsigned long) u32_width);
@@ -580,7 +687,11 @@ static void v_cycle_value_param(uint8_t u8_value)
                  (u8_parameter == SWITCH_CYCLE_PARAM_ON) ? "on" : "off");
     }
 
-    if (! u8_debug_entry_u32(str_prompt, u32_min, u32_max, &u32_value))
+    /* Only the two time parameters take a scaling suffix; the repeat count is
+       dimensionless, so 'm' and 's' would be meaningless on it. */
+    if (! u8_debug_entry_u32(str_prompt, u32_min, u32_max, &u32_value,
+                             (u8_parameter == SWITCH_CYCLE_PARAM_REPEAT)
+                             ? ENTRY_PLAIN : ENTRY_TIME_US))
     {
         return;
     }

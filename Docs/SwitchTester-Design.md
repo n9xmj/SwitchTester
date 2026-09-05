@@ -243,6 +243,19 @@ entries (twelve parameters, four start/stop) whose `.u8_value` is
 NVM IDs use. Times display as raw µs plus an integer-derived `(500.000 mS)`
 gloss; repeat 0 shows as `infinite`; start/stop lines carry live run status.
 
+**Time entry accepts a scaling suffix (2026-09-05).** The two time prompts parse
+with `strtoul()` base 0 — so `500`, `0x1F4` and `0764` are the same number —
+followed by an optional unit: `u` or nothing for µs, `m` for ms, `s` for
+seconds. `500u`, `10m` and `5s` give 500, 10 000 and 5 000 000 µs. Upper case is
+accepted; there is no mega-anything for `M` to collide with. Fractions are
+rejected outright rather than truncated (`12.345m` is invalid), keeping **D7**'s
+no-floating-point rule. A suffix that would push the result past 32 bits is
+caught by a divide-first guard, so `5000s` is refused rather than wrapping.
+
+The repeat count and the `[w]` pulse width keep the plain base-10 read: the
+count is dimensionless, and the pulse width is already in **milliseconds**, so
+the same suffixes would mean something different there.
+
 This replaced a pair of `MENU_ITEM_KEY_LIST_FUNCTION` entries plus a single
 monolithic `MENU_ITEM_HELP_TEXT_VARIABLE` emitter (2026-09-05), when the two
 `*_VALUE` item types were added to `menusystem`. It costs 16 more menu entries

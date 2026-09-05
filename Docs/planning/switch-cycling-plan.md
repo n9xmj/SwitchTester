@@ -52,8 +52,8 @@ list.
 |----|--------|---------|
 | **D1** | 🟢 | Menu invocation — main menu `[c]` → cycling submenu via `MENU_ITEM_CALL_MENU` |
 | **D2** | 🟢 | Key map — `a`–`l` parameters, `1`–`4` start/stop, `0` stop-all, `?`, `Esc` |
-| **D3** | 🟢 | Display — variable help text, µs plus integer-derived mS gloss, `infinite`, live status column |
-| **D4** | 🟢 | Menu table shape — 2-entry key-list collapse |
+| **D3** | 🟢 | Display — variable help text, µs plus integer-derived mS gloss, `infinite`, live status column *(emitter reshaped 2026-09-05, see D4)* |
+| **D4** | 🟢 | Menu table shape — 2-entry key-list collapse *(superseded 2026-09-05)* |
 | **D5** | 🟢 | Input discipline — prompt shows current; empty keeps; ESC aborts; invalid re-prompts |
 | **D6** | 🟢 | `[Esc]` is the sole submenu exit; main-menu `[S]` → `[s]` |
 | **D7** | 🟢 | Parameter units — integer microseconds; no floating point anywhere |
@@ -215,6 +215,31 @@ blocks, plus one `MENU_ITEM_KEY_LIST_FUNCTION` over `"abcdefghijkl"` decoding
 `channel = i / 3`, `parameter = i % 3`. `"1234"` collapses the same way. Fewer helper
 functions, and the decode mirrors the NVM ID arithmetic in **I5** so one mental model
 covers both.
+
+> **Superseded 2026-09-05 — the rejected option won once the framework changed.**
+> The choice above was made against the item types `menusystem` had at the time, where
+> the explicit layout meant twelve `HELP_TEXT_VARIABLE` + twelve null-text `FUNCTION`
+> pairs and twelve extra handler functions. Two new item types
+> (`MENU_ITEM_VALUE_FUNCTION`, `MENU_ITEM_HELP_TEXT_VARIABLE_VALUE`) removed the cost
+> that decided it: both carry a free-form `menu_item_t::u8_value`, so *one* handler and
+> *one* emitter still serve every entry, and the explicit layout no longer multiplies
+> functions — only table rows.
+>
+> The submenu is now sixteen `MENU_ITEM_VALUE_FUNCTION` entries (twelve parameters,
+> `.u8_value = channel * 3 + parameter`; four start/stop, `.u8_value = channel`) plus
+> four `MENU_ITEM_HELP_TEXT_VARIABLE_VALUE` entries, one per channel, all bound to a
+> single emitter that renders one channel — so **D3**'s outer loop moved into the menu
+> array. Console output is no longer byte-identical: each channel's parameters and run
+> state now appear together as one block, rather than twelve parameter lines followed by
+> four status lines. Cost +188 bytes of flash, no RAM. Bench-verified.
+>
+> What this buys is what D4 originally credited to the explicit option — each key is
+> visibly bound beside its value in the table, instead of being derived from a position
+> in `"abcdefghijkl"`. The NVM-ID arithmetic of **I5** is unchanged; it just moved from
+> a key-list index to `.u8_value`.
+>
+> Rationale above is kept as written. It was correct for the framework of the day, and
+> the reversal is a framework change, not a change of mind.
 
 ### D5 — Input discipline
 **Status:** 🟢 — Applies to every prompt including the existing `[w]` pulse width.
