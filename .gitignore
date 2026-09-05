@@ -9,9 +9,11 @@
 # --- Per-user IDE workspace settings ---
 # Exclude the DIRECTORY CONTENTS, not the directory itself: git cannot
 # re-include a file whose parent directory is excluded, so "/.settings/" would
-# make the exceptions below impossible. Those two ARE project settings, not
-# per-user one -- text encoding decides how the tree renders
-# for every reader, so it belongs to the project.
+# make the exception below impossible. org.eclipse.core.resources.prefs IS a
+# project setting rather than a per-user one -- it carries the text encoding,
+# which decides how the tree renders for every reader, so it belongs to the
+# project. The other .settings files (language.settings.xml,
+# stm32cubeide.project.prefs, the SFR view prefs) are per-user and stay out.
 /.settings/*
 !/.settings/org.eclipse.core.resources.prefs
 *.metadata
