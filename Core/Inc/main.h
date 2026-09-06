@@ -55,8 +55,8 @@ void Error_Handler(void);
 /* USER CODE BEGIN EFP */
 
 extern RTC_HandleTypeDef hrtc;
-extern TIM_HandleTypeDef htim1;     /* SWITCH_x outputs */
-extern TIM_HandleTypeDef htim2;     /* Comparator event capture; may not use */
+extern TIM_HandleTypeDef htim1;     /* Comparator event capture; may not use */
+extern TIM_HandleTypeDef htim2;     /* SWITCH_x outputs */
 extern TIM_HandleTypeDef htim6;     /* ADC1 sampling trigger */
 extern TIM_HandleTypeDef htim7;     /* Timer for generating microsecond-resolution delays */
 extern TIM_HandleTypeDef htim14;    /* PWM DAC */

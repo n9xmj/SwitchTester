@@ -52,10 +52,11 @@ The four sense channels are deliberately asymmetric — see
 | TIM7 | µs delay | |
 | TIM6 | ADC1 sampling trigger | |
 
-> `Core/Inc/main.h` carried **swapped comments** on `htim1`/`htim2` — it labelled TIM1 as
-> the switch outputs and TIM2 as comparator capture, which is the reverse of what the code
-> does. That mislabelling caused a wrong inference in the 2026-09-06 session. Trust this
-> table and `MX_TIM*_Init()`, not those comments.
+> **Fixed 2026-09-06.** `Core/Inc/main.h` had **swapped comments** on `htim1`/`htim2` — it
+> labelled TIM1 as the switch outputs and TIM2 as comparator capture, the reverse of what
+> the code does, and that mislabelling caused a wrong inference earlier the same day. The
+> comments now match this table. Kept as a note because it is a good reminder that a
+> hand-written comment in a generated file is not evidence: `MX_TIM*_Init()` is.
 
 ---
 

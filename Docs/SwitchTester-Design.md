@@ -111,7 +111,8 @@ ARR 0xFFFFFFFF, internal clock, all four channels output-compare.
 > **TIM2 is the permanent home for the switch outputs** (user, 2026-09-06). There is no
 > plan to move them to TIM1 — TIM1 is provisioned for comparator event capture, a
 > different job. `Core/Inc/main.h` briefly carried swapped `htim1`/`htim2` comments saying
-> the opposite; the code is authoritative.
+> the opposite; those were corrected the same day, and the code was authoritative
+> throughout.
 
 **Drive scheme (decided, implemented).** The switch pins stay **permanently
 muxed to AF2/TIM2** — there is no GPIO↔AF remuxing. The drive level is the
