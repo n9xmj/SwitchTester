@@ -35,9 +35,27 @@ Everything below is built, bench-verified on the NUCLEO-G0B1RE, and on `main`:
 | nvmparams | Phase 1 done, 28/28 HIL. Wear levelling unbuilt (phase 2) |
 | **event_queue** | **Phase 1 done, 20/20 HIL. Vendored and adopted here; also vendored into Skeleton wired-but-unused.** The enabler for tasks 2–4 below |
 | Sense front-end | **Configured but inert.** Comparators are `TriggerMode NONE` and not started; DAC channels not driven |
+| **PWM DAC (TIM14)** | **Provisioned 2026-09-06, no FW yet.** CH1 on PB1, PSC 0 / ARR 1023 = 62.5 kHz, external RC 2.2K/1µF. Driving it is the next session's task and a **prerequisite for task 1** |
+| **TIM1 comparator capture** | **MX init only, nothing wired in FW.** Input capture with COMP1/2/3 routed internally to TI1/TI2/TI3. Provisioned **in case** it turns out useful for task 1 — the user may well not use it |
 
 The four sense channels are deliberately asymmetric — see
 [`../SwitchTester-Design.md`](../SwitchTester-Design.md) § "Sense front-end".
+
+### Timer assignments — settled (user, 2026-09-06)
+
+| Timer | Role | Status |
+|---|---|---|
+| **TIM2** | SWITCH_x outputs (OC) + cycling compare ISR | **Permanent. There is no plan to move the switch outputs to TIM1** |
+| TIM17 | 1 ms periodic tick, NVIC prio 3 | moved TIM6 → TIM14 → TIM17 |
+| TIM14 | PWM DAC, CH1 on PB1 | next session |
+| TIM1 | comparator event capture off COMP1/2/3 | provisioned, optional, unused |
+| TIM7 | µs delay | |
+| TIM6 | ADC1 sampling trigger | |
+
+> `Core/Inc/main.h` carried **swapped comments** on `htim1`/`htim2` — it labelled TIM1 as
+> the switch outputs and TIM2 as comparator capture, which is the reverse of what the code
+> does. That mislabelling caused a wrong inference in the 2026-09-06 session. Trust this
+> table and `MX_TIM*_Init()`, not those comments.
 
 ---
 
@@ -58,6 +76,26 @@ Known technical groundwork already captured in the design doc: COMP3 → DAC1_CH
 a one-line CubeMX change; ADC-on-a-comparator-input is possible despite CubeMX
 refusing the dual assignment (PA1 is the candidate, ~20 pF S&H loading is the cost);
 `TIM2->CNT` is the shared 1 µs timestamp source.
+
+**Prerequisite, added 2026-09-06 (user): the PWM DAC must land first.** Task 1 is
+gated on having a programmable analogue stimulus to drive the SENSE_x inputs with —
+without one there is no way to HIL-test sense behaviour, only to observe whatever the
+bench happens to present. So the order is **PWM DAC → then task 1**, and the PWM DAC
+gets its own session rather than being folded into the sense work.
+
+The hardware for it is already provisioned (see the timer table above): TIM14 CH1 on
+**PB1**, PSC 0 / **ARR 1023** off the 64 MHz timer clock = **62.5 kHz** carrier, PWM1,
+pulse 0, interrupt disabled. ARR 1023 rather than 1024 so a 10-bit code maps to
+`n/1024` exactly — duty is `CCR/(ARR+1)`, so the LSB is Vdd/1024 = 3.22 mV at 3.3 V.
+External smoothing is **R = 2.2K, C = 1µF** (τ = 2.2 ms, f_c ≈ 72 Hz): roughly 6 mV pp
+ripple at 50% duty, under 2 LSB, and **~15 ms to settle within 1 LSB — budget that as
+the HIL wait after commanding a new level.** Nothing calls `HAL_TIM_PWM_Start()` yet.
+
+**TIM1 is provisioned for comparator event capture but may not be used.** Its
+`MX_TIM1_Init()` sets up input capture with COMP1/2/3 routed internally to TI1/TI2/TI3
+(`HAL_TIMEx_TISelection`), and that is *all* that exists — no FW references it. It is
+there so hardware capture is an option when this task is designed, not a commitment to
+that approach. Do not treat it as a decision already made.
 
 ### Task 2 — Tie event_queue into SWITCH and SENSE events
 > *"Tie in event queue support for SWITCH and SENSE events."*

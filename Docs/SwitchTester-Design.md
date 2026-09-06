@@ -26,20 +26,33 @@ tool for exercising/validating external switching hardware.
 | Switch out B | SWITCH_B | PC5  | TIM2_CH2 | |
 | Switch out C | SWITCH_C | PB10 | TIM2_CH3 | |
 | Switch out D | SWITCH_D | PB11 | TIM2_CH4 | |
-| Sense A | SENSE_A | PA1 | COMP1 (+) via IO3 | threshold = DAC1_CH1 (dedicated, adjustable) |
-| Sense B | SENSE_B | PB6 | COMP2 (+) via IO2 | threshold = DAC1_CH2 (adjustable); moved off PB4 (now SPI3_MISO) |
-| Sense C | SENSE_C | PB0 | COMP3 (+) via IO1 | threshold = **½·VREFINT** (fixed, ≈0.6 V) — see note |
-| Sense D | SENSE_D | PA0 | ADC1_IN0 | analog read; ADC also samples VREFINT |
+| Sense A | SENSE_A | PA1 | COMP1_INP | threshold = DAC1_CH1 (dedicated, adjustable) |
+| Sense B | SENSE_B | **PA3** | COMP2_INP | threshold = DAC1_CH2 (adjustable) |
+| Sense C | SENSE_C | PB0 | COMP3_INP | threshold = **½·VREFINT** (fixed, ≈0.6 V) — see note |
+| Sense D | SENSE_D | **PA7** | **ADC1_IN7** | analog read; ADC also samples VREFINT |
+| Comparator out A | — | PA11 | COMP1_OUT | brought out; also routed internally to TIM1 TI1 |
+| Comparator out B | — | PA12 | COMP2_OUT | → TIM1 TI2 |
+| Comparator out C | — | PC2 | COMP3_OUT | → TIM1 TI3 |
+| **PWM DAC** | **PWM_DAC** | **PB1** | **TIM14_CH1** | 62.5 kHz carrier; external RC 2.2K/1µF |
 | DAC ref 1 | — | PA4 | DAC1_CH1 | buffered, ext (PA4) + internal → COMP1 (−) |
 | DAC ref 2 | — | — | DAC1_CH2 | unbuffered, internal only → COMP2 (−) |
 | LED | NUCLEO_LED | PA5 | GPIO out | |
 | Button | NUCLEO_BUTTON | PC13 | EXTI falling | |
-| Console | DEBUG_TX/RX | PA2/PA3 | USART2 | 921600 |
+| Test input | TEST_INPUT | PC3 | GPIO in | used by the acon `Y` SPI-flash loopback checks |
+| Console | DEBUG_TX/RX | **PD5/PD6** | USART2 | 921600 |
 
-COMP input assignments verified against `stm32g0xx_hal_comp.h`: COMP1_INP IO3 =
-PA1, COMP2_INP IO2 = PB6, COMP3_INP IO1 = PB0. All three match. (Sense B was on
-PB4/IO1 until the SPI-flash testbed took PB4 for SPI3_MISO; PB6/IO2 is the
-equivalent COMP2 input.)
+**This table was re-verified against the `.ioc` on 2026-09-06 and several rows were
+wrong.** Sense B had been recorded as PB6 (PB6/PB7 are now I2C1), Sense D as PA0/ADC1_IN0,
+and the console as PA2/PA3 (PA3 is now Sense B). Treat the `.ioc` as authoritative and
+re-check this table when pins move — the drift here was silent and would have misled the
+sense work.
+
+The other UARTs — USART1 PA9/PA10, USART3 PB2/PD9, USART4 PC10/PC11, USART5 **PD3/PD2**,
+USART6 PB8/PB9, LPUART1 PC1/PC0, LPUART2 PC6/PC7 — carry bench loopback jumpers and are
+exercised by the acon `U` and `B` ops. USART5_RX moved PB1 → PD2 when PB1 was taken for
+PWM_DAC.
+
+SPI flash: NCS PA15, SCK PB3, MISO PB4, MOSI PC12 (SPI3).
 
 ## External hardware
 
@@ -58,6 +71,11 @@ Push-pull AF output satisfies both with no special handling; the existing
 
 TIM2 is used for its **32-bit** counter (long + precise timing). Config: PSC 0,
 ARR 0xFFFFFFFF, internal clock, all four channels output-compare.
+
+> **TIM2 is the permanent home for the switch outputs** (user, 2026-09-06). There is no
+> plan to move them to TIM1 — TIM1 is provisioned for comparator event capture, a
+> different job. `Core/Inc/main.h` briefly carried swapped `htim1`/`htim2` comments saying
+> the opposite; the code is authoritative.
 
 **Drive scheme (decided, implemented).** The switch pins stay **permanently
 muxed to AF2/TIM2** — there is no GPIO↔AF remuxing. The drive level is the
@@ -599,6 +617,16 @@ decided, and that question needs answering before any design work. The four
 channels are intentionally asymmetric (see the sense front-end section above),
 so "what should each one measure" is the real first question, not "polled or
 interrupt".
+
+**Gated on the PWM DAC (user, 2026-09-06).** Sense support cannot be HIL-tested without a
+programmable analogue stimulus to drive the SENSE_x inputs with, so the PWM DAC lands
+first, in its own session. Hardware is provisioned and unused: TIM14 CH1 on PB1, PSC 0 /
+ARR 1023 = 62.5 kHz, external RC 2.2K/1µF, ~15 ms settling to 1 LSB. See the roadmap's
+task 1 for the full brief.
+
+**TIM1 is provisioned for comparator event capture, and may not be used.** `MX_TIM1_Init()`
+routes COMP1/2/3 to TI1/TI2/TI3 via `HAL_TIMEx_TISelection()`; nothing in FW touches it.
+It exists to keep hardware capture on the table for this task, not as a chosen mechanism.
 
 ## Resolved
 
