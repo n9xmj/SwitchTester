@@ -74,7 +74,11 @@ DAC1_CH2, D is the ADC channel), so the answer shapes everything downstream.
 
 Known technical groundwork already captured in the design doc: COMP3 → DAC1_CH2 is
 a one-line CubeMX change; ADC-on-a-comparator-input is possible despite CubeMX
-refusing the dual assignment (PA1 is the candidate, ~20 pF S&H loading is the cost);
+refusing the dual assignment (~20 pF S&H loading is the cost) — and as of 2026-09-06
+the **pin choices already provide for it**: Sense A on PA1 is COMP1 IO3 + `ADC1_IN1`,
+and Sense B was moved to PA3 = COMP2 IO3 + `ADC1_IN3` deliberately so both channels can
+be read as either a threshold crossing or a voltage. Neither ADC channel is selected yet
+(sequence is `IN7 | VREFINT | VBAT`); Sense D on PA7 is ADC-only, as it always was;
 `TIM2->CNT` is the shared 1 µs timestamp source.
 
 **Prerequisite, added 2026-09-06 (user): the PWM DAC must land first.** Task 1 is

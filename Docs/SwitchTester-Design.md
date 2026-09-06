@@ -41,11 +41,35 @@ tool for exercising/validating external switching hardware.
 | Test input | TEST_INPUT | PC3 | GPIO in | used by the acon `Y` SPI-flash loopback checks |
 | Console | DEBUG_TX/RX | **PD5/PD6** | USART2 | 921600 |
 
-**This table was re-verified against the `.ioc` on 2026-09-06 and several rows were
-wrong.** Sense B had been recorded as PB6 (PB6/PB7 are now I2C1), Sense D as PA0/ADC1_IN0,
-and the console as PA2/PA3 (PA3 is now Sense B). Treat the `.ioc` as authoritative and
-re-check this table when pins move — the drift here was silent and would have misled the
-sense work.
+**Re-verified against the `.ioc` 2026-09-06.** Three rows had lagged behind deliberate
+changes — Sense B was recorded as PB6, Sense D as PA0/ADC1_IN0, the console as PA2/PA3.
+All three moves were intentional (rationale below); only the table was stale. Treat the
+`.ioc` as authoritative and re-check this table whenever pins move.
+
+**The console move required a board modification.** The Nucleo's **VCP solder bridges were
+removed** and the console UART moved off PA2/PA3 to PD5/PD6, then **direct-wired back to the
+ST-Link VCP Rx/Tx**. Two consequences: PA2/PA3 were freed for analogue use (PA3 is now
+Sense B), and **this bench's Nucleo is physically modified** — a stock board flashed with
+this firmware will have no console, because its VCP still expects PA2/PA3.
+
+**Sense B and Sense D were moved to pins that reach the ADC mux.** Verified against
+`stm32g0xx_hal_comp.h`:
+
+- **Sense B → PA3 is both**: `COMP_INPUT_PLUS_IO3` for COMP2 *and* `ADC1_IN3`. That makes
+  it the one sense channel that can be read either as a threshold crossing or as a voltage,
+  which is the dual capability the old "ADC-on-a-comparator-input" note was reaching for —
+  see *Resolved*. CubeMX still refuses to show both assignments, so selecting
+  `ADC_CHANNEL_3` is a code-side step; the pin choice is what makes it available.
+- **Sense D → PA7 is `ADC1_IN7`, ADC-only.** PA7 is not a comparator input: COMP INP is
+  limited to IO1/IO2/IO3, which on this part are PC5/PB2/PA1 (COMP1), PB4/PB6/PA3 (COMP2)
+  and PB0/PC1/PE7 (COMP3). Sense D was always the ADC channel, so this is a channel change
+  rather than a capability change.
+
+The ADC sequence is currently `IN7 | VREFINT | VBAT` — **channel 3 is not selected yet**, so
+Sense B's ADC path is available but unconfigured.
+
+**I2C1 (PB6/PB7) is provisioned and not used** — like TIM1, it is there in case it is
+wanted, and nothing in FW references it. PB6 previously carried Sense B.
 
 The other UARTs — USART1 PA9/PA10, USART3 PB2/PD9, USART4 PC10/PC11, USART5 **PD3/PD2**,
 USART6 PB8/PB9, LPUART1 PC1/PC0, LPUART2 PC6/PC7 — carry bench loopback jumpers and are
@@ -181,6 +205,15 @@ independent. PA1 is the concrete candidate — `COMP1_INP` (IO3) *and* `ADC1_IN1
 The known cost is the ADC sample-and-hold loading the pin with ~20 pF during the
 sampling phase, which shifts the level appreciably if the source impedance is
 high. Complications to be worked out only if this turns out to be wanted.
+
+**Update 2026-09-06 — this is now designed for, not just possible.** Sense B was moved to
+**PA3** specifically so it lands on a pin that reaches the ADC mux while staying a
+comparator input: PA3 is `COMP_INPUT_PLUS_IO3` for COMP2 *and* `ADC1_IN3`. Sense A on PA1
+retains the same property (`COMP1` IO3 + `ADC1_IN1`). So both are dual-capable by pin
+choice; neither has its ADC channel selected yet — the sequence is `IN7 | VREFINT | VBAT`.
+Adding `ADC_CHANNEL_3` (or `_1`) is a code-side step, since CubeMX will not display the
+dual assignment. The ~20 pF S&H caveat above still applies and is the thing to measure
+first, using the PWM DAC as a known source.
 
 ## Switch cycling — TIM2 compare driven
 
