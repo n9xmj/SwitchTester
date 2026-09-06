@@ -119,6 +119,27 @@ host   → device    <op>[,<arg>]...<CR>
 device → host      <sigil><op>[,<token>]...<CRLF>
 ```
 
+### Arguments — every number is hex
+
+`b_acon_arg_u32()` in `automation_console.c` is the **only** numeric-argument parser in the
+console, and it is `strtoul(arg, &end, 16)`. Every numeric argument of every op is therefore
+**hexadecimal**. There is no decimal input anywhere, and no per-op exception: ops reach it
+either directly or through `b_acon_arg_channel()`, which wraps it.
+
+A `0x` prefix is accepted (`strtoul` allows one at base 16) but is never required and never
+emitted. So `W,3,186A0,186A0,3` is 100000 µs on and off, and `B,3,1C200` sweeps 115200 baud.
+
+Parsing is **strict and whole-field**: a trailing character rejects the argument rather than
+truncating it, so `3x` is an error, not `3`. An empty field fails too — which is not the same
+as an omitted trailing field, since ops with optional arguments check the count first.
+
+> **The trap.** Every all-digit decimal literal is also valid hex, so a decimal argument is
+> silently accepted as the wrong number — **nothing will ever warn you**. Typing `115200`
+> gives `0x115200` = 1,135,104; on `B` the sweep then fails on every instance, which reads
+> like dead wiring rather than a bad argument. Convert before you type.
+
+Replies are hex as well — see *Tokens* below — so the two directions match.
+
 ### Sigils — the first byte of every device→host line
 
 | Sigil | Meaning |
@@ -555,7 +576,13 @@ U,<idx>[,<first>,<last>,<bursts>]
       +S<size>,N<bursts>,T<sent>,R<received>,X<mismatches>,E<errors>,M<...>   x steps
 ```
 
-Requires a loopback on the indexed UART. See `App/Src/uart_stress.c`.
+Requires a loopback on the indexed UART. See `App/Src/uart_stress.c`. Arguments are hex, and
+`B<baud>` in the reply echoes the rate the run actually used.
+
+`U` runs at the UART's **currently configured** baud — it never changes it. So a FIFO-less
+instance configured at 921600 answers `!U,LOOP` even with a sound loopback, because the
+probe cannot complete a clean round trip at a rate the hardware cannot sustain. That is a
+ceiling, not wiring; `B` sweeps from the bottom and will show it.
 
 #### `B` — baud sweep
 
@@ -567,6 +594,16 @@ B,<idx>[,<rate>...]        no rates = the default ladder
 ```
 
 Failures answer `!B,<why>,I<idx>`.
+
+**Rates are hex**, like every other argument — `B,3,1C200` is 115200, and `B,3,115200` is
+1,135,104 baud, which no instance can do. Common rungs: `2580` 9600, `1C200` 115200,
+`38400` 230400, `70800` 460800, `E1000` 921600. `A<actual>` reports what the divider really
+produced, so compare it against `D<requested>` before reading anything into a failure.
+
+A `!U,LOOP` from `U` on the same UART is not necessarily a wiring fault: `U` runs at the
+UART's *currently configured* baud, so a FIFO-less instance sitting at 921600 fails the
+probe on the ceiling below, with the loopback perfectly intact. Use `B` to tell the two
+apart — it sweeps from the bottom.
 
 > The recorded result of this sweep: **USART4/5/6 have no FIFO and cap at 230400**;
 > everything else reaches 921600. Do not re-chase that.
