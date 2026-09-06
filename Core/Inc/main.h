@@ -86,6 +86,8 @@ extern CRC_HandleTypeDef hcrc;      /* Hardware CRC generator */
 #define RTC_OSC32_IN_GPIO_Port GPIOC
 #define RTC_OSC32_OUT_Pin GPIO_PIN_15
 #define RTC_OSC32_OUT_GPIO_Port GPIOC
+#define PWM_DAC_Pin GPIO_PIN_0
+#define PWM_DAC_GPIO_Port GPIOF
 #define TEST_INPUT_Pin GPIO_PIN_3
 #define TEST_INPUT_GPIO_Port GPIOC
 #define SENSE_A_Pin GPIO_PIN_1
