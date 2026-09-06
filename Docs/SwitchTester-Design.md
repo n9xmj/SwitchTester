@@ -48,9 +48,21 @@ All three moves were intentional (rationale below); only the table was stale. Tr
 
 **The console move required a board modification.** The Nucleo's **VCP solder bridges were
 removed** and the console UART moved off PA2/PA3 to PD5/PD6, then **direct-wired back to the
-ST-Link VCP Rx/Tx**. Two consequences: PA2/PA3 were freed for analogue use (PA3 is now
-Sense B), and **this bench's Nucleo is physically modified** — a stock board flashed with
-this firmware will have no console, because its VCP still expects PA2/PA3.
+ST-Link VCP Rx/Tx**. That freed PA2/PA3 for analogue use — PA3 is now Sense B.
+
+The board is therefore no longer stock, and the mismatch cuts **both ways**:
+
+| Firmware | Board | Console |
+|---|---|---|
+| SwitchTester (PD5/PD6) | **this modified board** | works |
+| SwitchTester (PD5/PD6) | a stock NUCLEO-G0B1RE | **dead** — stock VCP expects PA2/PA3 |
+| `G0B1_Skeleton` (PA2/PA3) | a stock NUCLEO-G0B1RE | works |
+| `G0B1_Skeleton` (PA2/PA3) | **this modified board** | **dead** — VCP now goes to PD5/PD6 |
+
+The last row is the one that will actually bite, because **Skeleton shares this physical
+board** and its `.ioc` still puts USART2 on PA2/PA3 (verified 2026-09-06). Flashing Skeleton
+here gives a board that runs correctly but says nothing on the console. Either move
+Skeleton's console to PD5/PD6 as well, or expect no output when it is on this bench.
 
 **Sense B and Sense D were moved to pins that reach the ADC mux.** Verified against
 `stm32g0xx_hal_comp.h`:
@@ -202,9 +214,10 @@ Comparators are currently `TriggerMode NONE` and **not started**.
 is possible despite CubeMX refusing the dual assignment: the pin is in analog
 mode either way, and the ADC channel mux and comparator input mux are
 independent. PA1 is the concrete candidate — `COMP1_INP` (IO3) *and* `ADC1_IN1`.
-The known cost is the ADC sample-and-hold loading the pin with ~20 pF during the
-sampling phase, which shifts the level appreciably if the source impedance is
-high. Complications to be worked out only if this turns out to be wanted.
+The known cost is the ADC sample-and-hold loading the pin with **5 pF** during the
+sampling phase (G0B1 reference documentation, user 2026-09-06 — an earlier "~20 pF"
+figure in this doc was wrong), which shifts the level appreciably only if the source
+impedance is high.
 
 **Update 2026-09-06 — this is now designed for, not just possible.** Sense B was moved to
 **PA3** specifically so it lands on a pin that reaches the ADC mux while staying a
@@ -212,8 +225,44 @@ comparator input: PA3 is `COMP_INPUT_PLUS_IO3` for COMP2 *and* `ADC1_IN3`. Sense
 retains the same property (`COMP1` IO3 + `ADC1_IN1`). So both are dual-capable by pin
 choice; neither has its ADC channel selected yet — the sequence is `IN7 | VREFINT | VBAT`.
 Adding `ADC_CHANNEL_3` (or `_1`) is a code-side step, since CubeMX will not display the
-dual assignment. The ~20 pF S&H caveat above still applies and is the thing to measure
-first, using the PWM DAC as a known source.
+dual assignment.
+
+### Is simultaneous COMP-input + ADC-channel actually legal? — OPEN, evidence gathered
+
+The question (user, 2026-09-06): *can the ADC sample a pin that is at the same time
+selected as a comparator input?* CubeMX refuses to configure it; the suspicion is that the
+silicon allows it and the refusal is a tool-level exclusivity rule. **Nothing found so far
+contradicts that, but absence of a prohibition is not proof — this needs a bench test.**
+
+What the documentation supports:
+
+1. **The GPIO requirement is identical for both.** RM0444 §18.3.2: *"The I/Os used as
+   comparators inputs must be configured in analog mode in the GPIOs registers."* The ADC
+   needs exactly the same `MODER` setting, so there is no configuration conflict at the pin.
+2. **STM32G0 has no `ASCR`.** On L4/G4/L5 an analog-switch control register gates the
+   pad→ADC connection per pin and would be the natural place for an arbiter. Verified in
+   `stm32g0b1xx.h`: `GPIO_TypeDef` ends at `BRR` — G0 has no such register. A pad in analog
+   mode is simply an analog node.
+3. **The two selectors live in different peripherals and do not reference each other.**
+   COMP `INPSEL[1:0]` in `COMP_CSR` (RM Tables 93–95) picks one of three I/Os for the
+   comparator; ADC `CHSELR` picks channels for the ADC. Neither is aware of the other.
+4. **RM0444 states no restriction.** Searched — the only "simultaneously" in the comparator
+   chapter concerns routing the comparator *output* internally and externally at once.
+
+**The loading caveat, quantified.** The S&H presents **5 pF** during sampling. Driven from
+the PWM DAC its 1 µF output capacitor swamps that completely (5 pF against 1 µF is a
+0.0005 % charge redistribution), so the DAC is a clean test source. The risk case is a
+high-impedance DUT sense node with no local capacitance, where the sampling transient
+settles with τ = R_source × 5 pF and could momentarily disturb what the comparator sees.
+
+**The thing to look for is a spurious comparator edge, not just ADC accuracy.** If the two
+paths do interact, the symptom most likely to matter for sense work is COMP output
+glitching during ADC sampling — the ADC reading being slightly off is the lesser problem.
+
+**Proposed experiment, once the PWM DAC exists:** drive SENSE_B (PA3) from the PWM DAC
+through the RC; enable COMP2 against a DAC threshold; add `ADC_CHANNEL_3` to the sequence;
+then (a) check the ADC tracks the commanded level, and (b) watch COMP2's output — PA12 is
+brought out — for glitches while conversions run. That settles it definitively.
 
 ## Switch cycling — TIM2 compare driven
 

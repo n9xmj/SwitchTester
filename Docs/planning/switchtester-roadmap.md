@@ -74,7 +74,12 @@ DAC1_CH2, D is the ADC channel), so the answer shapes everything downstream.
 
 Known technical groundwork already captured in the design doc: COMP3 → DAC1_CH2 is
 a one-line CubeMX change; ADC-on-a-comparator-input is possible despite CubeMX
-refusing the dual assignment (~20 pF S&H loading is the cost) — and as of 2026-09-06
+refusing the dual assignment (**5 pF** S&H loading is the cost, not the ~20 pF this
+doc used to say) — **whether the silicon really permits it is OPEN and needs a bench
+test**; RM0444 states no prohibition, G0 has no `ASCR` arbiter, and the COMP and ADC
+selectors are independent, but that is absence of evidence rather than proof. See the
+design doc's *Is simultaneous COMP-input + ADC-channel actually legal?* for the full
+argument and the experiment that settles it — and as of 2026-09-06
 the **pin choices already provide for it**: Sense A on PA1 is COMP1 IO3 + `ADC1_IN1`,
 and Sense B was moved to PA3 = COMP2 IO3 + `ADC1_IN3` deliberately so both channels can
 be read as either a threshold crossing or a voltage. Neither ADC channel is selected yet
