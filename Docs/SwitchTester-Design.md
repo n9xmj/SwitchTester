@@ -602,8 +602,15 @@ interrupt".
 
 ## Resolved
 
-- Periodic tick is **1 ms** — `PERIODIC_TIMER_INTERVAL_MS = 1`, TIM14 PSC 63 /
-  ARR 999 = 64 MHz/64/1000. (The old "verify the tick rate" TODO; stale comments
-  in `app_main.c` referring to 10 ms and htim6 have been corrected.)
+- Periodic tick is **1 ms** — `PERIODIC_TIMER_INTERVAL_MS = 1`, PSC 63 / ARR 999
+  = 64 MHz/64/1000. (The old "verify the tick rate" TODO; stale comments in
+  `app_main.c` referring to 10 ms and htim6 have been corrected.)
+- The tick instance is **TIM17** (`TIM17_FDCAN_IT1_IRQn`), moved from TIM14 on
+  2026-09-06 to free TIM14 for other use; same timebase, NVIC priority 0.
+  Application code names the instance **only** through the `platform.h` seam —
+  `PERIODIC_INT_TIMER_HANDLE` and `PERIODIC_INT_TIMER_IRQN`. The IRQn half of
+  the seam exists because the STOP sleep test masks the tick before `WFI`, and a
+  mask left pointing at the wrong instance fails silently: the pending tick
+  defeats `WFI` and the core never sleeps.
 - ADC channel set is **IN0 + VREFINT**.
 - Switch drive scheme — forced-OC, above.

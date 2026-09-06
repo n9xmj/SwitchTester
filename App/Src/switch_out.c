@@ -104,7 +104,7 @@ volatile event_control_t g_x_event_control;
 
 /*
  * Producer serialization. This queue has THREE producer contexts -- the main
- * loop, the TIM14 tick ISR (pulse expiry) and the TIM2 compare ISR -- so the
+ * loop, the periodic tick ISR (pulse expiry) and the TIM2 compare ISR -- so the
  * module's default single-producer lock-free mode is not safe here and the
  * lock pair is mandatory, not optional.
  *

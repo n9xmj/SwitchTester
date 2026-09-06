@@ -96,11 +96,12 @@ static void v_debug_wakeup_sleep_test(void)
 
     /* printf() here is blocking + unbuffered, so the console TX has fully
      * drained before we sleep. Mask every wake source except the RTC so only
-     * the wakeup timer can bring us out of STOP: SysTick (HAL_SuspendTick), the
-     * app's TIM6 10 ms tick (EXTI4_15's button is externally pulled up, so it
-     * shouldn't fire, but mask it too to leave the RTC as the sole waker). */
+     * the wakeup timer can bring us out of STOP: SysTick (HAL_SuspendTick) and
+     * the app's periodic tick (EXTI4_15's button is externally pulled up, so it
+     * shouldn't fire, but mask it too to leave the RTC as the sole waker).
+     * The tick is masked by its seam name, not by instance -- see platform.h. */
     HAL_SuspendTick();
-    HAL_NVIC_DisableIRQ(TIM14_IRQn);
+    HAL_NVIC_DisableIRQ(PERIODIC_INT_TIMER_IRQN);
 //    HAL_NVIC_DisableIRQ(EXTI4_15_IRQn);
 
     HAL_PWR_EnterSTOPMode(PWR_LOWPOWERMODE_STOP1, PWR_STOPENTRY_WFI);
@@ -120,7 +121,7 @@ static void v_debug_wakeup_sleep_test(void)
     HAL_ResumeTick();
 
     /* --- Turn on masked interrupts if needed --- */
-    HAL_NVIC_EnableIRQ(TIM14_IRQn);
+    HAL_NVIC_EnableIRQ(PERIODIC_INT_TIMER_IRQN);
     HAL_NVIC_EnableIRQ(EXTI4_15_IRQn);
 
     printf("Time in sleep: ~%lu mS, exit hour time:%lu\r\n",

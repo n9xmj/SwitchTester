@@ -619,9 +619,11 @@ module, so it lands in Skeleton and is re-vendored to adopters.
 
 **Current state: the timer exists; the counter does not.** SwitchTester already
 provisions a dedicated periodic-service timer, separate from the HAL's SysTick-based
-tick — **`TIM14`, firing every 1 ms** (verified: prescaler 63 and period 999 off the
+tick — **`TIM17`, firing every 1 ms** (verified: prescaler 63 and period 999 off the
 64 MHz SYSCLK give 1 kHz, and `PERIODIC_TIMER_INTERVAL_MS` in `platform.h` is 1;
-handle `PERIODIC_INT_TIMER_HANDLE = htim14`. TIM6 was retired in its favour). Its
+handle `PERIODIC_INT_TIMER_HANDLE = htim17`, NVIC line `PERIODIC_INT_TIMER_IRQN`.
+TIM6 was retired in its favour; the tick moved TIM14 → TIM17 on 2026-09-06 to free
+TIM14 for other use). Its
 callback already runs `v_periodic_int_test()`, `v_timer_update()`,
 `v_switch_out_tick()` and the event-queue test hook.
 

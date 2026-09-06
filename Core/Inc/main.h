@@ -55,13 +55,24 @@ void Error_Handler(void);
 /* USER CODE BEGIN EFP */
 
 extern RTC_HandleTypeDef hrtc;
-extern TIM_HandleTypeDef htim2;
-extern TIM_HandleTypeDef htim7;
-extern TIM_HandleTypeDef htim14;
+extern TIM_HandleTypeDef htim1;     /* SWITCH_x outputs */
+extern TIM_HandleTypeDef htim2;     /* Comparator event capture; may not use */
+extern TIM_HandleTypeDef htim6;     /* ADC1 sampling trigger */
+extern TIM_HandleTypeDef htim7;     /* Timer for generating microsecond-resolution delays */
+extern TIM_HandleTypeDef htim14;    /* PWM DAC */
+extern TIM_HandleTypeDef htim17;    /* Periodic interrupt; SysTick alternative timebase */
 
-extern UART_HandleTypeDef huart2;
+extern UART_HandleTypeDef huart2;   /* Console UART */
+extern I2C_HandleTypeDef hi2c1;     /* I2C peripherals - not used at present */
+extern SPI_HandleTypeDef hspi3;     /* SPI flash bus */
 
-extern SPI_HandleTypeDef hspi3;         /* SPI flash bus (temporary; MX25R80 bring-up) */
+extern ADC_HandleTypeDef hadc1;     /* ADC, possibly used for SENSE_x input measurement */
+extern DAC_HandleTypeDef hdac1;     /* DAC, sets comparator thresholds (INM) */
+extern COMP_HandleTypeDef hcomp1;   /* SENSE_A comparator */
+extern COMP_HandleTypeDef hcomp2;   /* SENSE_B comparator */
+extern COMP_HandleTypeDef hcomp3;   /* SENSE_C comparator */
+
+extern CRC_HandleTypeDef hcrc;      /* Hardware CRC generator */
 
 /* USER CODE END EFP */
 

@@ -83,8 +83,15 @@ do { \
 #define DEBUG_UART_HANDLE               huart2
 
 // Periodic interrupt timer configuration
+//
+// The timer instance is named here and nowhere else in application code. Both
+// the handle and its NVIC line are part of the seam: anything that masks the
+// tick (the STOP sleep test) must reach it through PERIODIC_INT_TIMER_IRQN,
+// otherwise moving the tick to another instance leaves a stale mask behind that
+// fails silently -- a pending tick defeats WFI and the "sleep" never happens.
 
-#define PERIODIC_INT_TIMER_HANDLE       htim14
+#define PERIODIC_INT_TIMER_HANDLE       htim17
+#define PERIODIC_INT_TIMER_IRQN         TIM17_FDCAN_IT1_IRQn
 #define PERIODIC_TIMER_INTERVAL_MS      1
 
 // HAL timer handle to use for short delay generation

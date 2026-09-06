@@ -51,7 +51,8 @@
  *
  * Retarget by defining EVENT_TICK_MS() before this header, or by editing here.
  * The obvious future target is an application-owned tick incremented in the
- * existing 1 mS TIM14 callback (roadmap B2), which would replace the HAL's.
+ * existing 1 mS periodic-tick callback (roadmap B2), which would replace the
+ * HAL's.
  *
  * Two things to know about the default:
  *

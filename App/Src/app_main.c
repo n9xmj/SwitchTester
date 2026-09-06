@@ -19,7 +19,7 @@
 #include <string.h>                 /* memcmp/memcpy/memset -- pool label check */
 
 #include "device_config.h"          /* stdint/stdio, main.h, platform.h, globals.h */
-#include "tim.h"                     /* PERIODIC_INT_TIMER_HANDLE (htim14) */
+#include "tim.h"                     /* the handle PERIODIC_INT_TIMER_HANDLE names */
 #include "utils.h"
 #include "jobs.h"
 #include "nvmparams.h"

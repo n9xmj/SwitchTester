@@ -73,8 +73,8 @@ extern UART_HandleTypeDef huart6;
 extern RTC_HandleTypeDef hrtc;
 extern DMA_HandleTypeDef hdma_spi3_rx;
 extern DMA_HandleTypeDef hdma_spi3_tx;
-extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim14;
+extern TIM_HandleTypeDef htim17;
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */
@@ -234,27 +234,6 @@ void ADC1_COMP_IRQHandler(void)
 }
 
 /**
-  * @brief This function handles TIM2 global interrupt.
-  */
-void TIM2_IRQHandler(void)
-{
-  /* USER CODE BEGIN TIM2_IRQn 0 */
-  /* Serviced directly, bypassing HAL: this runs at priority 0 and HAL's generic
-   * handler would walk every channel and event type on the way to a callback
-   * that cannot identify the channel cheaply. It must also not run afterwards --
-   * a match arriving between our clear and HAL's check would be swallowed by
-   * HAL, and the lost compare would cost a full counter wrap (71.6 minutes).
-   * Nothing else uses TIM2 interrupts. */
-  v_switch_cycle_isr();
-  return;
-  /* USER CODE END TIM2_IRQn 0 */
-  HAL_TIM_IRQHandler(&htim2);
-  /* USER CODE BEGIN TIM2_IRQn 1 */
-
-  /* USER CODE END TIM2_IRQn 1 */
-}
-
-/**
   * @brief This function handles TIM14 global interrupt.
   */
 void TIM14_IRQHandler(void)
@@ -266,6 +245,20 @@ void TIM14_IRQHandler(void)
   /* USER CODE BEGIN TIM14_IRQn 1 */
 
   /* USER CODE END TIM14_IRQn 1 */
+}
+
+/**
+  * @brief This function handles TIM17, FDCAN1_IT1 and FDCAN2_IT1 Interrupt.
+  */
+void TIM17_FDCAN_IT1_IRQHandler(void)
+{
+  /* USER CODE BEGIN TIM17_FDCAN_IT1_IRQn 0 */
+
+  /* USER CODE END TIM17_FDCAN_IT1_IRQn 0 */
+  HAL_TIM_IRQHandler(&htim17);
+  /* USER CODE BEGIN TIM17_FDCAN_IT1_IRQn 1 */
+
+  /* USER CODE END TIM17_FDCAN_IT1_IRQn 1 */
 }
 
 /**
