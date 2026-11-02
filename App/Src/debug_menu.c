@@ -146,6 +146,12 @@ static void v_debug_automation_console(void)
 static void v_debug_quick_test_1(void)
 {
     printf("Quick test function 1 (stub)\r\n");
+    printf("Block character output test:\r\n");
+    for (uint8_t ch = 0x80; ch <= 0x8F; ch++)
+    {
+        printf("E2_96_%02X:\xE2\x96%c\r\n", ch, ch);
+    }
+    v_newline();
 }
 
 static void v_debug_quick_test_2(void)

@@ -94,6 +94,8 @@ extern CRC_HandleTypeDef hcrc;      /* Hardware CRC generator */
 #define SENSE_B_GPIO_Port GPIOA
 #define NUCLEO_LED_Pin GPIO_PIN_5
 #define NUCLEO_LED_GPIO_Port GPIOA
+#define PWM_DAC_SENSE_Pin GPIO_PIN_6
+#define PWM_DAC_SENSE_GPIO_Port GPIOA
 #define SENSE_D_Pin GPIO_PIN_7
 #define SENSE_D_GPIO_Port GPIOA
 #define SWITCH_A_Pin GPIO_PIN_4
