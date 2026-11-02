@@ -258,8 +258,10 @@ nvm_error_t x_nvm_commit(nvm_pool_t *p_x_pool)
     uint8_t *p_u8_data_start = (uint8_t *) (p_x_pool->p_v_data) + sizeof(nvm_header_t);
     p_x_nvm_header->u32_signature = NVM_DATA_SIGNATURE;
 
-    // Monotonic, and never reset. Wear levelling selects the live block by
-    // highest write count, so this must keep counting across reformats.
+    // +1 per commit. A format zeroes the header, so a reformat restarts the
+    // count; a corrupt header's count is never trusted. Wear levelling selects
+    // the live block by highest write count among blocks that validate, and a
+    // repaired block copies the best block's header, count included.
     p_x_nvm_header->u32_write_count++;
 
     // The CRC function is the application's to supply. With none, the field
@@ -275,18 +277,28 @@ nvm_error_t x_nvm_commit(nvm_pool_t *p_x_pool)
         p_x_nvm_header->u32_crc = NVM_CRC_PLACEHOLDER;
     }
 
+    // Write the next block in rotation, never the live one, so a commit cut
+    // short leaves the previous copy intact.
+    v_nvm_stamp_media(p_x_pool, p_x_pool->u8_write_block);
     x_status = x_nvm_write(p_x_pool);
+    p_x_pool->x_commit_status = x_status;
 
     if (x_status == NVM_ERROR_NONE)
     {
-        // Write successful, clear the modified (commit-needed) flag
+        // Write successful: that block is now live. Clear the modified
+        // (commit-needed) flag.
+        p_x_pool->u8_live_block  = p_x_pool->u8_write_block;
+        p_x_pool->u8_write_block = (uint8_t) ((p_x_pool->u8_live_block + 1u) % p_x_pool->u8_wear_blocks);
         p_x_pool->u8_need_commit = 0;
         p_x_pool->u16_commit_timer = 0;
+        p_x_pool->u32_commit_count++;
     }
     else
     {
-        // If write failed, un-do increment of write count
+        // If write failed, un-do increment of write count; the live block is
+        // unchanged.
         p_x_nvm_header->u32_write_count--;
+        v_nvm_stamp_media(p_x_pool, p_x_pool->u8_live_block);
     }
 
     return x_status;
@@ -359,37 +371,9 @@ nvm_error_t x_nvm_format_block(nvm_pool_t *p_x_pool, uint8_t u8_block,
     // x_nvm_commit() fills in the signature, write count and CRC, so mark the
     // pool dirty and target the requested block.
     p_x_pool->u8_need_commit = 1;
-    v_nvm_stamp_media(p_x_pool, u8_block);
+    p_x_pool->u8_write_block = u8_block;
 
     return x_nvm_commit(p_x_pool);
-}
-
-/******************************************************************************
- * nvm_block_scan_t x_nvm_scan_blocks(*p_x_pool)
- *
- * Decide which wear-level block holds the live pool, and which should be
- * written next.
- *
- * PHASE 1 IMPLEMENTATION: there is exactly one block, so this reports block 0
- * for both and performs no device access at all. The pool's RAM buffer has
- * already been filled by x_nvm_read(), so validity is judged from that.
- *
- * The wear-levelling implementation replaces this body and nothing that calls
- * it changes. See nvmparams_internal.h for the selection rules it must follow.
- ******************************************************************************/
-
-nvm_block_scan_t x_nvm_scan_blocks(nvm_pool_t *p_x_pool)
-{
-    nvm_block_scan_t x_scan = { 0, 0, 0, false };
-    const nvm_header_t *p_x_header = (const nvm_header_t *) p_x_pool->p_v_data;
-
-    if (p_x_header->u32_signature == NVM_DATA_SIGNATURE)
-    {
-        x_scan.b_any_valid   = true;
-        x_scan.u32_live_count = p_x_header->u32_write_count;
-    }
-
-    return x_scan;
 }
 
 /******************************************************************************
@@ -428,6 +412,133 @@ static bool b_nvm_pool_is_blank(const nvm_pool_t *p_x_pool)
     }
 
     return true;
+}
+
+/******************************************************************************
+ * nvm_pool_check_t x_nvm_check_block(*p_x_pool, *p_u32_stored, *p_u32_computed)
+ *
+ * Validate the block now in the RAM pool: signature, then CRC.
+ *
+ * A stored NVM_CRC_PLACEHOLDER is accepted without a check: it is what a build
+ * with no CRC function writes, so it marks a pool written before CRCs were
+ * enabled (or by a rolled-back build). The next commit replaces it with a real
+ * CRC. Any other stored value must match.
+ ******************************************************************************/
+
+static nvm_pool_check_t x_nvm_check_block(const nvm_pool_t *p_x_pool,
+                                          uint32_t *p_u32_stored,
+                                          uint32_t *p_u32_computed)
+{
+    const nvm_header_t *p_x_header = (const nvm_header_t *) p_x_pool->p_v_data;
+
+    *p_u32_stored   = p_x_header->u32_crc;
+    *p_u32_computed = 0u;
+
+    if (p_x_header->u32_signature != NVM_DATA_SIGNATURE)
+    {
+        return b_nvm_pool_is_blank(p_x_pool) ? NVM_POOL_CHECK_BLANK
+                                             : NVM_POOL_CHECK_BAD_SIGNATURE;
+    }
+    if (p_x_pool->pfn_crc == NULL)
+    {
+        return NVM_POOL_CHECK_VALID_NO_CRC;
+    }
+    if (*p_u32_stored == NVM_CRC_PLACEHOLDER)
+    {
+        return NVM_POOL_CHECK_VALID_PLACEHOLDER;
+    }
+
+    *p_u32_computed = p_x_pool->pfn_crc((const uint8_t *) p_x_pool->p_v_data + sizeof(nvm_header_t),
+                                        p_x_pool->u32_size - sizeof(nvm_header_t));
+    return (*p_u32_computed == *p_u32_stored) ? NVM_POOL_CHECK_VALID_CRC
+                                              : NVM_POOL_CHECK_BAD_CRC;
+}
+
+static bool b_nvm_check_is_valid(nvm_pool_check_t e_check)
+{
+    return (e_check == NVM_POOL_CHECK_VALID_CRC) ||
+           (e_check == NVM_POOL_CHECK_VALID_PLACEHOLDER) ||
+           (e_check == NVM_POOL_CHECK_VALID_NO_CRC);
+}
+
+/******************************************************************************
+ * nvm_error_t x_nvm_scan_blocks(*p_x_pool, *p_x_scan)
+ *
+ * Read and validate every wear-level block, choose the live one, and leave its
+ * contents in the RAM pool. See nvmparams_internal.h for the rules.
+ *
+ * Returns:     NVM_ERROR_NONE, or the read driver's status if a read failed
+ *              (the scan stops there; nothing is known about the media).
+ ******************************************************************************/
+
+nvm_error_t x_nvm_scan_blocks(nvm_pool_t *p_x_pool, nvm_block_scan_t *p_x_scan)
+{
+    uint32_t u32_best_count = 0u;
+    uint8_t  u8_block;
+
+    memset(p_x_scan, 0, sizeof(nvm_block_scan_t));
+    p_x_scan->b_all_blank = true;
+
+    for (u8_block = 0; u8_block < p_x_pool->u8_wear_blocks; u8_block++)
+    {
+        uint32_t u32_stored;
+        uint32_t u32_computed;
+        nvm_pool_check_t e_check;
+        nvm_error_t x_status;
+
+        v_nvm_stamp_media(p_x_pool, u8_block);
+        x_status = x_nvm_read(p_x_pool);
+        if (x_status != NVM_ERROR_NONE)
+        {
+            return x_status;
+        }
+
+        e_check = x_nvm_check_block(p_x_pool, &u32_stored, &u32_computed);
+        if (e_check != NVM_POOL_CHECK_BLANK)
+        {
+            p_x_scan->b_all_blank = false;
+        }
+        if (e_check == NVM_POOL_CHECK_BAD_CRC)
+        {
+            NVM_LOG_ERROR("block %u CRC mismatch: stored 0x%08lX, computed 0x%08lX",
+                          (unsigned) u8_block, (unsigned long) u32_stored,
+                          (unsigned long) u32_computed);
+        }
+
+        if (b_nvm_check_is_valid(e_check))
+        {
+            uint32_t u32_count = ((const nvm_header_t *) p_x_pool->p_v_data)->u32_write_count;
+
+            p_x_scan->u32_valid_mask |= (1uL << u8_block);
+            if (!p_x_scan->b_any_valid || (u32_count > u32_best_count))
+            {
+                p_x_scan->b_any_valid      = true;
+                p_x_scan->u8_live_block    = u8_block;
+                p_x_scan->u8_check         = (uint8_t) e_check;
+                p_x_scan->u32_crc_stored   = u32_stored;
+                p_x_scan->u32_crc_computed = u32_computed;
+                u32_best_count             = u32_count;
+            }
+        }
+        else if (!p_x_scan->b_any_valid &&
+                 ((u8_block == 0u) ||
+                  ((p_x_scan->u8_check == (uint8_t) NVM_POOL_CHECK_BLANK) &&
+                   (e_check != NVM_POOL_CHECK_BLANK))))
+        {
+            // Nothing valid yet: report block 0, or the first non-blank block.
+            p_x_scan->u8_check         = (uint8_t) e_check;
+            p_x_scan->u32_crc_stored   = u32_stored;
+            p_x_scan->u32_crc_computed = u32_computed;
+        }
+    }
+
+    if (p_x_scan->b_any_valid)
+    {
+        v_nvm_stamp_media(p_x_pool, p_x_scan->u8_live_block);
+        return x_nvm_read(p_x_pool);
+    }
+
+    return NVM_ERROR_NONE;
 }
 
 /******************************************************************************
@@ -498,6 +609,13 @@ nvm_error_t x_nvm_pool_init(nvm_pool_t *p_x_pool, const nvm_pool_config_t *p_x_c
     }
 
     u8_blocks = (p_x_config->u8_wear_blocks == 0u) ? 1u : p_x_config->u8_wear_blocks;
+
+    if (u8_blocks > NVM_MAX_WEAR_BLOCKS)
+    {
+        NVM_LOG_ERROR("%u wear-level blocks, max %u", (unsigned) u8_blocks,
+                      (unsigned) NVM_MAX_WEAR_BLOCKS);
+        return NVM_ERROR_PARAMETER;
+    }
 
     // Wear levelling with no allocation unit would have the module pack blocks
     // with no knowledge of the device's erase granularity, so that adjacent
@@ -578,12 +696,10 @@ nvm_error_t x_nvm_pool_init(nvm_pool_t *p_x_pool, const nvm_pool_config_t *p_x_c
 #endif
 
     //--------------------------------------------------------------------------
-    // Load the pool.
+    // Load the pool: scan every block and load the newest one that validates.
     //--------------------------------------------------------------------------
 
-    v_nvm_stamp_media(p_x_pool, 0);
-
-    x_status = x_nvm_read(p_x_pool);
+    x_status = x_nvm_scan_blocks(p_x_pool, &x_scan);
     if (x_status != NVM_ERROR_NONE)
     {
         // The device could not be read, so nothing is known about its contents.
@@ -594,36 +710,46 @@ nvm_error_t x_nvm_pool_init(nvm_pool_t *p_x_pool, const nvm_pool_config_t *p_x_c
         return x_status;
     }
 
-    x_scan = x_nvm_scan_blocks(p_x_pool);
+    p_x_pool->u8_load_check         = x_scan.u8_check;
+    p_x_pool->u32_load_crc_stored   = x_scan.u32_crc_stored;
+    p_x_pool->u32_load_crc_computed = x_scan.u32_crc_computed;
 
     if (x_scan.b_any_valid)
     {
-        // Valid signature. Verify the CRC too, if the application supplied a
-        // CRC function; with none, validation is by signature alone and the
-        // stored field carries NVM_CRC_PLACEHOLDER. Do NOT compare against the
-        // placeholder here -- a pool written by a CRC-enabled build and read by
-        // one without would fail for no good reason, breaking rollback.
-        if (p_x_pool->pfn_crc != NULL)
-        {
-            const nvm_header_t *p_x_header = (const nvm_header_t *) p_x_pool->p_v_data;
-            uint8_t *p_u8_data_start = (uint8_t *) p_x_pool->p_v_data + sizeof(nvm_header_t);
-            uint32_t u32_crc = p_x_pool->pfn_crc(p_u8_data_start,
-                                        p_x_pool->u32_size - sizeof(nvm_header_t));
+        p_x_pool->u8_live_block  = x_scan.u8_live_block;
+        p_x_pool->u8_write_block = (uint8_t) ((x_scan.u8_live_block + 1u) % u8_blocks);
 
-            if (u32_crc != p_x_header->u32_crc)
+        // Repair: rewrite every block that did not validate (blank or corrupt)
+        // as an exact copy of the live block, header included. The live block
+        // itself is never written here.
+        for (u8_block = 0; u8_block < u8_blocks; u8_block++)
+        {
+            if ((x_scan.u32_valid_mask & (1uL << u8_block)) != 0u)
             {
-                x_scan.b_any_valid = false;
+                p_x_pool->u8_valid_blocks++;
+                continue;
+            }
+            v_nvm_stamp_media(p_x_pool, u8_block);
+            x_status = x_nvm_write(p_x_pool);
+            if (x_status == NVM_ERROR_NONE)
+            {
+                p_x_pool->u8_repaired_blocks++;
+            }
+            else
+            {
+                NVM_LOG_ERROR("repair of block %u failed, status %d",
+                              (unsigned) u8_block, (int) x_status);
             }
         }
-    }
 
-    if (x_scan.b_any_valid)
-    {
+        // Leave the media descriptor pointing at the live block.
+        v_nvm_stamp_media(p_x_pool, p_x_pool->u8_live_block);
+        p_x_pool->x_init_status = NVM_ERROR_NONE;
         return NVM_ERROR_NONE;
     }
 
     //--------------------------------------------------------------------------
-    // No valid pool. Classify the media and apply the caller's policy.
+    // No block validates. Apply the caller's policy.
     //--------------------------------------------------------------------------
 
     if (p_x_pool->x_init_policy == NVM_INIT_REQUIRE_VALID)
@@ -636,7 +762,7 @@ nvm_error_t x_nvm_pool_init(nvm_pool_t *p_x_pool, const nvm_pool_config_t *p_x_c
         return NVM_ERROR_POOL_CORRUPT;
     }
 
-    if (!b_nvm_pool_is_blank(p_x_pool))
+    if (!x_scan.b_all_blank)
     {
         // Corrupt, not blank: there is something here and it is not ours.
         if (p_x_pool->x_init_policy != NVM_INIT_FORMAT_IF_INVALID)
@@ -671,9 +797,13 @@ nvm_error_t x_nvm_pool_init(nvm_pool_t *p_x_pool, const nvm_pool_config_t *p_x_c
         }
     }
 
-    // Leave the media descriptor pointing at the live block.
+    // Every block now holds the same empty pool (count 1). Block 0 is live.
+    p_x_pool->u8_live_block   = 0;
+    p_x_pool->u8_write_block  = (uint8_t) (1u % u8_blocks);
+    p_x_pool->u8_valid_blocks = u8_blocks;
     v_nvm_stamp_media(p_x_pool, 0);
 
+    p_x_pool->x_init_status = x_status;
     return x_status;
 }
 
@@ -827,7 +957,7 @@ nvm_error_t x_nvm_delete_unchecked(nvm_pool_t *p_x_pool, nvm_param_id_t x_id)
     }
 
     nvm_object_t *p_x_end_object = p_x_nvm_search(p_x_pool, NVM_PARAM_END_OF_DATA);
-    if (p_x_nvm_object == NULL)
+    if (p_x_end_object == NULL)
     {
         return NVM_ERROR_POOL_CORRUPT;
     }

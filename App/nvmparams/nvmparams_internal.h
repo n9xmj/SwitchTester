@@ -38,36 +38,41 @@ extern nvm_error_t x_nvm_set_unchecked   (nvm_pool_t *p_x_pool, nvm_param_id_t x
 /*----------------------------------------------------------------------------
  * Wear-level block scan.
  *
- * Reads and validates each block's header in ONE pass and answers both
- * questions at once -- which block is live, and which should be written next.
- * A flag-driven "find lowest / find highest" helper would have to scan twice,
- * and on SPI flash that is real time rather than a rounding error.
+ * Reads every block, validates it (signature, then CRC), and leaves the live
+ * block's contents in the RAM pool. One pass answers which block is live and
+ * which blocks need repair.
  *
- * PHASE 1: there is exactly one block, so this reports block 0 for both and
- * does no scanning at all. The wear-levelling implementation replaces the body
- * and nothing above it changes.
+ * Rules (one write count for the whole pool, +1 per commit that writes):
+ *   live   = highest u32_write_count among blocks that validate; on a tie the
+ *            lowest index (tied blocks are exact copies). The count lives in
+ *            the header, which the CRC does not cover, so validation is what
+ *            makes the selector safe.
+ *   write  = live + 1, modulo the block count. Commits go round in index
+ *            order, so the block after the live one is always the oldest.
+ *   repair = init rewrites every block that does not validate (blank or
+ *            corrupt) as an exact copy of the live block, header included.
+ *   none   = no block validates: the caller's policy applies (format all).
  *
- * Selection rules, once there is more than one block:
- *   live  = highest u32_write_count WHOSE DATA CRC ALSO VALIDATES, falling
- *           through to the next candidate on failure. The write count lives in
- *           the header, which the CRC does not cover, so validation is what
- *           makes an unprotected selector safe.
- *   write = lowest write count among valid blocks, ties broken by lowest index.
- *           Invalid blocks are a last resort, not a preference -- a damaged
- *           block has no readable count and would otherwise look like zero and
- *           attract every single commit.
+ * The reported check, CRC stored and CRC computed are the live block's, or,
+ * when none validates, the first non-blank block's (block 0's if all blank).
  *--------------------------------------------------------------------------*/
+
+/** @brief Most wear-level blocks a pool may have (one bit each in the scan mask). */
+#define NVM_MAX_WEAR_BLOCKS     32u
 
 typedef struct
 {
-    uint8_t  u8_live_block;     /* Highest valid write count; 0 if none valid */
-    uint8_t  u8_write_block;    /* Next block to write */
-    uint32_t u32_live_count;    /* Live block's write count; 0 if none valid */
+    uint32_t u32_valid_mask;    /* Bit n set: block n validates */
+    uint32_t u32_crc_stored;    /* Reported block's stored CRC */
+    uint32_t u32_crc_computed;  /* Reported block's computed CRC; 0 if not computed */
+    uint8_t  u8_live_block;     /* Live block (valid only if b_any_valid) */
+    uint8_t  u8_check;          /* nvm_pool_check_t of the reported block */
     bool     b_any_valid;       /* False: no block holds a valid pool */
+    bool     b_all_blank;       /* True: every block is uniformly erased */
 }
 nvm_block_scan_t;
 
-extern nvm_block_scan_t x_nvm_scan_blocks(nvm_pool_t *p_x_pool);
+extern nvm_error_t x_nvm_scan_blocks(nvm_pool_t *p_x_pool, nvm_block_scan_t *p_x_scan);
 
 /*----------------------------------------------------------------------------
  * Point the pool's media descriptor at one wear-level block, resolving the

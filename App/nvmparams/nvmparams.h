@@ -106,6 +106,8 @@ typedef int16_t nvm_error_t;
 /*----------------------------------------------------------------------------
  * Pool data signature, and the placeholder written into the CRC field when no
  * CRC function is supplied. Both are legacy values; do not change them.
+ * With a CRC function, a pool whose stored CRC is the placeholder is still
+ * accepted (it predates CRCs); the next commit writes a real CRC.
  *--------------------------------------------------------------------------*/
 
 #define NVM_DATA_SIGNATURE          0x5AA5A55Au
@@ -169,6 +171,22 @@ typedef enum
 }
 nvm_init_policy_t;
 
+/*----------------------------------------------------------------------------
+ * What pool init found on the media, kept in nvm_pool_t.u8_load_check.
+ *--------------------------------------------------------------------------*/
+
+typedef enum
+{
+    NVM_POOL_CHECK_UNKNOWN = 0,         /* Not checked (init failed before the check) */
+    NVM_POOL_CHECK_VALID_CRC,           /* Signature and CRC both good */
+    NVM_POOL_CHECK_VALID_PLACEHOLDER,   /* Signature good, CRC field NVM_CRC_PLACEHOLDER */
+    NVM_POOL_CHECK_VALID_NO_CRC,        /* Signature good, no CRC function supplied */
+    NVM_POOL_CHECK_BLANK,               /* Uniformly erased: never written */
+    NVM_POOL_CHECK_BAD_SIGNATURE,       /* Not blank, signature wrong */
+    NVM_POOL_CHECK_BAD_CRC              /* Signature good, CRC mismatch */
+}
+nvm_pool_check_t;
+
 /*=============================================================================
  * The adopter's control panel.
  *===========================================================================*/
@@ -195,7 +213,7 @@ typedef struct
 {
     uint32_t u32_signature;
     uint32_t u32_crc;
-    uint32_t u32_write_count;               /* Monotonic. Never reset. */
+    uint32_t u32_write_count;               /* +1 per commit; restarts at 0 when the pool is formatted */
     char     c_label[NVM_LABEL_MAX_LENGTH]; /* Informational only; not NUL-guaranteed */
 }
 nvm_header_t;
@@ -285,6 +303,20 @@ typedef struct
     pfn_nvm_crc_t   pfn_crc;
     nvm_media_t     x_media;            /* Restamped before each driver call */
     nvm_init_policy_t x_init_policy;
+
+    /* Diagnostics. Written by the module, read-only for the application. */
+    uint32_t        u32_load_crc_stored;   /* CRC field of the header found at init */
+    uint32_t        u32_load_crc_computed; /* CRC of the data found at init; 0 if not computed */
+    uint32_t        u32_commit_count;      /* Commits that wrote the media since init */
+    nvm_error_t     x_init_status;         /* What x_nvm_pool_init() returned */
+    nvm_error_t     x_commit_status;       /* What the last commit that wrote returned */
+    uint8_t         u8_load_check;         /* nvm_pool_check_t: what init found */
+    uint8_t         u8_live_block;         /* Block loaded into the RAM pool */
+    uint8_t         u8_write_block;        /* Block the next commit writes */
+    uint8_t         u8_valid_blocks;       /* Blocks that validated at init */
+    uint8_t         u8_repaired_blocks;    /* Blocks init rewrote from the live block */
+    uint8_t         u8_fill1;              /* (alignment) */
+    uint8_t         u8_fill2;              /* (alignment) */
 }
 nvm_pool_t;
 
